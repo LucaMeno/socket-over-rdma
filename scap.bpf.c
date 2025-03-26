@@ -19,7 +19,7 @@ struct {
 } sockmap SEC(".maps");
 
 SEC("sockops")
-int add_established_sock(struct bpf_sock_ops *skops)
+int sockops_prog(struct bpf_sock_ops *skops)
 {
 	int op = (int)skops->op;
 	struct sock_descriptor desc = { 0 };
@@ -35,6 +35,8 @@ int add_established_sock(struct bpf_sock_ops *skops)
 		desc.ip    = skops->local_ip4;
 		desc.sport = bpf_htons(skops->local_port);
 		desc.dport = bpf_ntohs(sk->dst_port);
+		// Add the socket to the map if it doesn't exist
+		// The key is the socket descriptor
 		ret = bpf_sock_hash_update(skops, &sockmap, &desc, BPF_NOEXIST);
 		bpf_printk("[skops=%p] bpf_sock_hash_update returned %ld",
 								skops, ret);
@@ -50,15 +52,15 @@ int add_established_sock(struct bpf_sock_ops *skops)
 SEC("sk_msg")
 int sk_msg_prog(struct sk_msg_md *msg)
 {
-    bpf_printk("Intercepted a sk_msg event!\n");
+	bpf_printk("Intercepted a sk_msg event!\n");
     return SK_PASS;
-	struct sock_descriptor desc = { 0 };
+	/*struct sock_descriptor desc = { 0 };
 
 	desc.ip    = msg->remote_ip4;
 	desc.sport = msg->sk->dst_port;
 	desc.dport = msg->sk->src_port;
 
-	return bpf_msg_redirect_hash(msg, &sockmap, &desc, BPF_F_INGRESS);
+	return bpf_msg_redirect_hash(msg, &sockmap, &desc, BPF_F_INGRESS);*/
 }
 
 

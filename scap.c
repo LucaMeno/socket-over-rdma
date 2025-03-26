@@ -7,12 +7,11 @@
 #include <fcntl.h>
 #include <sys/resource.h>
 
-
 int main(int argc, char **argv)
 {
-    struct bpf_object *obj;
-    int prog_fd, map_fd;
 
+    struct bpf_object *obj;
+    // open the BPF object file
     obj = bpf_object__open_file("scap.bpf.o", NULL);
     if (!obj)
     {
@@ -20,6 +19,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // load the BPF object file into the kernel
     int err = bpf_object__load(obj);
     if (err)
     {
@@ -27,38 +27,77 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    struct bpf_program *prog = bpf_object__find_program_by_name(obj, "add_established_sock");
-    if (!prog)
+    /* MAP */
+
+    // find the sockmap in the object file
+    struct bpf_map *sockmap;
+
+    sockmap = bpf_object__find_map_by_name(obj, "sockmap");
+    if (!sockmap)
     {
-        fprintf(stderr, "Failed to find BPF program\n");
-        return 1;
+        fprintf(stderr, "Failed to find the sockmap\n");
+        return -1;
     }
 
-    prog_fd = bpf_program__fd(prog);
-    if (prog_fd < 0)
-    {
-        fprintf(stderr, "Failed to get BPF program FD\n");
-        return 1;
-    }
-
-    map_fd = bpf_object__find_map_fd_by_name(obj, "sockmap");
+    // get the file descriptor for the map
+    int map_fd = bpf_map__fd(sockmap);
     if (map_fd < 0)
     {
-        fprintf(stderr, "Failed to get BPF map FD\n");
+        fprintf(stderr, "Failed to get map fd\n");
+        return -1;
+    }
+
+    /* PROGRAM */
+
+    struct bpf_program *prog_sockops, *prog_sk_msg;
+    int prog_fd_sockops, prog_fd_sk_msg;
+
+    prog_sockops = bpf_object__find_program_by_name(obj, "sockops_prog");
+    prog_fd_sockops = bpf_program__fd(prog_sockops);
+
+    prog_sk_msg = bpf_object__find_program_by_name(obj, "sk_msg_prog");
+    prog_fd_sk_msg = bpf_program__fd(prog_sk_msg);
+
+    // attach the map to sockops_prog
+    /*err = bpf_prog_attach(prog_fd_sockops, map_fd, BPF_SK_SKB_STREAM_PARSER, 0);
+    if (err < 0)
+    {
+        // ERROR HERE: -22
+        fprintf(stderr, "Failed to attach sockops_prog to map: %d\n", err);
+        return 1;
+    }*/
+    // Attach sockops_prog to a cgroup
+    int cgroup_fd = open("/sys/fs/cgroup", O_RDONLY); // Adjust path to your cgroup
+    if (cgroup_fd < 0)
+    {
+        fprintf(stderr, "Failed to open cgroup: %s\n", strerror(errno));
+        return 1;
+    }
+
+    err = bpf_prog_attach(prog_fd_sockops, cgroup_fd, BPF_CGROUP_SOCK_OPS, 0);
+    if (err < 0)
+    {
+        fprintf(stderr, "Failed to attach sockops_prog to cgroup: %d\n", err);
+        return 1;
+    }
+
+    // Attach sk_msg_prog to the sockmap
+    err = bpf_prog_attach(prog_fd_sk_msg, map_fd, BPF_SK_MSG_VERDICT, 0);
+    if (err < 0)
+    {
+        fprintf(stderr, "Failed to attach sk_msg_prog to sockmap: %d\n", err);
+        return 1;
+    }
+
+    // attach the map to sk_msg_prog
+    err = bpf_prog_attach(prog_fd_sk_msg, map_fd, BPF_SK_MSG_VERDICT, 0);
+    if (err < 0)
+    {
+        fprintf(stderr, "Failed to attach sk_msg_prog to map: %d\n", err);
         return 1;
     }
 
     printf("Successfully loaded eBPF program!\n");
-    printf("Sockmap FD: %d\n", map_fd);
-    printf("Program FD: %d\n", prog_fd);
-
-    // Attach the program to the socket operations
-    err = bpf_prog_attach(prog_fd, 0, BPF_PROG_TYPE_SOCK_OPS, 0);
-    if (err)
-    {
-        fprintf(stderr, "Failed to attach BPF program: %d\n", err);
-        return 1;
-    }
 
     // Keep the program running to capture events
     while (1)
