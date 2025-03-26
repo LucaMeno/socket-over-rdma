@@ -33,5 +33,18 @@ sudo make install
 Build and run the network monitor:
 ```sh
 make
-sudo ./
+sudo ./scap
+
+# see output
+sudo cat /sys/kernel/debug/tracing/trace_pipe
+
+#test
+curl http://example.com
+netcat -l 1234
+echo "Hello, World!" | nc localhost 12345
+
+
+# see bpf
+sudo bpftool prog show
+sudo bpftool map show
 ```
