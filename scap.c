@@ -81,21 +81,21 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // attach the map to sk_msg_prog
-    err = bpf_prog_attach(prog_fd_sk_msg, map_fd, BPF_SK_MSG_VERDICT, 0);
+    printf("eBPF program is running\n");
+
+    //wait for user input before exiting
+    printf("Press Enter to exit...\n");
+    getchar();
+
+    // detach the programs from the cgroup
+    err = bpf_prog_detach(cgroup_fd, BPF_CGROUP_SOCK_OPS);
     if (err < 0)
     {
-        fprintf(stderr, "Failed to attach sk_msg_prog to map: %d\n", err);
+        fprintf(stderr, "Failed to detach sockops_prog from cgroup: %d\n", err);
         return 1;
     }
 
-    printf("Successfully loaded eBPF program!\n");
-
-    // Keep the program running to capture events
-    while (1)
-    {
-        sleep(1);
-    }
-
+    printf("Successfully detached eBPF program!\n");
+    
     return 0;
 }
