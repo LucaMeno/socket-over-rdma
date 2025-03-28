@@ -21,6 +21,13 @@ struct
 	__type(value, int);
 } sockmap SEC(".maps");
 
+struct
+{
+	__uint(type, BPF_MAP_TYPE_SOCKHASH);
+	__uint(max_entries, 1024);
+	__type(key, int);
+	__type(value, int);
+} mysoc SEC(".maps");
 
 SEC("sockops")
 int sockops_prog(struct bpf_sock_ops *skops)
@@ -35,33 +42,34 @@ int sockops_prog(struct bpf_sock_ops *skops)
 
 	if (skops->family != 2 /* AF_INET */ || !sk)
 		return 0;
-	
+
 	switch (op)
 	{
 	case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
 	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
-	case BPF_SOCK_OPS_STATE_CB:
-	default:
 		desc.ip = skops->local_ip4;
 		desc.sport = bpf_htons(skops->local_port);
 		desc.dport = bpf_ntohs(sk->dst_port);
+
 		// Add the socket to the map if it doesn't exist
 		// The key is the socket descriptor
 		ret = bpf_sock_hash_update(skops, &sockmap, &desc, BPF_NOEXIST);
 
 		bpf_printk("---------------------");
-		if(ret == 0) {
+		if (ret == 0)
+		{
 			// print the new socket added
 			bpf_printk("new socket: %p", skops->sk);
 			bpf_printk("ip: %u", desc.ip);
 			bpf_printk("sport: %u", desc.sport);
 			bpf_printk("dport: %u", desc.dport);
-		} else {
+		}
+		else
+		{
 			bpf_printk("[skops=%p] bpf_sock_hash_update %ld", skops, ret);
 		}
 
-
-	//default:
+	default:
 		break;
 	}
 
@@ -71,19 +79,17 @@ int sockops_prog(struct bpf_sock_ops *skops)
 SEC("sk_msg")
 int sk_msg_prog(struct sk_msg_md *msg)
 {
-	bpf_printk("Intercepted a sk_msg event on socket: %p", msg->sk);
+    bpf_printk("sk_msg s: %p", msg->sk);
 
-	//return SK_PASS;
-	struct sock_descriptor desc;
+    struct sock_descriptor desc;
 
-	desc.ip = bpf_ntohl(msg->remote_ip4);
-	desc.sport = bpf_ntohs(msg->remote_port);
-	desc.dport = bpf_ntohs(msg->local_port);
+    desc.ip = bpf_ntohl(msg->remote_ip4);
+    desc.sport = bpf_ntohs(msg->remote_port);
+    desc.dport = bpf_ntohs(msg->local_port);
 
-	return SK_PASS;
-	int ret = bpf_msg_redirect_hash(msg, &sockmap, &desc, BPF_F_INGRESS);
-	bpf_printk("bpf_msg_redirect_hash ret: %d", ret);
-	return ret;
+    int k = 0;
+    return bpf_msg_redirect_hash(msg, &mysoc, &k, BPF_F_INGRESS);
+	
 }
 
 char LICENSE[] SEC("license") = "GPL";

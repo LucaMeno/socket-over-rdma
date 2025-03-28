@@ -6,8 +6,14 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/resource.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
 
-const char *CGROUP_PATH = "/sys/fs/cgroup";
+#define CGROUP_PATH "/sys/fs/cgroup"
+#define MAP_PATH "/sys/fs/bpf/mysoc"
+#define BUFFER_SIZE 2048
+#define PORT 5556
 
 int main(int argc, char **argv)
 {
@@ -29,7 +35,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    struct bpf_map *sockmap;
+    struct bpf_map *sockmap, *mysoc;
 
     // find the sockmap in the object file
     sockmap = bpf_object__find_map_by_name(obj, "sockmap");
@@ -39,11 +45,26 @@ int main(int argc, char **argv)
         return -1;
     }
 
+    // find the mysoc map in the object file
+    mysoc = bpf_object__find_map_by_name(obj, "mysoc");
+    if (!mysoc)
+    {
+        fprintf(stderr, "Failed to find the mysoc map\n");
+        return -1;
+    }
+
     // get the file descriptor for the map
-    int map_fd = bpf_map__fd(sockmap);
-    if (map_fd < 0)
+    int sockmap_fd, mysoc_fd;
+    sockmap_fd = bpf_map__fd(sockmap);
+    if (sockmap_fd < 0)
     {
         fprintf(stderr, "Failed to get map fd\n");
+        return -1;
+    }
+
+    mysoc_fd = bpf_map__fd(mysoc);
+    if(mysoc_fd < 0) {
+        fprintf(stderr, "Failed to get map sock fd\n");
         return -1;
     }
 
@@ -74,7 +95,7 @@ int main(int argc, char **argv)
     }
 
     // Attach sk_msg_prog to the sockmap
-    err = bpf_prog_attach(prog_fd_sk_msg, map_fd, BPF_SK_MSG_VERDICT, 0);
+    err = bpf_prog_attach(prog_fd_sk_msg, sockmap_fd, BPF_SK_MSG_VERDICT, 0);
     if (err < 0)
     {
         fprintf(stderr, "Failed to attach sk_msg_prog to sockmap: %d\n", err);
@@ -83,9 +104,82 @@ int main(int argc, char **argv)
 
     printf("eBPF program is running\n");
 
-    //wait for user input before exiting
-    printf("Press Enter to exit...\n");
-    getchar();
+    // wait for user input before exiting
+    /*printf("Press Enter to exit...\n");
+    getchar();*/
+
+    /*--------- PROXY ------------*/
+
+    int sock;
+    struct sockaddr_in server_addr;
+    
+    // Creazione del socket
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        perror("Errore nella creazione del socket");
+        return 1;
+    }
+
+    // Configurazione dell'indirizzo del server
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(PORT);  // Porta di ascolto
+
+    // Bind del socket all'indirizzo e porta
+    if (bind(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Errore nel bind del socket");
+        close(sock);
+        return 1;
+    }
+
+    // Mettiamo il socket in ascolto
+    if (listen(sock, 5) < 0) {
+        perror("listen error");
+        close(sock);
+        return 1;
+    }
+
+    printf("Waiting for client...\n");
+
+    // Accettiamo un client
+    int client_sock = accept(sock, NULL, NULL);
+    if (client_sock < 0) {
+        perror("Accept error");
+        close(sock);
+        return 1;
+    }
+
+    printf("Client connected.\n");
+
+    // Chiave per la mappa SOCKHASH (può essere un ID del socket)
+    int key = 0;
+
+    // Inseriamo il socket nella mappa SOCKHASH
+    if (bpf_map_update_elem(mysoc_fd, &key, &client_sock, BPF_ANY) < 0) {
+        perror("Errore nell'inserimento del socket nella mappa BPF");
+        close(client_sock);
+        close(sock);
+    }
+
+    printf("Socket aggiunto alla mappa SOCKHASH.\n");
+
+    // Riceviamo dati dal socket
+    char buffer[BUFFER_SIZE] = {0};
+    printf("Waiting for data...\n");
+    while (1) {
+        ssize_t bytes_received = recv(client_sock, buffer, sizeof(buffer) - 1, 0);
+        if (bytes_received <= 0) {
+            perror("Errore nella ricezione o connessione chiusa");
+            break;
+        }
+        buffer[bytes_received] = '\0';
+        printf("Messaggio ricevuto: %s\n", buffer);
+    }
+
+    /*---------- CLOSE ------------*/
+
+    close(client_sock);
+    close(sock);
 
     // detach the programs from the cgroup
     err = bpf_prog_detach(cgroup_fd, BPF_CGROUP_SOCK_OPS);
@@ -96,6 +190,6 @@ int main(int argc, char **argv)
     }
 
     printf("Successfully detached eBPF program!\n");
-    
+
     return 0;
 }

@@ -5,7 +5,7 @@
 #include <arpa/inet.h>
 
 #define SERVER_IP "127.0.0.1"
-#define PORT 7777
+#define PORT 5555
 #define BUFFER_SIZE 1024
 
 int main() {
@@ -46,14 +46,19 @@ int main() {
         }
         i++;
         send(sock, msg, strlen(msg), 0);
-        read(sock, msg, BUFFER_SIZE);
+        printf("Sent message: %s\n", msg);
+
+        // wait user input
+        printf("Press Enter to continue...\n");
+        getchar();
+        
+        /*read(sock, msg, BUFFER_SIZE);
         if(atoi(msg) == i-1) {
             printf("%d ACK\n", i);
         } else {
             printf("Error: %d != %s\n", i, msg);
             break;
-        }
-        sleep(2);
+        }*/
     }
 
     // Close the socket
