@@ -1,16 +1,16 @@
-/*
+
 #include <linux/in.h>
 #include <linux/in6.h>
 
-#define AF_INET 	2
-#define AF_INET6	10
 
-union scap_addr {
+union scap_addr
+{
 	struct in6_addr in6;
 	struct in_addr in;
 };
 
-struct scap_msg {
+struct my_msg
+{
 	__u32 size;
 	union scap_addr laddr;
 	union scap_addr raddr;
@@ -18,6 +18,5 @@ struct scap_msg {
 	__u16 rport;
 	__u16 af;
 
-	__u8 data[];
+	__u8 *data;
 };
-*/
