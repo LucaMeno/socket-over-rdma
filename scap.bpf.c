@@ -131,7 +131,8 @@ int sk_msg_prog(struct sk_msg_md *msg)
 
 	if (ret == SK_PASS)
 	{
-		if(bpf_map_push_elem(&userMsg, &my_msg, 0) != 0) {
+		if (bpf_map_push_elem(&userMsg, &my_msg, 0) != 0)
+		{
 			bpf_printk("Error on push");
 		}
 		bpf_printk("Size: %u", my_msg.size);

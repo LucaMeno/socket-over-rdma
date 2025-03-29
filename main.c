@@ -45,19 +45,7 @@ void set_mysocket_map(int fd);
 void *client_thread(void *arg);
 void run_client();
 
-void print_msg(struct my_msg *msg)
-{
-    char laddr[INET_ADDRSTRLEN], raddr[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &msg->laddr.in, laddr, sizeof(laddr));
-    inet_ntop(AF_INET, &msg->raddr.in, raddr, sizeof(raddr));
-
-    printf("Message: size=%u, laddr=%s:%u, raddr=%s:%u\n",
-           msg->size,
-           laddr,
-           ntohs(msg->lport),
-           raddr,
-           ntohs(msg->rport));
-}
+void print_msg(struct my_msg *msg);
 
 int main(int argc, char **argv)
 {
@@ -85,15 +73,16 @@ int main(int argc, char **argv)
     char buffer[BUFFER_SIZE];
     while (!stop)
     {
+        printf("--------------------------------\n");
         ssize_t bytes_received = recv(client_sock, buffer, sizeof(buffer) - 1, 0);
         if (bytes_received <= 0)
             break;
         buffer[bytes_received] = '\0';
         printf("Received message: %s\n", buffer);
 
-        __u32 key = 0;
         struct my_msg msg = {0};
-        bpf_map_lookup_elem(userMsg_fd, &key, &msg);
+        int ret = bpf_map__lookup_elem(userMsg, NULL, 0, &msg, sizeof(msg), 0);
+        check_error(ret, "Failed to lookup userMsg map");
         print_msg(&msg);
     }
 
@@ -106,6 +95,19 @@ int main(int argc, char **argv)
     return 0;
 }
 
+void print_msg(struct my_msg *msg)
+{
+    char laddr[INET_ADDRSTRLEN], raddr[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &msg->laddr.in, laddr, sizeof(laddr));
+    inet_ntop(AF_INET, &msg->raddr.in, raddr, sizeof(raddr));
+
+    printf("Data: size=%u, laddr=%s:%u, raddr=%s:%u\n",
+           msg->size,
+           laddr,
+           ntohs(msg->lport),
+           raddr,
+           ntohs(msg->rport));
+}
 
 void *client_thread(void *arg)
 {
@@ -123,7 +125,8 @@ void *client_thread(void *arg)
     server_addr.sin_port = htons(PORT);
 
     int err = inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr);
-    if(err != 1) {
+    if (err != 1)
+    {
         error_and_exit("Client: Invalid address or address not supported");
     }
 
@@ -159,7 +162,7 @@ void run_client()
     int err = pthread_create(&client_thread_id, NULL, client_thread, NULL);
     check_error(err, "Failed to create client thread");
     printf("Client thread created\n");
-    //pthread_join(client_thread_id, NULL);
+    // pthread_join(client_thread_id, NULL);
 }
 
 void setup_socket()
@@ -237,6 +240,9 @@ void cleanup_bpf()
 
     if (prog_fd_sk_msg > 0)
         close(prog_fd_sk_msg);
+
+    if (userMsg_fd > 0)
+        close(userMsg_fd);
 
     // Destroy BPF object
     bpf_object__close(obj);
