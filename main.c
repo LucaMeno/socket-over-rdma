@@ -30,11 +30,12 @@ void error_and_exit(const char *msg);
 
 struct bpf_object *obj;
 int prog_fd_sockops, prog_fd_sk_msg;
-int sockmap_fd, mysoc_fd, userMsg_fd;
+int sockmap_fd, mysoc_fd, userMsg_fd, targetport_fd;
 int cgroup_fd;
 struct bpf_map *userMsg;
 
 void setup_bpf();
+void run_bpf();
 void cleanup_bpf();
 
 int sock = -1, client_sock = -1;
@@ -42,6 +43,7 @@ int sock = -1, client_sock = -1;
 void setup_socket();
 void cleanup_socket();
 void set_mysocket_map(int fd);
+void set_target_port(__u16 target_port);
 void *client_thread(void *arg);
 void run_client();
 
@@ -49,10 +51,21 @@ void print_msg(struct my_msg *msg);
 
 int main(int argc, char **argv)
 {
+
+    if (argc != 2)
+    {
+        fprintf(stderr, "Usage: %s <target_port>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+    __u16 target_port = atoi(argv[1]);
+
     signal(SIGINT, handle_signal);
 
     setup_bpf();
-    printf("eBPF program is running\n");
+    printf("eBPF program setup complete\n");
+
+    set_target_port(target_port);
+    printf("Target port set to %u\n", target_port);
 
     setup_socket();
     printf("Server socket created\n");
@@ -68,6 +81,9 @@ int main(int argc, char **argv)
     set_mysocket_map(client_sock);
     printf("Socket added to SOCKHASH.\n");
 
+    run_bpf();
+    printf("eBPF program attached to socket\n");
+
     printf("Waiting for messages, press Ctrl+C to exit...\n");
 
     char buffer[BUFFER_SIZE];
@@ -81,7 +97,7 @@ int main(int argc, char **argv)
         printf("Received message: %s\n", buffer);
 
         struct my_msg msg = {0};
-        int ret = bpf_map__lookup_elem(userMsg, NULL, 0, &msg, sizeof(msg), 0);
+        int ret = bpf_map__lookup_and_delete_elem(userMsg, NULL, 0, &msg, sizeof(msg), 0); // pop
         check_error(ret, "Failed to lookup userMsg map");
         print_msg(&msg);
     }
@@ -202,6 +218,13 @@ void set_mysocket_map(int fd)
     check_error(err, "Failed to update mysoc map");
 }
 
+void set_target_port(__u16 target_port)
+{
+    int key = 0;
+    int err = bpf_map_update_elem(targetport_fd, &key, &target_port, BPF_ANY);
+    check_error(err, "Failed to update targetpid map");
+}
+
 void handle_signal(int signal)
 {
     stop = true;
@@ -258,15 +281,17 @@ void setup_bpf()
     int err = bpf_object__load(obj);
     check_error(err, "Failed to load BPF object");
 
-    struct bpf_map *sockmap, *mysoc;
+    struct bpf_map *sockmap, *mysoc, *targetport;
 
-    // find the sockmap in the object file
+    // find the maps in the object file
     sockmap = bpf_object__find_map_by_name(obj, "sockmap");
     check_obj(sockmap, "Failed to find the sockmap");
     mysoc = bpf_object__find_map_by_name(obj, "mysoc");
     check_obj(mysoc, "Failed to find the mysoc map");
     userMsg = bpf_object__find_map_by_name(obj, "userMsg");
     check_obj(userMsg, "Failed to find the userMsg map");
+    targetport = bpf_object__find_map_by_name(obj, "targetport");
+    check_obj(targetport, "Failed to find the targetport map");
 
     // get the file descriptor for the map
     sockmap_fd = bpf_map__fd(sockmap);
@@ -275,6 +300,8 @@ void setup_bpf()
     check_fd(mysoc_fd, "Failed to get mysoc fd");
     userMsg_fd = bpf_map__fd(userMsg);
     check_fd(userMsg_fd, "Failed to get userMsg fd");
+    targetport_fd = bpf_map__fd(targetport);
+    check_fd(targetport_fd, "Failed to get targetport fd");
 
     struct bpf_program *prog_sockops, *prog_sk_msg;
 
@@ -288,6 +315,11 @@ void setup_bpf()
     // get the file descriptor for the cgroup
     cgroup_fd = open(CGROUP_PATH, O_RDONLY);
     check_fd(cgroup_fd, "Failed to open cgroup");
+}
+
+void run_bpf()
+{
+    int err = 0;
 
     // attach sockops_prog to the cgroup
     err = bpf_prog_attach(prog_fd_sockops, cgroup_fd, BPF_CGROUP_SOCK_OPS, 0);
