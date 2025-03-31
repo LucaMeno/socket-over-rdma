@@ -59,3 +59,4 @@ scap
 server
 client
 proxy
+test_rdma

@@ -34,17 +34,21 @@ Build and run the network monitor:
 ```sh
 make
 sudo ./scap
+```
 
+Test
+```sh
 # see output
 sudo cat /sys/kernel/debug/tracing/trace_pipe
 
 #test
 curl http://example.com
-netcat -l 1234
-echo "Hello, World!" | nc localhost 12345
+netcat localhost 7777
 
+```
 
-# see bpf
+see bpf
+```sh
 sudo bpftool prog show
 sudo bpftool map show
 ```

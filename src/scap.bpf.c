@@ -17,6 +17,7 @@ struct sock_descriptor
 	__u16 dport;
 };
 
+// list of sockets to redirect
 struct
 {
 	__uint(type, BPF_MAP_TYPE_SOCKHASH);
@@ -25,6 +26,7 @@ struct
 	__type(value, __u64);
 } sockmap SEC(".maps");
 
+// single socket of the receiver app in user space
 struct
 {
 	__uint(type, BPF_MAP_TYPE_SOCKHASH);
@@ -33,6 +35,7 @@ struct
 	__type(value, int);
 } mysoc SEC(".maps");
 
+// message structure to be passed to user space
 struct
 {
 	__uint(type, BPF_MAP_TYPE_QUEUE);
@@ -40,6 +43,7 @@ struct
 	__type(value, struct my_msg);
 } userMsg SEC(".maps");
 
+// store the target port set in user space
 struct
 {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -67,6 +71,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 	case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
 	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
 
+		// create the key for the sockmap
 		desc.ip = skops->local_ip4;
 		desc.sport = bpf_htons(skops->local_port);
 		desc.dport = bpf_ntohs(sk->dst_port);
@@ -80,16 +85,19 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		__u16 *port = bpf_map_lookup_elem(&targetport, &key);
 		if (port == NULL)
 		{
+			// port not set in user space
 			bpf_printk("Port not found");
 			return 0;
 		}
 		if (desc.dport != *port)
 		{
+			// socket i am not interested in
 			bpf_printk("Port not matched");
 			return 0;
 		}
 
-		// Add the socket to the map if it doesn't exist
+		// Add the socket to the map
+		// then we can intercept the msg on this socket
 		ret = bpf_sock_hash_update(skops, &sockmap, &desc, BPF_NOEXIST);
 
 		if (ret == 0)
@@ -107,26 +115,6 @@ int sockops_prog(struct bpf_sock_ops *skops)
 
 	return 0;
 }
-
-/*
-union scap_addr
-{
-	struct in6_addr in6;
-	struct in_addr in;
-};
-
-struct my_msg
-{
-	__u32 size;
-	union scap_addr laddr;
-	union scap_addr raddr;
-	__u16 lport;
-	__u16 rport;
-	__u16 af;
-
-	__u8 data[];
-};
-*/
 
 SEC("sk_msg")
 int sk_msg_prog(struct sk_msg_md *msg)
@@ -150,10 +138,12 @@ int sk_msg_prog(struct sk_msg_md *msg)
 
 	int k = 0; // key for the sockmap
 
+	// redirect the msg to my socket
 	int ret = bpf_msg_redirect_hash(msg, &mysoc, &k, BPF_F_INGRESS);
 
 	if (ret == SK_PASS)
 	{
+		// push the msg header to be able to read it in user space
 		if (bpf_map_push_elem(&userMsg, &my_msg, 0) != 0)
 		{
 			bpf_printk("Error on push");
