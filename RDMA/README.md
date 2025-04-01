@@ -5,6 +5,9 @@
 ```bash
 sudo apt update
 sudo apt install rdma-core ibverbs-utils # infiniband-diags
+
+# for devs
+sudo apt install ibverbs-utils libibverbs-dev 
 ```
 
 2. **Load the Soft-RoCE kernel module**  

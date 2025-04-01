@@ -37,9 +37,9 @@ int main()
         }
         else
         {
-            printf("  Max QP: %d\n", dev_attr.max_qp);
-            printf("  Max CQ: %d\n", dev_attr.max_cq);
-            printf("  Max MR Size: %llu\n", (unsigned long long)dev_attr.max_mr_size);
+            printf("  Max QP: %d\n", dev_attr.max_qp); // Max Queue Pairs
+            printf("  Max CQ: %d\n", dev_attr.max_cq); // Max Completion Queues
+            printf("  Max MR Size: %llu\n", (unsigned long long)dev_attr.max_mr_size); // Max Memory Region Size
         }
 
         // Close the device

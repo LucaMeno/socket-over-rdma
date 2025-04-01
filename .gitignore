@@ -58,5 +58,6 @@ dkms.conf
 scap
 server
 client
-proxy
 test_rdma
+rdma_client
+rdma_server

@@ -1,16 +1,15 @@
 CC = gcc
 CFLAGS = -Wall -O2
 LDFLAGS = -libverbs
-TARGET = test_rdma
-SRC = test_rdma.c
+TARGETS = rdma_server rdma_client
 
-all: $(TARGET)
+all: $(TARGETS)
 
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(LDFLAGS)
+rdma_server: rdma_server.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
-run: $(TARGET)
-	./$(TARGET)
+rdma_client: rdma_client.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGETS)

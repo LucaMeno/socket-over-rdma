@@ -17,7 +17,7 @@
 #define CGROUP_PATH "/sys/fs/cgroup"
 #define MAP_PATH "/sys/fs/bpf/mysoc"
 #define BUFFER_SIZE 2048
-#define PORT 5559
+#define SRV_PORT 5559
 #define SERVER_IP "127.0.0.1"
 
 volatile sig_atomic_t stop = false;
@@ -43,11 +43,11 @@ int sock = -1, client_sock = -1;
 void setup_socket();
 void cleanup_socket();
 void set_mysocket_map(int fd);
-void set_target_port(__u16 target_port);
+void set_target_port(__u16 target_port, __u16 server_port);
 void *client_thread(void *arg);
 void run_client();
 
-void print_msg(struct my_msg *msg);
+void print_msg(struct msg_header *msg);
 
 int main(int argc, char **argv)
 {
@@ -64,25 +64,25 @@ int main(int argc, char **argv)
     setup_bpf();
     printf("eBPF program setup complete\n");
 
-    set_target_port(target_port);
+    set_target_port(target_port, SRV_PORT);
     printf("Target port set to %u\n", target_port);
+
+    run_bpf();
+    printf("eBPF program attached to socket\n");
 
     setup_socket();
     printf("Server socket created\n");
 
     run_client();
 
-    printf("Waiting for client on port %d...\n", PORT);
+    printf("Waiting for client on port %d...\n", SRV_PORT);
     client_sock = accept(sock, NULL, NULL);
     check_fd(client_sock, "Accept failed");
 
     printf("Client connected.\n");
 
     set_mysocket_map(client_sock);
-    printf("Socket added to SOCKHASH.\n");
-
-    run_bpf();
-    printf("eBPF program attached to socket\n");
+    printf("Maps updated\n");
 
     printf("Waiting for messages, press Ctrl+C to exit...\n");
 
@@ -91,15 +91,29 @@ int main(int argc, char **argv)
     {
         printf("--------------------------------\n");
         ssize_t bytes_received = recv(client_sock, buffer, sizeof(buffer) - 1, 0);
-        if (bytes_received <= 0)
+        if (bytes_received <= 0 || bytes_received >= sizeof(buffer) - 1)
+        {
+            printf("Error receiving message or message too long\n");
             break;
+        }
         buffer[bytes_received] = '\0';
         printf("Received message: %s\n", buffer);
 
-        struct my_msg msg = {0};
+        // retrieve the message from the userMsg map
+        struct msg_header msg = {0};
         int ret = bpf_map__lookup_and_delete_elem(userMsg, NULL, 0, &msg, sizeof(msg), 0); // pop
-        check_error(ret, "Failed to lookup userMsg map");
-        print_msg(&msg);
+        if (ret != 0)
+        {
+            printf("No message data available\n");
+        }
+        else
+        {
+            print_msg(&msg);
+        }
+
+        // send the message back to the client
+        ssize_t bytes_sent = send(client_sock, buffer, sizeof(buffer) - 1, 0);
+        check_fd(bytes_sent, "Failed to send message");
     }
 
     cleanup_socket();
@@ -111,8 +125,9 @@ int main(int argc, char **argv)
     return 0;
 }
 
-void print_msg(struct my_msg *msg)
+void print_msg(struct msg_header *msg)
 {
+
     char laddr[INET_ADDRSTRLEN], raddr[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &msg->laddr.in, laddr, sizeof(laddr));
     inet_ntop(AF_INET, &msg->raddr.in, raddr, sizeof(raddr));
@@ -138,7 +153,7 @@ void *client_thread(void *arg)
 
     // Set up the server address
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
+    server_addr.sin_port = htons(SRV_PORT);
 
     int err = inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr);
     if (err != 1)
@@ -166,6 +181,15 @@ void *client_thread(void *arg)
 
     while (!stop)
     {
+        /*char buffer[BUFFER_SIZE];
+        ssize_t bytes_received = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+        if (bytes_received <= 0)
+        {
+            printf("Client: Server disconnected or error receiving message\n");
+            break;
+        }
+        buffer[bytes_received] = '\0'; // Null-terminate the string
+        printf("Client: Received: %s\n", buffer);*/
     }
 
     close(client_fd);
@@ -192,7 +216,7 @@ void setup_socket()
     struct sockaddr_in server_addr = {
         .sin_family = AF_INET,
         .sin_addr.s_addr = htonl(INADDR_ANY),
-        .sin_port = htons(PORT)};
+        .sin_port = htons(SRV_PORT)};
 
     int err = bind(sock, (struct sockaddr *)&server_addr, sizeof(server_addr));
     check_fd(err, "Failed to bind socket");
@@ -214,15 +238,53 @@ void cleanup_socket()
 void set_mysocket_map(int fd)
 {
     int key = 0;
-    int err = bpf_map_update_elem(mysoc_fd, &key, &fd, BPF_ANY);
+    int err = 0;
+
+    // set mysocket as the one to send the intercepted messages
+    err = bpf_map_update_elem(mysoc_fd, &key, &fd, BPF_ANY);
     check_error(err, "Failed to update mysoc map");
+
+    printf("listening socket registered in mysoc map\n");
+
+    // add mysocket to the sockmap to intercept the responses
+    struct sock_descriptor desc = {0};
+
+    struct sockaddr_in addr = {0};
+    socklen_t len = sizeof(addr);
+    err = getsockname(fd, (struct sockaddr *)&addr, &len);
+    check_fd(err, "Failed to get socket name");
+
+    struct sockaddr_in sa;
+    socklen_t sa_len = sizeof(sa);
+    err = getpeername(fd, (struct sockaddr *)&sa, &sa_len);
+    check_fd(err, "Failed to get peer name");
+
+    desc.ip = addr.sin_addr.s_addr;
+    desc.sport = SRV_PORT;
+    desc.dport = ntohs(sa.sin_port);
+
+    // add the socket to the sockmap
+    __u64 val = (__u64)client_sock;
+    err = bpf_map_update_elem(sockmap_fd, &desc, &val, BPF_ANY);
+    check_error(err, "Failed to update sockmap");
+
+    printf("Resp sk registed: ip=%u, sport=%u, dport=%u\n",
+           desc.ip,
+           desc.sport,
+           desc.dport);
 }
 
-void set_target_port(__u16 target_port)
+void set_target_port(__u16 target_port, __u16 server_port)
 {
     int key = 0;
-    int err = bpf_map_update_elem(targetport_fd, &key, &target_port, BPF_ANY);
-    check_error(err, "Failed to update targetpid map");
+    int err = 0;
+    err = bpf_map_update_elem(targetport_fd, &key, &target_port, BPF_ANY);
+    check_error(err, "Failed to update target_port map");
+
+    // set the server port
+    key = 1;
+    err = bpf_map_update_elem(targetport_fd, &key, &server_port, BPF_ANY);
+    check_error(err, "Failed to update server port map");
 }
 
 void handle_signal(int signal)
@@ -238,14 +300,20 @@ void cleanup_bpf()
     if (sockmap_fd > 0)
     {
         err = bpf_prog_detach2(prog_fd_sk_msg, sockmap_fd, BPF_SK_MSG_VERDICT);
-        check_error(err, "Failed to detach sk_msg_prog from sockmap");
+        if (err != 0)
+        {
+            perror("Failed to detach sk_msg_prog from sockmap");
+        }
     }
 
     // Detach sockops_prog from cgroup
     if (cgroup_fd > 0)
     {
         err = bpf_prog_detach2(prog_fd_sockops, cgroup_fd, BPF_CGROUP_SOCK_OPS);
-        check_error(err, "Failed to detach sockops_prog from cgroup");
+        if (err != 0)
+        {
+            perror("Failed to detach sockops_prog from cgroup");
+        }
     }
 
     // Close all file descriptors
@@ -330,6 +398,9 @@ void run_bpf()
     check_error(err, "Failed to attach sk_msg_prog to sockmap");
 }
 
+/**
+ * error if result is not 0
+ */
 void check_error(int result, const char *msg)
 {
     if (result != 0)
@@ -338,6 +409,9 @@ void check_error(int result, const char *msg)
     }
 }
 
+/**
+ * error if fd is negative
+ */
 void check_fd(int fd, const char *msg)
 {
     if (fd < 0)
@@ -346,6 +420,9 @@ void check_fd(int fd, const char *msg)
     }
 }
 
+/**
+ * error if obj is NULL
+ */
 void check_obj(void *obj, const char *msg)
 {
     if (!obj)
