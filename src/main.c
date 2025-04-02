@@ -30,9 +30,9 @@ void error_and_exit(const char *msg);
 
 struct bpf_object *obj;
 int prog_fd_sockops, prog_fd_sk_msg;
-int sockmap_fd, mysoc_fd, userMsg_fd, targetport_fd;
+int sockmap_fd, mysoc_fd, msg_to_user_fd, targetport_fd, msg_from_user_fd;
 int cgroup_fd;
-struct bpf_map *userMsg;
+struct bpf_map *msg_to_user, *msg_from_user;
 
 void setup_bpf();
 void run_bpf();
@@ -91,29 +91,41 @@ int main(int argc, char **argv)
     {
         printf("--------------------------------\n");
         ssize_t bytes_received = recv(client_sock, buffer, sizeof(buffer) - 1, 0);
-        if (bytes_received <= 0 || bytes_received >= sizeof(buffer) - 1)
+        if (bytes_received < 0 || bytes_received >= sizeof(buffer) - 1)
         {
             printf("Error receiving message or message too long\n");
-            break;
+            continue;
         }
         buffer[bytes_received] = '\0';
+
         printf("Received message: %s\n", buffer);
 
-        // retrieve the message from the userMsg map
-        struct msg_header msg = {0};
-        int ret = bpf_map__lookup_and_delete_elem(userMsg, NULL, 0, &msg, sizeof(msg), 0); // pop
+        // retrieve the message from the msg_to_user map
+        struct msg_header msg_h = {0};
+        int ret = bpf_map__lookup_and_delete_elem(msg_to_user, NULL, 0, &msg_h, sizeof(msg_h), 0); // pop
         if (ret != 0)
         {
             printf("No message data available\n");
         }
         else
         {
-            print_msg(&msg);
+            print_msg(&msg_h);
         }
 
-        // send the message back to the client
-        ssize_t bytes_sent = send(client_sock, buffer, sizeof(buffer) - 1, 0);
-        check_fd(bytes_sent, "Failed to send message");
+        // push the message header to the msg_from_user map
+        ret = bpf_map__update_elem(msg_from_user, NULL, 0, &msg_h, sizeof(msg_h), 0); // push
+        if (ret != 0)
+        {
+            printf("Error pushing message header to msg_from_user map\n");
+            // do not send the message back to the client
+        }
+        else
+        {
+            // send the message back to the client
+            ssize_t bytes_sent = send(client_sock, buffer, strlen(buffer), 0);
+            check_fd(bytes_sent, "Failed to send message");
+            printf("Response sent back to client\n");
+        }
     }
 
     cleanup_socket();
@@ -132,8 +144,7 @@ void print_msg(struct msg_header *msg)
     inet_ntop(AF_INET, &msg->laddr.in, laddr, sizeof(laddr));
     inet_ntop(AF_INET, &msg->raddr.in, raddr, sizeof(raddr));
 
-    printf("Data: size=%u, laddr=%s:%u, raddr=%s:%u\n",
-           msg->size,
+    printf("Data: laddr=%s:%u, raddr=%s:%u\n",
            laddr,
            ntohs(msg->lport),
            raddr,
@@ -142,7 +153,7 @@ void print_msg(struct msg_header *msg)
 
 void *client_thread(void *arg)
 {
-    sleep(3); // Wait for the server to be ready
+    sleep(2); // Wait for the server to be ready
 
     int client_fd;
     struct sockaddr_in server_addr;
@@ -246,7 +257,7 @@ void set_mysocket_map(int fd)
 
     printf("listening socket registered in mysoc map\n");
 
-    // add mysocket to the sockmap to intercept the responses
+    // add mysocket to the sockmap to allow the eBPF program to intercept the response messages
     struct sock_descriptor desc = {0};
 
     struct sockaddr_in addr = {0};
@@ -332,8 +343,14 @@ void cleanup_bpf()
     if (prog_fd_sk_msg > 0)
         close(prog_fd_sk_msg);
 
-    if (userMsg_fd > 0)
-        close(userMsg_fd);
+    if (msg_to_user_fd > 0)
+        close(msg_to_user_fd);
+
+    if (targetport_fd > 0)
+        close(targetport_fd);
+
+    if (msg_from_user_fd > 0)
+        close(msg_from_user_fd);
 
     // Destroy BPF object
     bpf_object__close(obj);
@@ -356,20 +373,24 @@ void setup_bpf()
     check_obj(sockmap, "Failed to find the sockmap");
     mysoc = bpf_object__find_map_by_name(obj, "mysoc");
     check_obj(mysoc, "Failed to find the mysoc map");
-    userMsg = bpf_object__find_map_by_name(obj, "userMsg");
-    check_obj(userMsg, "Failed to find the userMsg map");
+    msg_to_user = bpf_object__find_map_by_name(obj, "msg_to_user");
+    check_obj(msg_to_user, "Failed to find the msg_to_user map");
     targetport = bpf_object__find_map_by_name(obj, "targetport");
     check_obj(targetport, "Failed to find the targetport map");
+    msg_from_user = bpf_object__find_map_by_name(obj, "msg_from_user");
+    check_obj(msg_from_user, "Failed to find the msg_from_user map");
 
     // get the file descriptor for the map
     sockmap_fd = bpf_map__fd(sockmap);
     check_fd(sockmap_fd, "Failed to get sockmap fd");
     mysoc_fd = bpf_map__fd(mysoc);
     check_fd(mysoc_fd, "Failed to get mysoc fd");
-    userMsg_fd = bpf_map__fd(userMsg);
-    check_fd(userMsg_fd, "Failed to get userMsg fd");
+    msg_to_user_fd = bpf_map__fd(msg_to_user);
+    check_fd(msg_to_user_fd, "Failed to get msg_to_user fd");
     targetport_fd = bpf_map__fd(targetport);
     check_fd(targetport_fd, "Failed to get targetport fd");
+    msg_from_user_fd = bpf_map__fd(msg_from_user);
+    check_fd(msg_from_user_fd, "Failed to get msg_from_user fd");
 
     struct bpf_program *prog_sockops, *prog_sk_msg;
 

@@ -21,23 +21,37 @@ struct
 } sockmap SEC(".maps");
 
 /**
- * socket to send the data to user space
+ * single socket to send the data to user space
  */
 struct
 {
 	__uint(type, BPF_MAP_TYPE_SOCKHASH);
 	__uint(max_entries, 1);
-	__type(key, int);
-	__type(value, int);
+	__type(key, int);	// key is always 0
+	__type(value, int); // value is the fd of the socket
 } mysoc SEC(".maps");
 
-// message structure to be passed to user space
+/**
+ * push the data to user space
+ * the data is a msg_header struct
+ */
 struct
 {
 	__uint(type, BPF_MAP_TYPE_QUEUE);
 	__uint(max_entries, 2048);
 	__type(value, struct msg_header);
-} userMsg SEC(".maps");
+} msg_to_user SEC(".maps");
+
+/**
+ * store the data pushed from the user space
+ * the data is a msg_header struct
+ */
+struct
+{
+	__uint(type, BPF_MAP_TYPE_QUEUE);
+	__uint(max_entries, 2048);
+	__type(value, struct msg_header);
+} msg_from_user SEC(".maps");
 
 /**
  * two ports:
@@ -72,13 +86,20 @@ int sockops_prog(struct bpf_sock_ops *skops)
 	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
 
 		// create the key for the sockmap
-		desc.ip = skops->local_ip4;
+		/*desc.ip = skops->local_ip4;
 		desc.sport = (skops->local_port);
+		desc.dport = bpf_ntohs(sk->dst_port);*/
+
+		// TEST
+		desc.ip = sk->src_ip4;
+		desc.sport = sk->src_port;
 		desc.dport = bpf_ntohs(sk->dst_port);
 
 		bpf_printk("----------sockops-----------");
 
-		bpf_printk("sk: %p, ip: %u, sport: %u, dport: %u", skops->sk, desc.ip, desc.sport, desc.dport);
+		// print the key
+		/*bpf_printk("skops: ip: %u, sport: %u, dport: %u", skops->local_ip4, skops->local_port, bpf_ntohs(skops->remote_port));
+		bpf_printk("sk: ip: %u, sport: %u, dport: %u", sk->src_ip4, sk->src_port, bpf_ntohs(sk->dst_port));*/
 
 		// check the port
 		int key = 0;
@@ -90,10 +111,11 @@ int sockops_prog(struct bpf_sock_ops *skops)
 			bpf_printk("Port not found");
 			return 0;
 		}
-		if (desc.dport != *target_port) // check if the destination port is the target one
+		if (desc.dport != *target_port /*&& desc.sport != *target_port*/) // check if the destination port is the target one
 		{
 			// socket i am not interested in
-			bpf_printk("Port not matched");
+			bpf_printk("SKIP key: %u, sport %u, dport %u ",
+					   desc.ip, desc.sport, desc.dport);
 			return 0;
 		}
 
@@ -103,7 +125,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 
 		if (ret == 0)
 		{
-			bpf_printk("added sk: %p", skops->sk);
+			bpf_printk("ADD key: %u, sport %u, dport %u", desc.ip, desc.sport, desc.dport);
 		}
 		else
 		{
@@ -122,43 +144,56 @@ int sk_msg_prog(struct sk_msg_md *msg)
 {
 	bpf_printk("----------sk_msg-----------");
 
-	bpf_printk("sk_msg s: %p", msg->sk);
-
-	struct msg_header msg_header = {0};
-
 	if (msg->family != AF_INET) // only IPv4
 		return SK_PASS;
 
-	msg_header.size = msg->size;
-	msg_header.laddr.in.s_addr = msg->local_ip4;
-	msg_header.raddr.in.s_addr = msg->remote_ip4;
-	msg_header.lport = msg->local_port;
-	msg_header.rport = bpf_ntohs(msg->remote_port);
-	msg_header.af = msg->family;
-	// msg_header.orig_sock_id = msg->sk;
-
 	int k = 0; // key for the sockmap
-
-	// redirect the msg to my socket
-	int ret = 0;
+	int ret = SK_PASS;
 
 	// retrieve if the server port to understand if the msg is coming from the server
 	k = 1;
 	__u16 *server_port = bpf_map_lookup_elem(&targetport, &k);
 
-	if (server_port != NULL && msg_header.lport == *server_port)
+	if (server_port != NULL && msg->local_port == *server_port)
 	{
 		// msg coming from the server
-		bpf_printk("RESP FROM SERVER");
-		return SK_PASS; // don't redirect the msg to my socket
+		struct msg_header msg_header_ptr = {0};
 
-		/**
-		 * TODO
-		 * in some way, get the sk from the msg header
-		 * once we have the sk, we can use bpf_msg_redirect_hash to redirect the msg to the orignal destination
-		 * the key could be the sk_desc so i can use the sockmap to retrieve the sk
-		 */
+		// pop the original msg header from the msg_from_user map
+		ret = bpf_map_pop_elem(&msg_from_user, &msg_header_ptr);
+		if (ret != 0)
+		{
+			bpf_printk("Error on pop");
+			return SK_PASS;
+		}
+
+		// create the key for the sockmap
+		struct sock_descriptor desc = {0};
+		desc.ip = msg_header_ptr.laddr.in.s_addr;
+		desc.sport = msg_header_ptr.lport;
+		desc.dport = msg_header_ptr.rport;
+
+		// print the key
+		bpf_printk("POP key: ip: %u, sport: %u, dport: %u", desc.ip, desc.sport, desc.dport);
+
+		// redirect the msg to the original socket
+		ret = bpf_msg_redirect_hash(msg, &sockmap, &desc, BPF_F_INGRESS);
+
+		if (ret != SK_PASS)
+		{
+			bpf_printk("Error on redirect to original socket %d", ret);
+		}
+
+		bpf_printk("Redirect to original socket");
+		return SK_PASS;
 	}
+
+	struct msg_header msg_header = {0};
+	msg_header.laddr.in.s_addr = msg->local_ip4;
+	msg_header.raddr.in.s_addr = msg->remote_ip4;
+	msg_header.lport = msg->sk->src_port;
+	msg_header.rport = bpf_ntohs(msg->sk->dst_port);
+	msg_header.af = msg->family;
 
 	// redirect the msg to my socket
 	k = 0; // key for the sockmap
@@ -171,18 +206,12 @@ int sk_msg_prog(struct sk_msg_md *msg)
 	}
 
 	// push the msg header to be able to read it in user space
-	if (bpf_map_push_elem(&userMsg, &msg_header, 0) != 0)
+	if (bpf_map_push_elem(&msg_to_user, &msg_header, 0) != 0)
 	{
 		bpf_printk("Error on push");
 	}
 
-	bpf_printk("Size: %u, laddr: %u, raddr: %u, lport: %u, rport: %u, af: %u",
-			   msg_header.size,
-			   msg_header.laddr.in.s_addr,
-			   msg_header.raddr.in.s_addr,
-			   msg_header.lport,
-			   msg_header.rport,
-			   msg_header.af);
+	bpf_printk("PUSH key: ip: %u, sport: %u, dport: %u", msg_header.laddr.in.s_addr, msg_header.lport, msg_header.rport);
 
 	return ret;
 }
