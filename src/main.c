@@ -21,7 +21,7 @@
 #define SRV_PORT 5555
 #define SERVER_IP "127.0.0.1"
 #define TARGET_PORT 7777
-#define NUMBER_OF_SOCKETS 64
+#define NUMBER_OF_SOCKETS 5
 
 struct client_sk_t
 {
@@ -41,7 +41,7 @@ pthread_cond_t cond_var;
 
 struct bpf_object *obj;
 int prog_fd_sockops, prog_fd_sk_msg;
-int intercepted_sk_fd, free_sk_fd, target_ports_fd, socket_association_fd;
+int intercepted_sk_fd, free_sk_fd, target_ports_fd, socket_association_fd, server_port_fd;
 int cgroup_fd;
 struct bpf_map *free_sk;
 
@@ -60,11 +60,11 @@ void setup_sockets();
 void cleanup_socket();
 void set_mysocket_map(int fd);
 void *client_thread(void *arg);
-void add_sk_to_intercepted_sockets();
 void set_target_ports();
 void wait_for_msg();
 void set_socket_nonblocking(int sockfd);
-void set_free_sk();
+
+void push_sock_to_map();
 
 int main()
 {
@@ -82,11 +82,8 @@ int main()
     setup_sockets();
     printf("Sockets setup complete\n");
 
-    add_sk_to_intercepted_sockets();
-    printf("Sockets added to intercepted_sockets map\n");
-
-    set_free_sk();
-    printf("Free sockets set\n");
+    push_sock_to_map();
+    printf("Map updated\n");
 
     printf("Waiting for messages, press Ctrl+C to exit...\n");
     wait_for_msg();
@@ -100,62 +97,146 @@ int main()
     return 0;
 }
 
+void setup_sockets()
+{
+    // setup the CV
+    pthread_mutex_init(&mutex, NULL);
+    pthread_cond_init(&cond_var, NULL);
+
+    int opt = 1;
+    server_sk_fd = socket(AF_INET, SOCK_STREAM, 0);
+    check_fd(server_sk_fd, "Failed to create socket");
+
+    setsockopt(server_sk_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in server_addr = {
+        .sin_family = AF_INET,
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+        .sin_port = htons(SRV_PORT)};
+
+    int err = bind(server_sk_fd, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    check_fd(err, "Failed to bind socket");
+
+    err = listen(server_sk_fd, NUMBER_OF_SOCKETS);
+    check_fd(err, "Failed to listen on socket");
+
+    printf("Server listening on %s:%d\n", SERVER_IP, SRV_PORT);
+    printf("Launching client threads...\n");
+
+    // Create client threads
+    pthread_t t[NUMBER_OF_SOCKETS];
+    int client_ids[NUMBER_OF_SOCKETS];
+    int ret = 0;
+
+    for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
+    {
+        client_ids[i] = i;
+        ret = pthread_create(&t[i], NULL, client_thread, (void *)&client_ids[i]) != 0;
+        check_error(ret, "Failed to create client thread");
+    }
+
+    for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
+    {
+        client_sk_fd[i].fd = accept(server_sk_fd, NULL, NULL);
+        check_fd(err, "Failed to accept connection");
+
+        // set the socket to non-blocking
+        set_socket_nonblocking(client_sk_fd[i].fd);
+    }
+
+    // Set the server socket to non-blocking
+    set_socket_nonblocking(server_sk_fd);
+
+    printf("All clients connected (%d)\n", NUMBER_OF_SOCKETS);
+}
+
 void wait_for_msg()
 {
     char buffer[BUFFER_SIZE];
-    fd_set read_fds;
-    int max_fd = server_sk_fd;
+    fd_set read_fds, temp_fds;
     ssize_t bytes_received;
 
-    // Set up fd_set
+    // Initialize the file descriptor set
     FD_ZERO(&read_fds);
     FD_SET(server_sk_fd, &read_fds);
 
+    for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
+        if (client_sk_fd[i].fd != -1)
+            FD_SET(client_sk_fd[i].fd, &read_fds);
+
+    // Set the maximum file descriptor
+    int max_fd = server_sk_fd;
+    for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
+        if (client_sk_fd[i].fd > max_fd)
+            max_fd = client_sk_fd[i].fd;
+
     while (!stop)
     {
-        fd_set temp_fds = read_fds; // Copy the original set
+        temp_fds = read_fds;
+
         int activity = select(max_fd + 1, &temp_fds, NULL, NULL, NULL);
-        if (activity == -1 && errno == EINTR)
+        if (activity == -1)
         {
-            printf("Select interrupted by signal\n");
+            if (errno == EINTR)
+            {
+                printf("Select interrupted by signal\n");
+                break;
+            }
+            perror("select");
             break;
         }
-        check_fd(activity, "select");
 
+        // Handle data on client sockets
         for (int i = 0; i <= max_fd; i++)
         {
-            if (FD_ISSET(i, &temp_fds) && i != server_sk_fd)
+            if (i != server_sk_fd && FD_ISSET(i, &temp_fds))
             {
-                // Socket is ready to read data
-                printf("--------------------------------\n");
-
                 bytes_received = recv(i, buffer, sizeof(buffer) - 1, 0);
-                if (bytes_received < 0 || bytes_received >= sizeof(buffer) - 1)
+                if (bytes_received <= 0)
                 {
-                    printf("Error receiving message or message too long\n");
-                    continue;
+                    if (bytes_received == 0)
+                        printf("Client %d disconnected\n", i);
+                    else
+                        perror("recv");
+
+                    close(i);
+                    FD_CLR(i, &read_fds);
                 }
+                else
+                {
+                    buffer[bytes_received] = '\0';
+                    printf("--------------------------------\n");
+                    printf("Received message from %d: %s\n", i, buffer);
 
-                buffer[bytes_received] = '\0';
+                    int j = 0;
+                    for (; j < NUMBER_OF_SOCKETS; j++)
+                    {
+                        if (client_sk_fd[j].fd == i)
+                            break;
+                    }
+                    printf("Client %d port: %d\n", j, client_sk_fd[j].port);
+                    printf("Client %d IP: %u\n", j, client_sk_fd[j].ip);
+                    printf("Client %d fd: %d\n", j, client_sk_fd[j].fd);
 
-                printf("Received message: %s\n", buffer);
+                    // print the port and IP address of the client
+                    struct sockaddr_in client_addr;
+                    socklen_t addr_len = sizeof(client_addr);
+                    getpeername(i, (struct sockaddr *)&client_addr, &addr_len);
+                    char *client_ip = inet_ntoa(client_addr.sin_addr);
+                    int client_port = ntohs(client_addr.sin_port);
+                    printf("Client IP: %s, Port: %d\n", client_ip, client_port);
+
+                    // respond to the client with the same message
+                    ssize_t sent_size = send(i, buffer, bytes_received, 0);
+                    if (sent_size < 0)
+                    {
+                        perror("send");
+                    }
+                    else
+                        printf("Resp sent.\n");
+                }
             }
         }
-    }
-}
-
-void set_target_ports()
-{
-    // TODO: scale this to multiple ports
-
-    int ports_to_set[1] = {TARGET_PORT};
-    int n = sizeof(ports_to_set) / sizeof(ports_to_set[0]);
-    int val = 1;
-
-    for (int i = 0; i < n; i++)
-    {
-        int err = bpf_map_update_elem(target_ports_fd, &ports_to_set[i], &val, BPF_ANY);
-        check_error(err, "Failed to update target_ports map");
     }
 }
 
@@ -218,68 +299,50 @@ void set_socket_nonblocking(int sockfd)
     check_fd(ret, "fcntl(F_SETFL)");
 }
 
-void set_free_sk()
+void set_target_ports()
+{
+    // TODO: scale this to multiple ports
+
+    int ports_to_set[1] = {TARGET_PORT};
+    int n = sizeof(ports_to_set) / sizeof(ports_to_set[0]);
+    int val = 1;
+
+    // set the target ports
+    for (int i = 0; i < n; i++)
+    {
+        int err = bpf_map_update_elem(target_ports_fd, &ports_to_set[i], &val, BPF_ANY);
+        check_error(err, "Failed to update target_ports map");
+    }
+
+    // set the server port
+    int k = 0;
+    __u16 p = SRV_PORT;
+    int err = bpf_map_update_elem(server_port_fd, &k, &p, BPF_ANY);
+    check_error(err, "Failed to update server_port map");
+}
+
+void push_sock_to_map()
 {
     int err = 0;
     for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
     {
-        //  push the socket to the free_sockets map
-        err = bpf_map_update_elem(free_sk_fd, NULL, &client_sk_fd[i].fd, BPF_ANY);
+        struct sock_id sk_id = {0};
+        sk_id.ip = client_sk_fd[i].ip;
+        sk_id.sport = client_sk_fd[i].port;
+        sk_id.dport = SRV_PORT;
+
+        /*sk_id.ip = client_sk_fd[i].ip;
+        sk_id.sport = SRV_PORT;
+        sk_id.dport = client_sk_fd[i].port;*/
+
+        // push the socket to the free_sockets map
+        err = bpf_map_update_elem(free_sk_fd, NULL, &sk_id, BPF_ANY);
         check_error(err, "Failed to update free_sockets map");
+
+        // add the socket to the intercepted_sockets map
+        int err = bpf_map_update_elem(intercepted_sk_fd, &sk_id, &client_sk_fd[i].fd, BPF_ANY);
+        check_error(err, "Failed to add socket to intercepted_sockets map");
     }
-}
-
-void setup_sockets()
-{
-    // setup the CV
-    pthread_mutex_init(&mutex, NULL);
-    pthread_cond_init(&cond_var, NULL);
-
-    int opt = 1;
-    server_sk_fd = socket(AF_INET, SOCK_STREAM, 0);
-    check_fd(server_sk_fd, "Failed to create socket");
-
-    setsockopt(server_sk_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    struct sockaddr_in server_addr = {
-        .sin_family = AF_INET,
-        .sin_addr.s_addr = htonl(INADDR_ANY),
-        .sin_port = htons(SRV_PORT)};
-
-    int err = bind(server_sk_fd, (struct sockaddr *)&server_addr, sizeof(server_addr));
-    check_fd(err, "Failed to bind socket");
-
-    err = listen(server_sk_fd, NUMBER_OF_SOCKETS);
-    check_fd(err, "Failed to listen on socket");
-
-    printf("Server listening on %s:%d\n", SERVER_IP, SRV_PORT);
-    printf("Launching client threads...\n");
-
-    // Create client threads
-    pthread_t t[NUMBER_OF_SOCKETS];
-    int client_ids[NUMBER_OF_SOCKETS];
-    int ret = 0;
-
-    for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
-    {
-        client_ids[i] = i;
-        ret = pthread_create(&t[i], NULL, client_thread, (void *)&client_ids[i]) != 0;
-        check_error(ret, "Failed to create client thread");
-    }
-
-    for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
-    {
-        client_sk_fd[i].fd = accept(server_sk_fd, NULL, NULL);
-        check_fd(client_sk_fd[i].fd, "Failed to accept connection");
-
-        // Set the socket to non-blocking
-        set_socket_nonblocking(client_sk_fd[i].fd);
-    }
-
-    // Set the server socket to non-blocking
-    set_socket_nonblocking(server_sk_fd);
-
-    printf("All clients connected (%d)\n", NUMBER_OF_SOCKETS);
 }
 
 void cleanup_socket()
@@ -299,21 +362,6 @@ void cleanup_socket()
     // Destroy the mutex and condition variable
     pthread_mutex_destroy(&mutex);
     pthread_cond_destroy(&cond_var);
-}
-
-void add_sk_to_intercepted_sockets()
-{
-    // Add the sockets to the intercepted_sockets map
-    for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
-    {
-        struct sock_descriptor desc = {0};
-        desc.ip = client_sk_fd[i].ip;
-        desc.sport = SRV_PORT;
-        desc.dport = client_sk_fd[i].port;
-
-        int err = bpf_map_update_elem(intercepted_sk_fd, &desc, &client_sk_fd[i].fd, BPF_ANY);
-        check_error(err, "Failed to add socket to intercepted_sockets map");
-    }
 }
 
 void handle_signal(int signal)
@@ -376,7 +424,7 @@ void setup_bpf()
     int err = bpf_object__load(obj);
     check_error(err, "Failed to load BPF object");
 
-    struct bpf_map *intercepted_sockets, *socket_association, *target_ports;
+    struct bpf_map *intercepted_sockets, *socket_association, *target_ports, *server_port;
 
     // find the maps in the object file
     intercepted_sockets = bpf_object__find_map_by_name(obj, "intercepted_sockets");
@@ -387,6 +435,8 @@ void setup_bpf()
     check_obj(socket_association, "Failed to find the socket_association map");
     target_ports = bpf_object__find_map_by_name(obj, "target_ports");
     check_obj(target_ports, "Failed to find the target_ports map");
+    server_port = bpf_object__find_map_by_name(obj, "server_port");
+    check_obj(server_port, "Failed to find the server_port map");
 
     // get the file descriptor for the map
     intercepted_sk_fd = bpf_map__fd(intercepted_sockets);
@@ -397,6 +447,8 @@ void setup_bpf()
     check_fd(socket_association_fd, "Failed to get socket_association fd");
     target_ports_fd = bpf_map__fd(target_ports);
     check_fd(target_ports_fd, "Failed to get target_ports fd");
+    server_port_fd = bpf_map__fd(server_port);
+    check_fd(server_port_fd, "Failed to get server_port fd");
 
     struct bpf_program *prog_sockops, *prog_sk_msg;
 
