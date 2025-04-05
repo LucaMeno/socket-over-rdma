@@ -52,15 +52,12 @@ int main()
     while (1)
     {
         read(new_socket, buffer, BUFFER_SIZE);
-        if (strcmp(buffer, "STOP") == 0)
-        {
-            break;
-        }
-        if (RESPONSE)
-        {
-            send(new_socket, buffer, strlen(buffer), 0);
-        }
+
         printf("Received message: %s\n", buffer);
+
+#ifdef RESPONSE
+        send(new_socket, buffer, strlen(buffer), 0);
+#endif
     }
 
     // Close the socket

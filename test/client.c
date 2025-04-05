@@ -5,8 +5,14 @@
 #include <arpa/inet.h>
 #include "config.h"
 
-int main()
+int main(int argc, char **argv)
 {
+    int N;
+    if (argc != 2)
+        N = 0;
+    else
+        N = atoi(argv[1]);
+
     int sock = 0;
     struct sockaddr_in server_addr;
 
@@ -36,13 +42,13 @@ int main()
 
     printf("Connected to server\n");
 
-    int i = 0;
+    int i = N;
+    int gap = 100000;
     char msg[BUFFER_SIZE] = {0};
     while (1)
     {
-        if (i == 100000)
+        if (i == N + gap)
         {
-            sprintf(msg, "STOP");
             break;
         }
         else
@@ -57,11 +63,18 @@ int main()
         printf("Press Enter to continue...\n");
         getchar();
 
-        if (RESPONSE)
+#ifdef RESPONSE
+        //  Receive response from server
+        char buffer[BUFFER_SIZE];
+        ssize_t len = recv(sock, buffer, BUFFER_SIZE - 1, 0);
+        buffer[len] = '\0'; // Null-terminate the string
+        printf("Received message: %s\n", buffer);
+#endif
+        /*if (strcmp(msg, buffer) != 0)
         {
-            read(sock, msg, BUFFER_SIZE);
-            printf("Received message: %s\n", msg);
-        }
+            printf("Error: Received message does not match sent message\n");
+            break;
+        }*/
     }
 
     // Close the socket

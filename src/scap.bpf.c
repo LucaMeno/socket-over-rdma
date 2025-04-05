@@ -17,54 +17,31 @@ struct
 	__uint(type, BPF_MAP_TYPE_SOCKHASH);
 	__uint(max_entries, 1024);
 	__type(key, struct sock_descriptor);
-	__type(value, __u64);
-} sockmap SEC(".maps");
+	__type(value, __u32); // the value is the socket fd
+} intercepted_sockets SEC(".maps");
 
-/**
- * single socket to send the data to user space
- */
-struct
-{
-	__uint(type, BPF_MAP_TYPE_SOCKHASH);
-	__uint(max_entries, 1);
-	__type(key, int);	// key is always 0
-	__type(value, int); // value is the fd of the socket
-} mysoc SEC(".maps");
-
-/**
- * push the data to user space
- * the data is a msg_header struct
- */
 struct
 {
 	__uint(type, BPF_MAP_TYPE_QUEUE);
 	__uint(max_entries, 2048);
-	__type(value, struct msg_header);
-} msg_to_user SEC(".maps");
+	__type(value, __u32); // the value is the socket fd
+} free_sockets SEC(".maps");
 
-/**
- * store the data pushed from the user space
- * the data is a msg_header struct
- */
 struct
 {
-	__uint(type, BPF_MAP_TYPE_QUEUE);
+	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 2048);
-	__type(value, struct msg_header);
-} msg_from_user SEC(".maps");
+	__type(key, int); // proxy socket fd
+	__type(value, struct sock_descriptor);
+} socket_association SEC(".maps");
 
-/**
- * two ports:
- * 1. to select the sockets to intercept
- * 2. to send back the traffic coming from userpace
- */
 struct
 {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, 2);
-	__type(key, int);
-	__type(value, __u16);
-} targetport SEC(".maps");
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 64);
+	__type(key, __u16);
+	__type(value, int);
+} target_ports SEC(".maps");
 
 SEC("sockops")
 int sockops_prog(struct bpf_sock_ops *skops)
@@ -72,7 +49,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 	// get the socket operation type
 	int op = (int)skops->op;
 
-	struct sock_descriptor desc = {0};
+	struct sock_descriptor sock_key = {0};
 
 	struct bpf_sock *sk = skops->sk;
 	long ret;
@@ -84,53 +61,59 @@ int sockops_prog(struct bpf_sock_ops *skops)
 	{
 	case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
 	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
+		// new established connection
 
-		// create the key for the sockmap
-		/*desc.ip = skops->local_ip4;
-		desc.sport = (skops->local_port);
-		desc.dport = bpf_ntohs(sk->dst_port);*/
-
-		// TEST
-		desc.ip = sk->src_ip4;
-		desc.sport = sk->src_port;
-		desc.dport = bpf_ntohs(sk->dst_port);
+		sock_key.ip = sk->src_ip4;
+		sock_key.sport = sk->src_port;
+		sock_key.dport = bpf_ntohs(sk->dst_port);
 
 		bpf_printk("----------sockops-----------");
 
-		// print the key
-		/*bpf_printk("skops: ip: %u, sport: %u, dport: %u", skops->local_ip4, skops->local_port, bpf_ntohs(skops->remote_port));
-		bpf_printk("sk: ip: %u, sport: %u, dport: %u", sk->src_ip4, sk->src_port, bpf_ntohs(sk->dst_port));*/
+		// check if the destination port is the target one
+		int key = sock_key.dport;
+		int *is_port_target = bpf_map_lookup_elem(&target_ports, &key);
 
-		// check the port
-		int key = 0;
-		__u16 *target_port = bpf_map_lookup_elem(&targetport, &key);
-
-		if (target_port == NULL)
+		if (is_port_target == NULL)
 		{
-			// port not set in user space
-			bpf_printk("Port not found");
-			return 0;
-		}
-		if (desc.dport != *target_port /*&& desc.sport != *target_port*/) // check if the destination port is the target one
-		{
-			// socket i am not interested in
-			bpf_printk("SKIP key: %u, sport %u, dport %u ",
-					   desc.ip, desc.sport, desc.dport);
+			bpf_printk("SKIP key:: ip: %u, sport %u, dport %u ",
+					   sock_key.ip, sock_key.sport, sock_key.dport);
 			return 0;
 		}
 
 		// Add the socket to the map
-		// then we can intercept the msg on this socket
-		ret = bpf_sock_hash_update(skops, &sockmap, &desc, BPF_NOEXIST);
+		ret = bpf_sock_hash_update(skops, &intercepted_sockets, &sock_key, BPF_NOEXIST);
 
 		if (ret == 0)
 		{
-			bpf_printk("ADD key: %u, sport %u, dport %u", desc.ip, desc.sport, desc.dport);
+			bpf_printk("ADD key: %u, sport %u, dport %u", sock_key.ip, sock_key.sport, sock_key.dport);
 		}
 		else
 		{
 			bpf_printk("[skops=%p] bpf_sock_hash_update %ld", skops->sk, ret);
 		}
+
+		// get one free socket from the free_sockets map
+		__u32 free_sk = 0;
+		ret = bpf_map_pop_elem(&free_sockets, &free_sk); // pop a free socket from the queue
+		if (ret != 0)
+		{
+			bpf_printk("Error on pop free socket");
+			return 0;
+		}
+
+		// add the socket association to the map
+		ret = bpf_map_update_elem(&socket_association, &free_sk, &sock_key, BPF_NOEXIST);
+		if (ret != 0)
+		{
+			bpf_printk("Error on update socket association");
+			return 0;
+		}
+
+		bpf_printk("ASSOC val:: key: %u, sport %u, dport %u",
+				   sock_key.ip, sock_key.sport, sock_key.dport);
+		bpf_printk("ASSOC key:: free_sk: %u", free_sk);
+
+		// TODO: REMOVE THE SOCKET FROM THE MAP WHEN THE CONNECTION IS CLOSED
 
 	default:
 		break;
@@ -149,7 +132,7 @@ int sk_msg_prog(struct sk_msg_md *msg)
 
 	int k = 0; // key for the sockmap
 	int ret = SK_PASS;
-
+	/*
 	// retrieve if the server port to understand if the msg is coming from the server
 	k = 1;
 	__u16 *server_port = bpf_map_lookup_elem(&targetport, &k);
@@ -212,7 +195,7 @@ int sk_msg_prog(struct sk_msg_md *msg)
 	}
 
 	bpf_printk("PUSH key: ip: %u, sport: %u, dport: %u", msg_header.laddr.in.s_addr, msg_header.lport, msg_header.rport);
-
+*/
 	return ret;
 }
 
