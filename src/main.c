@@ -122,7 +122,10 @@ int main(int argc, char **argv)
         else
         {
             // send the message back to the client
-            ssize_t bytes_sent = send(client_sock, buffer, strlen(buffer), 0);
+            char *resp = malloc(sizeof(struct msg_header) + bytes_received);
+            memcpy(resp, &msg_h, sizeof(struct msg_header));
+            memcpy(resp + sizeof(struct msg_header), buffer, bytes_received);
+            ssize_t bytes_sent = send(client_sock, resp, sizeof(resp), 0);
             check_fd(bytes_sent, "Failed to send message");
             printf("Response sent back to client\n");
         }
