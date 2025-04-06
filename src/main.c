@@ -21,7 +21,7 @@
 #define SRV_PORT 5555
 #define SERVER_IP "127.0.0.1"
 #define TARGET_PORT 7777
-#define NUMBER_OF_SOCKETS 5
+#define NUMBER_OF_SOCKETS 64
 
 struct client_sk_t
 {
@@ -43,7 +43,6 @@ struct bpf_object *obj;
 int prog_fd_sockops, prog_fd_sk_msg;
 int intercepted_sk_fd, free_sk_fd, target_ports_fd, socket_association_fd, server_port_fd;
 int cgroup_fd;
-struct bpf_map *free_sk;
 
 void handle_signal(int signal);
 void check_error(int result, const char *msg);
@@ -137,8 +136,8 @@ void setup_sockets()
 
     for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
     {
-        client_sk_fd[i].fd = accept(server_sk_fd, NULL, NULL);
-        check_fd(err, "Failed to accept connection");
+        int tmp_fd = accept(server_sk_fd, NULL, NULL);
+        check_fd(tmp_fd, "Failed to accept connection");
 
         // set the socket to non-blocking
         set_socket_nonblocking(client_sk_fd[i].fd);
@@ -214,17 +213,7 @@ void wait_for_msg()
                         if (client_sk_fd[j].fd == i)
                             break;
                     }
-                    printf("Client %d port: %d\n", j, client_sk_fd[j].port);
-                    printf("Client %d IP: %u\n", j, client_sk_fd[j].ip);
-                    printf("Client %d fd: %d\n", j, client_sk_fd[j].fd);
-
-                    // print the port and IP address of the client
-                    struct sockaddr_in client_addr;
-                    socklen_t addr_len = sizeof(client_addr);
-                    getpeername(i, (struct sockaddr *)&client_addr, &addr_len);
-                    char *client_ip = inet_ntoa(client_addr.sin_addr);
-                    int client_port = ntohs(client_addr.sin_port);
-                    printf("Client IP: %s, Port: %d\n", client_ip, client_port);
+                    printf("Client %d IP: %u, Port: %u\n", j, client_sk_fd[j].ip, client_sk_fd[j].port);
 
                     // respond to the client with the same message
                     ssize_t sent_size = send(i, buffer, bytes_received, 0);
@@ -233,7 +222,9 @@ void wait_for_msg()
                         perror("send");
                     }
                     else
+                    {
                         printf("Resp sent.\n");
+                    }
                 }
             }
         }
@@ -281,6 +272,8 @@ void *client_thread(void *arg)
     check_fd(err, "Failed to get socket name");
     client_sk_fd[index].ip = addr.sin_addr.s_addr;
 
+    client_sk_fd[index].fd = client_fd;
+
     // wait on the condition variable
     pthread_mutex_lock(&mutex);
     while (shared == 0)
@@ -302,7 +295,6 @@ void set_socket_nonblocking(int sockfd)
 void set_target_ports()
 {
     // TODO: scale this to multiple ports
-
     int ports_to_set[1] = {TARGET_PORT};
     int n = sizeof(ports_to_set) / sizeof(ports_to_set[0]);
     int val = 1;
@@ -330,10 +322,6 @@ void push_sock_to_map()
         sk_id.ip = client_sk_fd[i].ip;
         sk_id.sport = client_sk_fd[i].port;
         sk_id.dport = SRV_PORT;
-
-        /*sk_id.ip = client_sk_fd[i].ip;
-        sk_id.sport = SRV_PORT;
-        sk_id.dport = client_sk_fd[i].port;*/
 
         // push the socket to the free_sockets map
         err = bpf_map_update_elem(free_sk_fd, NULL, &sk_id, BPF_ANY);
@@ -424,7 +412,7 @@ void setup_bpf()
     int err = bpf_object__load(obj);
     check_error(err, "Failed to load BPF object");
 
-    struct bpf_map *intercepted_sockets, *socket_association, *target_ports, *server_port;
+    struct bpf_map *intercepted_sockets, *socket_association, *target_ports, *server_port, *free_sk;
 
     // find the maps in the object file
     intercepted_sockets = bpf_object__find_map_by_name(obj, "intercepted_sockets");

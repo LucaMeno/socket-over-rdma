@@ -49,9 +49,15 @@ int main()
 
     printf("Client connected.\n");
 
+    ssize_t bytes_received;
     while (1)
     {
-        read(new_socket, buffer, BUFFER_SIZE);
+        bytes_received = read(new_socket, buffer, BUFFER_SIZE);
+        if (bytes_received <= 0)
+        {
+            printf("Client disconnected or error occurred.\n");
+            break;
+        }
 
         printf("Received message: %s\n", buffer);
 
@@ -62,8 +68,15 @@ int main()
 
     // Close the socket
     printf("Stopping server...\n");
-    close(new_socket);
-    close(server_fd);
+    if (close(new_socket) < 0)
+    {
+        perror("Close failed");
+    }
+    if (close(server_fd) < 0)
+    {
+        perror("Close failed");
+    }
+    printf("Server stopped.\n");
 
     return 0;
 }

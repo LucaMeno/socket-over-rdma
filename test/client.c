@@ -5,6 +5,8 @@
 #include <arpa/inet.h>
 #include "config.h"
 
+#define RESPONSE
+
 int main(int argc, char **argv)
 {
     int N;
@@ -51,6 +53,10 @@ int main(int argc, char **argv)
         {
             break;
         }
+        else if (i == 10)
+        {
+            break;
+        }
         else
         {
             sprintf(msg, "%d", i);
@@ -69,17 +75,22 @@ int main(int argc, char **argv)
         ssize_t len = recv(sock, buffer, BUFFER_SIZE - 1, 0);
         buffer[len] = '\0'; // Null-terminate the string
         printf("Received message: %s\n", buffer);
-#endif
-        /*if (strcmp(msg, buffer) != 0)
+        if (strcmp(msg, buffer) != 0)
         {
             printf("Error: Received message does not match sent message\n");
             break;
-        }*/
+        }
+#endif
     }
 
     // Close the socket
-    close(sock);
     printf("Disconnected from server\n");
+    if(close(sock) < 0)
+    {
+        perror("Socket close failed");
+        exit(EXIT_FAILURE);
+    }
+    printf("Socket closed\n");
 
     return 0;
 }

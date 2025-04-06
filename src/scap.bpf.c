@@ -164,6 +164,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		// TODO: REMOVE THE SOCKET FROM THE MAP WHEN THE CONNECTION IS CLOSED
 
 	default:
+		// bpf_printk("Unknown socket operation: %d\n", op);
 		break;
 	}
 
@@ -175,89 +176,63 @@ int sk_msg_prog(struct sk_msg_md *msg)
 {
 	bpf_printk("----------sk_msg-----------");
 
-	if (msg->family != AF_INET) // only IPv4
+	// Only process IPv4 packets
+	if (msg->family != AF_INET)
 		return SK_PASS;
 
-	int k = 0; // key for the sockmap
+	int k = 0; // Key for the sockmap
 	int ret = SK_PASS;
 
-	// retrieve the server port to understand if the msg is coming from the server
-	__u16 *p = bpf_map_lookup_elem(&server_port, &k);
-	if (p == NULL)
+	// Retrieve the server port for matching with the destination port
+	__u16 *server_port_ptr = bpf_map_lookup_elem(&server_port, &k);
+	if (!server_port_ptr)
 	{
 		bpf_printk("Error on lookup server port");
 		return SK_PASS;
 	}
 
-	// prepare the key for the sockmap
+	// Prepare the key for the sockmap
+	struct sock_id sk_id = {msg->sk->src_ip4, msg->sk->src_port, bpf_ntohs(msg->sk->dst_port)};
+
+	// Initialize association structure
 	struct association_t sk_association_key = {0};
-	struct sock_id sk_id = {0};
-	sk_id.ip = msg->sk->src_ip4;
-	sk_id.sport = msg->sk->src_port;
-	sk_id.dport = bpf_ntohs(msg->sk->dst_port);
+	struct association_t *sk_association_val = NULL;
 
-	bpf_printk("Original:: ip: %u, sport %u, dport %u",
-			   sk_id.ip, sk_id.sport, sk_id.dport);
-
-	if (msg->local_port == *p) // 5555
+	if (sk_id.dport == *server_port_ptr) // Message coming from the server
 	{
-		// msg coming from the server
-		bpf_printk("From proxy");
+		bpf_printk("P -> A");
 		sk_association_key.proxy = sk_id;
-
-		// swap the sport and dport
-		__u16 tmp = sk_association_key.proxy.sport;
-		sk_association_key.proxy.sport = sk_association_key.proxy.dport;
-		sk_association_key.proxy.dport = tmp;
-
-		// lookup the socket association
-		struct association_t *sk_association_val = bpf_map_lookup_elem(&socket_association, &sk_association_key);
-		if (sk_association_val == NULL)
-		{
-			bpf_printk("Error on lookup socket association - 1");
-			return SK_PASS;
-		}
-
-		struct sock_id dest_sk_id = sk_association_val->app;
-
-		bpf_printk("after lookup:: ip: %u, sport %u, dport %u",
-				   dest_sk_id.ip, dest_sk_id.sport, dest_sk_id.dport);
-
-		// redirect the msg to the associated socket
-		ret = bpf_msg_redirect_hash(msg, &intercepted_sockets, &dest_sk_id, BPF_F_INGRESS);
-		if (ret != SK_PASS)
-		{
-			bpf_printk("Error on redirect msg %ld", ret);
-			return SK_PASS;
-		}
 	}
-	else
+	else // Message coming from the app
 	{
-		bpf_printk("From app");
+		bpf_printk("A -> P");
 		sk_association_key.app = sk_id;
-
-		// lookup the socket association
-		struct association_t *sk_association_val = bpf_map_lookup_elem(&socket_association, &sk_association_key);
-		if (sk_association_val == NULL)
-		{
-			bpf_printk("Error on lookup socket association - 2");
-			return SK_PASS;
-		}
-		struct sock_id dest_sk_id = sk_association_val->proxy;
-
-		bpf_printk("after lookup:: ip: %u, sport %u, dport %u",
-				   dest_sk_id.ip, dest_sk_id.sport, dest_sk_id.dport);
-
-		// redirect the msg to the associated socket
-		ret = bpf_msg_redirect_hash(msg, &intercepted_sockets, &dest_sk_id, BPF_F_INGRESS);
-		if (ret != SK_PASS)
-		{
-			bpf_printk("Error on redirect msg %ld", ret);
-			return SK_PASS;
-		}
-
-		bpf_printk("Redirect msg to proxy");
 	}
+
+	bpf_printk("SRC -- ip: %u, sport: %u, dport: %u", sk_id.ip, sk_id.sport, sk_id.dport);
+
+	// Lookup socket association
+	sk_association_val = bpf_map_lookup_elem(&socket_association, &sk_association_key);
+	if (!sk_association_val)
+	{
+		bpf_printk("Error on lookup socket association");
+		return SK_PASS;
+	}
+
+	// Determine the destination socket ID based on the direction
+	struct sock_id dest_sk_id = (sk_id.dport == *server_port_ptr) ? sk_association_val->app : sk_association_val->proxy;
+
+	bpf_printk("DST -- ip: %u, sport: %u, dport: %u", dest_sk_id.ip, dest_sk_id.sport, dest_sk_id.dport);
+
+	// Redirect the message to the associated socket
+	ret = bpf_msg_redirect_hash(msg, &intercepted_sockets, &dest_sk_id, BPF_F_INGRESS);
+	if (ret != SK_PASS)
+	{
+		bpf_printk("Error on redirect msg %ld", ret);
+		return SK_PASS;
+	}
+
+	bpf_printk("Redirect msg to %s", (sk_id.dport == *server_port_ptr) ? "app" : "proxy");
 
 	return ret;
 }
