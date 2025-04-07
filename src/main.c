@@ -42,6 +42,8 @@ pthread_cond_t cond_var;
 struct bpf_object *obj;
 int prog_fd_sockops, prog_fd_sk_msg;
 int intercepted_sk_fd, free_sk_fd, target_ports_fd, socket_association_fd, server_port_fd;
+struct bpf_program *prog_tcp_destroy_sock;
+struct bpf_link *tcp_destroy_link;
 int cgroup_fd;
 
 void handle_signal(int signal);
@@ -57,7 +59,6 @@ void cleanup_bpf();
 
 void setup_sockets();
 void cleanup_socket();
-void set_mysocket_map(int fd);
 void *client_thread(void *arg);
 void set_target_ports();
 void wait_for_msg();
@@ -381,6 +382,16 @@ void cleanup_bpf()
         }
     }
 
+    // Detach tcp_destroy_sock_prog from tracepoint
+    if (tcp_destroy_link != NULL)
+    {
+        err = bpf_link__destroy(tcp_destroy_link);
+        if (err != 0)
+        {
+            perror("Failed to detach tcp_destroy_sock_prog from tracepoint");
+        }
+    }
+
     // Close all file descriptors
     wrap_close(intercepted_sk_fd);
     wrap_close(free_sk_fd);
@@ -450,6 +461,9 @@ void setup_bpf()
     // get the file descriptor for the cgroup
     cgroup_fd = open(CGROUP_PATH, O_RDONLY);
     check_fd(cgroup_fd, "Failed to open cgroup");
+
+    prog_tcp_destroy_sock = bpf_object__find_program_by_name(obj, "tcp_destroy_sock_prog");
+    check_obj(prog_tcp_destroy_sock, "Failed to find tcp_destroy_sock_prog");
 }
 
 void run_bpf()
@@ -463,6 +477,10 @@ void run_bpf()
     // Attach sk_msg_prog to the sockmap
     err = bpf_prog_attach(prog_fd_sk_msg, intercepted_sk_fd, BPF_SK_MSG_VERDICT, 0);
     check_error(err, "Failed to attach sk_msg_prog to sockmap");
+
+    // Attach tcp_destroy_sock_prog to the tracepoint
+    tcp_destroy_link = bpf_program__attach_tracepoint(prog_tcp_destroy_sock, "tcp", "tcp_destroy_sock");
+    check_obj(tcp_destroy_link, "Failed to attach tcp_destroy_sock_prog to tracepoint");
 }
 
 /**

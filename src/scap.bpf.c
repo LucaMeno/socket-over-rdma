@@ -1,16 +1,30 @@
 // scap.bpf.c
-#include <linux/bpf.h>
+// #include <linux/bpf.h>
+/*
 #include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
+#include <linux/types.h>
 #include <bpf/bpf_endian.h>
-#include <linux/tcp.h>
-#include <linux/in.h>
+#include "common.h"
+#include "vmlinux.h"
+*/
+
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+#include <bpf/bpf_endian.h>
+
 #include "common.h"
 
 #define AF_INET 2
 #define AF_INET6 10
 
+// #define DEBUG 1
+
 /**
  * list of all the socket from witch i want to intercept the data
+ * the ones of user space are inserted from the proxy app
  */
 struct
 {
@@ -22,6 +36,7 @@ struct
 
 /**
  * list of all the socket that are free to be used to reach the user space
+ * filled by the proxy app
  */
 struct
 {
@@ -30,16 +45,10 @@ struct
 	__type(value, struct sock_id); // the value is the socket fd
 } free_sockets SEC(".maps");
 
-struct association_t
-{
-	struct sock_id proxy;
-	struct sock_id app;
-};
-
 /**
  * association between:
- * - the socket fd of one of the free socket
- * - one of the socket in the intercepted_sockets map
+ * - the socket of one of the free socket (userpace)
+ * - the socket of the application
  */
 struct
 {
@@ -90,6 +99,9 @@ int sockops_prog(struct bpf_sock_ops *skops)
 
 	switch (op)
 	{
+	case BPF_SOCK_OPS_STATE_CB:
+		bpf_printk("===========================================BPF_SOCK_OPS_STATE_CB===========================================");
+		break;
 	case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
 	case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
 		// new established connection
@@ -112,16 +124,17 @@ int sockops_prog(struct bpf_sock_ops *skops)
 
 		bpf_printk("----------sockops-----------");
 
-		// Add the socket to the map
+		// Add the socket to the map so is possible to intercept the msg
 		ret = bpf_sock_hash_update(skops, &intercepted_sockets, &sk_id, BPF_NOEXIST);
 
 		if (ret == 0)
 		{
-			bpf_printk("ADD key: %u, sport %u, dport %u", sk_id.ip, sk_id.sport, sk_id.dport);
+			// bpf_printk("ADD key: %u, sport %u, dport %u", sk_id.ip, sk_id.sport, sk_id.dport);
 		}
 		else
 		{
 			bpf_printk("[skops=%p] bpf_sock_hash_update %ld", skops->sk, ret);
+			return 0;
 		}
 
 		// get one free socket from the free_sockets map
@@ -155,14 +168,11 @@ int sockops_prog(struct bpf_sock_ops *skops)
 			return 0;
 		}
 
-		bpf_printk("ASSOC app:: ip: %u, sport %u, dport %u // proxy:: ip: %u, sport %u, dport %u",
+		bpf_printk("ADD-ASSOC app ip:%u;sp:%u;dp%u//proxy ip:%u;sp:%u,dp%u",
 				   sk_association_val.app.ip, sk_association_val.app.sport, sk_association_val.app.dport,
 				   sk_association_key.proxy.ip, sk_association_key.proxy.sport, sk_association_key.proxy.dport);
 
 		break;
-
-		// TODO: REMOVE THE SOCKET FROM THE MAP WHEN THE CONNECTION IS CLOSED
-
 	default:
 		// bpf_printk("Unknown socket operation: %d\n", op);
 		break;
@@ -200,12 +210,10 @@ int sk_msg_prog(struct sk_msg_md *msg)
 
 	if (sk_id.dport == *server_port_ptr) // Message coming from the server
 	{
-		bpf_printk("P -> A");
 		sk_association_key.proxy = sk_id;
 	}
 	else // Message coming from the app
 	{
-		bpf_printk("A -> P");
 		sk_association_key.app = sk_id;
 	}
 
@@ -235,6 +243,73 @@ int sk_msg_prog(struct sk_msg_md *msg)
 	bpf_printk("Redirect msg to %s", (sk_id.dport == *server_port_ptr) ? "app" : "proxy");
 
 	return ret;
+}
+
+SEC("tracepoint/tcp/tcp_destroy_sock")
+int tcp_destroy_sock_prog(struct trace_event_raw_tcp_event_sk *ctx)
+{
+	// check if it is one of the target socket
+	struct sock_id sk_id_app = {0};
+	sk_id_app.sport = ctx->sport;
+	sk_id_app.dport = ctx->dport;
+
+	__u32 ip1 = (__u32)ctx->saddr[0] << 24;
+	__u32 ip2 = (__u32)ctx->saddr[1] << 16;
+	__u32 ip3 = (__u32)ctx->saddr[2] << 8;
+	__u32 ip4 = (__u32)ctx->saddr[3];
+
+	sk_id_app.ip = ip1 | ip2 | ip3 | ip4;
+	sk_id_app.ip = bpf_ntohl(sk_id_app.ip);
+
+	int err = 0;
+
+	// lookup the socket in the socket_association map
+	struct association_t sk_association_key_1 = {0};
+	sk_association_key_1.app = sk_id_app;
+
+	struct association_t *sk_association_val = bpf_map_lookup_elem(&socket_association, &sk_association_key_1);
+	if (!sk_association_val)
+	{
+		// not foud
+		// bpf_printk("Error on lookup socket association");
+		return 0;
+	}
+
+	bpf_printk("----------sk_close-----------");
+	bpf_printk("REM-ASSOC app ip:%u;sp:%u;dp%u//proxy ip:%u;sp:%u;dp%u",
+			   sk_association_key_1.app.ip, sk_association_key_1.app.sport, sk_association_key_1.app.dport,
+			   sk_association_val->proxy.ip, sk_association_val->proxy.sport, sk_association_val->proxy.dport);
+
+	struct sock_id sk_id_proxy = sk_association_val->proxy;
+
+	// remove the socket from the socket_association map
+	err = bpf_map_delete_elem(&socket_association, &sk_association_key_1);
+
+	// remove also the reverse association
+	struct association_t sk_association_key_2 = {0};
+	sk_association_key_2.proxy = sk_id_proxy;
+
+	err = bpf_map_delete_elem(&socket_association, &sk_association_key_2);
+	if (err != 0)
+	{
+		bpf_printk("Error on delete socket association - 1");
+		return 0;
+	}
+
+	// the socket is not removed from the intercepted_sockets map
+	// because it will be automatically removed when the socket is closed
+	// push the proxy socket to the free_sockets map
+	err = bpf_map_push_elem(&free_sockets, &sk_id_proxy, BPF_ANY);
+	if (err != 0)
+	{
+		bpf_printk("Error on push free socket");
+		return 0;
+	}
+
+	bpf_printk("Free socket: ip: %u, sport: %u, dport: %u",
+			   sk_id_proxy.ip, sk_id_proxy.sport, sk_id_proxy.dport);
+
+	return 0;
 }
 
 char LICENSE[] SEC("license") = "GPL";

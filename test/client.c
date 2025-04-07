@@ -45,7 +45,7 @@ int main(int argc, char **argv)
     printf("Connected to server\n");
 
     int i = N;
-    int gap = 100000;
+    int gap = 1000000;
     char msg[BUFFER_SIZE] = {0};
     while (1)
     {
@@ -64,10 +64,12 @@ int main(int argc, char **argv)
         i++;
         send(sock, msg, strlen(msg), 0);
         printf("Sent message: %s\n", msg);
-
-        // wait user input
-        printf("Press Enter to continue...\n");
-        getchar();
+        if (argc != 2)
+        {
+            // wait user input
+            printf("Press Enter to continue...\n");
+            getchar();
+        }
 
 #ifdef RESPONSE
         //  Receive response from server
@@ -85,7 +87,7 @@ int main(int argc, char **argv)
 
     // Close the socket
     printf("Disconnected from server\n");
-    if(close(sock) < 0)
+    if (close(sock) < 0)
     {
         perror("Socket close failed");
         exit(EXIT_FAILURE);
