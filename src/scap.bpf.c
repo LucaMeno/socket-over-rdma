@@ -17,6 +17,7 @@
 
 #include "common.h"
 
+#define DEBUG 1
 #define AF_INET 2
 #define AF_INET6 10
 
@@ -110,19 +111,23 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		sk_id.sport = sk->src_port;
 		sk_id.dport = bpf_ntohs(sk->dst_port);
 
+
 		// check if the destination port is the target one
 		int key = sk_id.dport;
 		int *is_port_target = bpf_map_lookup_elem(&target_ports, &key);
 
 		if (is_port_target == NULL)
 		{
-
-			// bpf_printk("----------sockops-----------");
 			// bpf_printk("SKIP key:: ip: %u, sport %u, dport %u ", sk_id.ip, sk_id.sport, sk_id.dport);
 			return 0;
 		}
 
+		
+		bpf_printk("DEST IP: %u", sk->dst_ip4);
+
+#ifdef DEBUG
 		bpf_printk("----------sockops-----------");
+#endif // DEBUG
 
 		// Add the socket to the map so is possible to intercept the msg
 		ret = bpf_sock_hash_update(skops, &intercepted_sockets, &sk_id, BPF_NOEXIST);
@@ -168,9 +173,11 @@ int sockops_prog(struct bpf_sock_ops *skops)
 			return 0;
 		}
 
-		bpf_printk("ADD-ASSOC app ip:%u;sp:%u;dp%u//proxy ip:%u;sp:%u,dp%u",
+#ifdef DEBUG
+		bpf_printk("ADD: APP [IP: %u, SP: %u, DP: %u] <-> PROXY [IP: %u, SP: %u, DP: %u]",
 				   sk_association_val.app.ip, sk_association_val.app.sport, sk_association_val.app.dport,
 				   sk_association_key.proxy.ip, sk_association_key.proxy.sport, sk_association_key.proxy.dport);
+#endif // DEBUG
 
 		break;
 	default:
@@ -184,7 +191,9 @@ int sockops_prog(struct bpf_sock_ops *skops)
 SEC("sk_msg")
 int sk_msg_prog(struct sk_msg_md *msg)
 {
+#ifdef DEBUG
 	bpf_printk("----------sk_msg-----------");
+#endif // DEBUG
 
 	// Only process IPv4 packets
 	if (msg->family != AF_INET)
@@ -217,7 +226,9 @@ int sk_msg_prog(struct sk_msg_md *msg)
 		sk_association_key.app = sk_id;
 	}
 
-	bpf_printk("SRC -- ip: %u, sport: %u, dport: %u", sk_id.ip, sk_id.sport, sk_id.dport);
+#ifdef DEBUG
+	bpf_printk("SRC -- [IP: %u, SP: %u, DP: %u]", sk_id.ip, sk_id.sport, sk_id.dport);
+#endif // DEBUG
 
 	// Lookup socket association
 	sk_association_val = bpf_map_lookup_elem(&socket_association, &sk_association_key);
@@ -230,7 +241,9 @@ int sk_msg_prog(struct sk_msg_md *msg)
 	// Determine the destination socket ID based on the direction
 	struct sock_id dest_sk_id = (sk_id.dport == *server_port_ptr) ? sk_association_val->app : sk_association_val->proxy;
 
-	bpf_printk("DST -- ip: %u, sport: %u, dport: %u", dest_sk_id.ip, dest_sk_id.sport, dest_sk_id.dport);
+#ifdef DEBUG
+	bpf_printk("DST -- [IP: %u, SP: %u, DP: %u]", dest_sk_id.ip, dest_sk_id.sport, dest_sk_id.dport);
+#endif // DEBUG
 
 	// Redirect the message to the associated socket
 	ret = bpf_msg_redirect_hash(msg, &intercepted_sockets, &dest_sk_id, BPF_F_INGRESS);
@@ -240,7 +253,9 @@ int sk_msg_prog(struct sk_msg_md *msg)
 		return SK_PASS;
 	}
 
+#ifdef DEBUG
 	bpf_printk("Redirect msg to %s", (sk_id.dport == *server_port_ptr) ? "app" : "proxy");
+#endif // DEBUG
 
 	return ret;
 }
@@ -270,15 +285,16 @@ int tcp_destroy_sock_prog(struct trace_event_raw_tcp_event_sk *ctx)
 	struct association_t *sk_association_val = bpf_map_lookup_elem(&socket_association, &sk_association_key_1);
 	if (!sk_association_val)
 	{
-		// not foud
-		// bpf_printk("Error on lookup socket association");
+		// not found in the map: socket not intercepted
 		return 0;
 	}
 
+#ifdef DEBUG
 	bpf_printk("----------sk_close-----------");
-	bpf_printk("REM-ASSOC app ip:%u;sp:%u;dp%u//proxy ip:%u;sp:%u;dp%u",
+	bpf_printk("REM: APP [IP: %u, SP: %u, DP: %u] <-> PROXY [IP: %u, SP: %u, DP: %u]",
 			   sk_association_key_1.app.ip, sk_association_key_1.app.sport, sk_association_key_1.app.dport,
 			   sk_association_val->proxy.ip, sk_association_val->proxy.sport, sk_association_val->proxy.dport);
+#endif // DEBUG
 
 	struct sock_id sk_id_proxy = sk_association_val->proxy;
 
@@ -306,8 +322,10 @@ int tcp_destroy_sock_prog(struct trace_event_raw_tcp_event_sk *ctx)
 		return 0;
 	}
 
-	bpf_printk("Free socket: ip: %u, sport: %u, dport: %u",
+#ifdef DEBUG
+	bpf_printk("Free sk: [IP: %u, SP: %u, DP: %u]",
 			   sk_id_proxy.ip, sk_id_proxy.sport, sk_id_proxy.dport);
+#endif // DEBUG
 
 	return 0;
 }

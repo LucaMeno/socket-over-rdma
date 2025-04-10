@@ -21,7 +21,7 @@
 #define SRV_PORT 5555
 #define SERVER_IP "127.0.0.1"
 #define TARGET_PORT 7777
-#define NUMBER_OF_SOCKETS 64
+#define NUMBER_OF_SOCKETS 16
 
 struct client_sk_t
 {
@@ -56,15 +56,14 @@ void wrap_close(int fd);
 void setup_bpf();
 void run_bpf();
 void cleanup_bpf();
+void set_target_ports();
+void push_sock_to_map();
 
 void setup_sockets();
-void cleanup_socket();
 void *client_thread(void *arg);
-void set_target_ports();
-void wait_for_msg();
 void set_socket_nonblocking(int sockfd);
-
-void push_sock_to_map();
+void wait_for_msg();
+void cleanup_socket();
 
 int main()
 {
@@ -206,15 +205,15 @@ void wait_for_msg()
                 {
                     buffer[bytes_received] = '\0';
                     printf("--------------------------------\n");
-                    printf("Received message from %d: %s\n", i, buffer);
+                    printf("Received message from fd %d: %s\n", i, buffer);
 
-                    int j = 0;
+                    /*int j = 0;
                     for (; j < NUMBER_OF_SOCKETS; j++)
                     {
                         if (client_sk_fd[j].fd == i)
                             break;
                     }
-                    printf("Client %d IP: %u, Port: %u\n", j, client_sk_fd[j].ip, client_sk_fd[j].port);
+                    printf("Client %d IP: %u, Port: %u\n", j, client_sk_fd[j].ip, client_sk_fd[j].port);*/
 
                     // respond to the client with the same message
                     ssize_t sent_size = send(i, buffer, bytes_received, 0);
