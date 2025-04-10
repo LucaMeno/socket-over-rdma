@@ -1,11 +1,10 @@
 
-/*#include <linux/in.h>
-#include <linux/in6.h>*/
 
 // key structure for the sockmap
 struct sock_id
 {
-	__u32 ip;    // stored in NET order
+	__u32 sip;	 // stored in NET order
+	__u32 dip;	 // stored in NET order
 	__u16 sport; // stored in HOST byte
 	__u16 dport; // stored in HOST byte
 };

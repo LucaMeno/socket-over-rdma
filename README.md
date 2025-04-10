@@ -1,4 +1,10 @@
 
+# eBPF Traffic Sniffing
+
+This project is a simple eBPF program that monitors network traffic on a Linux system. It uses the `libbpf` library to load and manage eBPF programs.
+It works by attaching a BPF program to the `socket` syscall, allowing it to capture and analyze network packets in real-time.
+The eBPF part redirects the traffico to the userspace proxy that will print out the content and send it back to the source; then the eBPF will forward the packet to the original source.
+
 ## Building
 
 Install pre-requirements:
@@ -19,6 +25,7 @@ Build and install libbpf:
 cd ./libbpf/src
 make
 sudo make install
+
 # Make sure the loader knows where to find libbpf
 sudo ldconfig /usr/lib64
 ```
@@ -41,13 +48,19 @@ Test
 # see output
 sudo cat /sys/kernel/debug/tracing/trace_pipe
 
-#test
-curl http://example.com
-netcat localhost 7777
+#test terminal 1
+cd ./test
+make
+./server
+
+# test terminal 2
+cd ./test
+./client
 
 ```
 
 see bpf
+
 ```sh
 sudo bpftool prog show
 sudo bpftool map show
