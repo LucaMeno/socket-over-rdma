@@ -1,15 +1,19 @@
+# Makefile - Client RDMA
+
 CC = gcc
 CFLAGS = -Wall -O2
-LDFLAGS = -libverbs
-TARGETS = rdma_server rdma_client
+LDFLAGS = -libverbs -lrdmacm
+TARGET_C = rdma_client
+TARGET_S = rdma_server
+TARGET = $(TARGET_C) $(TARGET_S)
 
-all: $(TARGETS)
+all: $(TARGET)
 
-rdma_server: rdma_server.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+$(TARGET_C): rdma_client.c
+	$(CC) $(CFLAGS) -o $(TARGET_C) rdma_client.c $(LDFLAGS)
 
-rdma_client: rdma_client.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+$(TARGET_S): rdma_server.c
+	$(CC) $(CFLAGS) -o $(TARGET_S) rdma_server.c $(LDFLAGS)
 
 clean:
-	rm -f $(TARGETS)
+	rm -f $(TARGET)
