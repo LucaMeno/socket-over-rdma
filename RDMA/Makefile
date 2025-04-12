@@ -1,19 +1,40 @@
-# Makefile - Client RDMA
-
+# Compilatore e flag
 CC = gcc
-CFLAGS = -Wall -O2
-LDFLAGS = -libverbs -lrdmacm
-TARGET_C = rdma_client
-TARGET_S = rdma_server
-TARGET = $(TARGET_C) $(TARGET_S)
+CFLAGS = -Wall -Wextra -O2 -I./librdma
+LDFLAGS = -lrdmacm -libverbs
 
-all: $(TARGET)
+# Libreria statica
+LIB_DIR = librdma
+LIB_NAME = librdma
+LIB_SRC = $(LIB_DIR)/$(LIB_NAME).c
+LIB_OBJ = $(LIB_DIR)/$(LIB_NAME).o
+LIB_A = $(LIB_DIR)/lib$(LIB_NAME).a
 
-$(TARGET_C): rdma_client.c
-	$(CC) $(CFLAGS) -o $(TARGET_C) rdma_client.c $(LDFLAGS)
+# Eseguibili
+CLIENT = rdma_client
+SERVER = rdma_server
 
-$(TARGET_S): rdma_server.c
-	$(CC) $(CFLAGS) -o $(TARGET_S) rdma_server.c $(LDFLAGS)
+# Obiettivo principale
+all: $(CLIENT) $(SERVER)
 
+# Compilazione della libreria statica
+$(LIB_A): $(LIB_OBJ)
+	ar rcs $@ $^
+
+# Compilazione oggetto libreria
+$(LIB_OBJ): $(LIB_SRC) $(LIB_DIR)/$(LIB_NAME).h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Compilazione del client
+$(CLIENT): rdma_client.c $(LIB_A)
+	$(CC) $(CFLAGS) $< -L$(LIB_DIR) -l$(LIB_NAME) $(LDFLAGS) -o $@
+
+# Compilazione del server
+$(SERVER): rdma_server.c $(LIB_A)
+	$(CC) $(CFLAGS) $< -L$(LIB_DIR) -l$(LIB_NAME) $(LDFLAGS) -o $@
+
+# Pulizia
 clean:
-	rm -f $(TARGET)
+	rm -f $(CLIENT) $(SERVER) $(LIB_OBJ) $(LIB_A)
+
+.PHONY: all clean

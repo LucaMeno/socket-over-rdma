@@ -57,6 +57,23 @@ struct bpf_program *prog_tcp_destroy_sock;
 struct bpf_link *tcp_destroy_link;
 int cgroup_fd;
 
+/*
+struct bpf_obj
+{
+    struct bpf_object *obj;
+    int prog_fd_sockops;
+    int prog_fd_sk_msg;
+    int intercepted_sk_fd;
+    int free_sk_fd;
+    int target_ports_fd;
+    int socket_association_fd;
+    int server_port_fd;
+    struct bpf_program *prog_tcp_destroy_sock;
+    struct bpf_link *tcp_destroy_link;
+    int cgroup_fd;
+};
+*/
+
 void setup_bpf();
 void run_bpf();
 void cleanup_bpf();
