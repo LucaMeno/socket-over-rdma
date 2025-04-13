@@ -22,7 +22,7 @@ lsmod | grep rxe
 
 4. **Attach Soft-RoCE to your Ethernet interface**  
 Identify your network interface with `ip a`, then run:  
-```bash
+```bash 
 sudo rdma link add rxe0 type rxe netdev ens33
 ```
 _(Replace `ens33` with your actual network interface.)_

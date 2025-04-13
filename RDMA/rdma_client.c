@@ -1,11 +1,8 @@
-
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
 #include "librdma/librdma.h"
-
 
 #define PORT "7471"
 #define SERVER_IP "192.168.109.132"
@@ -23,7 +20,7 @@ void check_error(int err, const char *msg)
 
 int main()
 {
-    struct rdma_context cctx = {0};
+    rdma_context cctx = {0};
 
     int err;
 
@@ -35,15 +32,28 @@ int main()
     check_error(err, "Failed to connect to server");
     printf("Connected to server.\n");
 
+    // create a slice
+    int slice_id = 0;
+    cctx.free_ids[slice_id] = 1; // Mark the slice as used
 
-    for (int i = 0; i < 5; i++)
-    {
-        snprintf(cctx.buffer, MSG_SIZE, "HELLO: %d", i);
-        err = rdma_send(&cctx, MSG_SIZE);
-        check_error(err, "Failed to send message");
-        printf("Sent message: %s\n", cctx.buffer);
-        sleep(1); // wait for the server to process
-    }
+    rdma_context_slice *slice = NULL;
+    slice = (rdma_context_slice *)(cctx.buffer + sizeof(notification_t) +
+                                   slice_id * SLICE_SIZE);
+
+    // notify the server about the new slice
+    notification_t *notification = (notification_t *)cctx.buffer;
+    notification->code = RDMA_NEW_SLICE;
+    notification->slice_id = slice_id;
+    err = rdma_send_notification(&cctx);
+    check_error(err, "Failed to send notification");
+
+    sleep(2);
+
+    // delete the slice
+    notification->code = RDMA_DELETE_SLICE;
+    notification->slice_id = slice_id;
+    err = rdma_send_notification(&cctx);
+    check_error(err, "Failed to send notification");
 
     // disonnect and cleanup
     err = rdma_close(&cctx);
@@ -52,5 +62,3 @@ int main()
 
     return 0;
 }
-
-

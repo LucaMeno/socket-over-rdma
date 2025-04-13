@@ -16,11 +16,10 @@ void check_error(int err, const char *msg)
     }
 }
 
-
 int main()
 {
     int err;
-    struct rdma_context sctx = {};
+    rdma_context sctx = {};
 
     err = rdma_setup_server(&sctx, PORT);
     check_error(err, "Failed to setup server");
@@ -30,14 +29,13 @@ int main()
     check_error(err, "Failed to wait for client");
     printf("Client connected.\n");
 
-    for (int i = 0; i < 5; i++)
-    {
-        err = rdma_poll_cq(&sctx);
-        check_error(err, "Failed to poll completion queue");
-        err = rdma_recv(&sctx);
-        check_error(err, "Failed to wait for message");
-        printf("Received message: %s\n", sctx.buffer);
-    }
+    // create a slice
+    err = rdma_listen_notification(&sctx);
+    check_error(err, "Failed to listen for notifications");
+
+    // delete the slice
+    err = rdma_listen_notification(&sctx);
+    check_error(err, "Failed to send notification");
 
     err = rdma_close(&sctx);
     check_error(err, "Failed to close connection");
