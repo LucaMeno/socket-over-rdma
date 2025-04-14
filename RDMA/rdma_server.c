@@ -4,7 +4,6 @@
 #include "librdma/librdma.h"
 
 #define PORT "7471"
-#define MSG_SIZE 256
 
 void check_error(int err, const char *msg)
 {
@@ -29,13 +28,29 @@ int main()
     check_error(err, "Failed to wait for client");
     printf("Client connected.\n");
 
+    
+    printf("---------------------------------------------------------\n");
+
     // create a slice
     err = rdma_listen_notification(&sctx);
     check_error(err, "Failed to listen for notifications");
 
+    
+    printf("---------------------------------------------------------\n");
+
+    // noification data ready
+    err = rdma_listen_notification(&sctx);
+    check_error(err, "Failed to listen for notifications");
+
+    
+    printf("---------------------------------------------------------\n");
+
     // delete the slice
     err = rdma_listen_notification(&sctx);
     check_error(err, "Failed to send notification");
+
+    
+    printf("---------------------------------------------------------\n");
 
     err = rdma_close(&sctx);
     check_error(err, "Failed to close connection");

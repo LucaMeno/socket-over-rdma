@@ -6,7 +6,8 @@
 
 #define PORT "7471"
 #define SERVER_IP "192.168.109.132"
-#define MSG_SIZE 256
+
+#define UNUSED(x) (void)(x)
 
 void check_error(int err, const char *msg)
 {
@@ -32,28 +33,58 @@ int main()
     check_error(err, "Failed to connect to server");
     printf("Connected to server.\n");
 
+    printf("---------------------------------------------------------\n");
+
     // create a slice
     int slice_id = 0;
-    cctx.free_ids[slice_id] = 1; // Mark the slice as used
+    cctx.is_id_free[slice_id] = FALSE; // Mark the slice as used
 
-    rdma_context_slice *slice = NULL;
-    slice = (rdma_context_slice *)(cctx.buffer + sizeof(notification_t) +
-                                   slice_id * SLICE_SIZE);
+    rdma_context_slice *slice = cctx.slices + slice_id;
+
+    // set the pointers to the buffers
+    slice->slice_id = slice_id;
+    slice->server_buffer = (transfer_buffer_t *)(cctx.buffer + NOTIFICATION_OFFSET_SIZE +
+                                                 slice_id * SLICE_BUFFER_SIZE);
+    slice->client_buffer = (transfer_buffer_t *)(cctx.buffer + NOTIFICATION_OFFSET_SIZE +
+                                                 slice_id * SLICE_BUFFER_SIZE +
+                                                 sizeof(transfer_buffer_t)); // skip the server buffer
 
     // notify the server about the new slice
-    notification_t *notification = (notification_t *)cctx.buffer;
-    notification->code = RDMA_NEW_SLICE;
-    notification->slice_id = slice_id;
+    set_notification_for_server(&cctx, RDMA_NEW_SLICE, slice_id);
+    slice->src_port = 12345;
     err = rdma_send_notification(&cctx);
     check_error(err, "Failed to send notification");
 
-    sleep(2);
+    printf("---------------------------------------------------------\n");
+
+    // write
+    char *data = "Hello, RDMA!";
+    int data_size = strlen(data) + 1; // +1 for null terminator
+
+    transfer_buffer_t *buffer_to_write = slice->client_buffer;
+    buffer_to_write->buffer_size = data_size;
+    buffer_to_write->flags = 0; // no flags
+    memcpy(buffer_to_write->buffer, data, data_size);
+    buffer_to_write->buffer[data_size] = '\0'; // null terminate the string
+
+    err = rdma_write(&cctx, slice);
+    check_error(err, "Failed to write data");
+
+    printf("---------------------------------------------------------\n");
+
+    // notify the server that data is ready
+    set_notification_for_server(&cctx, RDMA_DATA_READY, slice_id);
+    err = rdma_send_notification(&cctx);
+    check_error(err, "Failed to send notification");
+
+    printf("---------------------------------------------------------\n");
 
     // delete the slice
-    notification->code = RDMA_DELETE_SLICE;
-    notification->slice_id = slice_id;
+    set_notification_for_server(&cctx, RDMA_DELETE_SLICE, slice_id);
     err = rdma_send_notification(&cctx);
     check_error(err, "Failed to send notification");
+
+    printf("---------------------------------------------------------\n");
 
     // disonnect and cleanup
     err = rdma_close(&cctx);
