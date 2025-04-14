@@ -9,9 +9,11 @@
 #define MAX_PAYLOAD_SIZE 512
 #define SLICE_BUFFER_SIZE (2 * sizeof(transfer_buffer_t)) // size of the slice in memory. A slice is a double buffer used to exchange data
 
-#define NOTIFICATION_OFFSET_SIZE (2 * sizeof(notification_t))
+#define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t))
 #define N_TCP_PER_CONNECTION 5
 #define MR_SIZE ((SLICE_BUFFER_SIZE * N_TCP_PER_CONNECTION) + NOTIFICATION_OFFSET_SIZE)
+
+#define POLL_MEM_ATTEMPTS 10000
 
 #define TRUE 1
 #define FALSE 0
@@ -34,12 +36,6 @@ typedef enum
     EXCHANGE_REMOTE_INFO = 4,
 } rdma_communication_code;
 
-typedef enum
-{
-    RDMA_WRITE_FINISHED = 1,
-    RDMA_READ_FINISHED = 2,
-} rdma_flags;
-
 /**
  * notification structure
  */
@@ -57,14 +53,13 @@ typedef struct
 
 typedef struct
 {
-    char buff[MAX_PAYLOAD_SIZE];
-    int buff_size;
-} rdma_payload_t;
+    volatile uint32_t data_ready;
+} flags;
 
 typedef struct
 {
     int buffer_size;
-    uint32_t flags;
+    flags flags;
     char buffer[MAX_PAYLOAD_SIZE];
 } transfer_buffer_t;
 
@@ -106,25 +101,30 @@ typedef struct
 /** SETUP CONTEXT */
 
 // Server-side functions
-int rdma_setup_server(rdma_context *sctx, const char *port);
-int rdma_wait_for_client(rdma_context *sctx);
-int set_notification_for_client(rdma_context *sctx, rdma_communication_code code, int slice_id);
+int rdma_server_setup(rdma_context *sctx, const char *port);
+int rdma_server_wait_client_connection(rdma_context *sctx);
 
 // Client-side functions
-int rdma_setup_client(rdma_context *cctx, const char *ip, const char *port);
-int rdma_connect_server(rdma_context *cctx);
-int set_notification_for_server(rdma_context *cctx, rdma_communication_code code, int slice_id);
+int rdma_client_setup(rdma_context *cctx, const char *ip, const char *port);
+int rdma_client_connect(rdma_context *cctx);
 
 // cleanup
-int rdma_close(rdma_context *ctx);
+int rdma_context_close(rdma_context *ctx);
 
 /** COMMUNICATION */
-int rdma_send_notification(rdma_context *ctx);
-int rdma_listen_notification(rdma_context *ctx);
+// send and receive
+int rdma_send_notification(rdma_context *ctx, rdma_communication_code code, int slice_id);
+int rdma_recv_notification(rdma_context *ctx);
 
-int rdma_write(rdma_context *ctx, rdma_context_slice *slice);
+// write and read
+int rdma_write_slice(rdma_context *ctx, rdma_context_slice *slice);
 
+// polling
 int rdma_poll_cq(rdma_context *ctx);
-int rdma_is_cq_ready(rdma_context *ctx);
+int rdma_poll_memory(rdma_context *ctx, rdma_context_slice *slice);
+
+// management
+int rdma_new_slice(rdma_context *ctx);
+int rdma_delete_slice(rdma_context *ctx, int slice_id);
 
 #endif // LIB_RDMA_H
