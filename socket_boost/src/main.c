@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <sys/select.h>
 #include "common.h"
+#include "scap.h"
 
 /**
  * Socket control
@@ -20,13 +21,13 @@
 #define SERVER_IP "127.0.0.1"
 #define TARGET_PORT 7777
 #define NUMBER_OF_SOCKETS 16
-
+/*
 struct client_sk_t
 {
     int fd;
     __u16 port;
     __u32 ip;
-};
+};*/
 
 struct client_sk_t client_sk_fd[NUMBER_OF_SOCKETS];
 int server_sk_fd;
@@ -46,41 +47,6 @@ pthread_mutex_t mutex;
 pthread_cond_t cond_var;
 
 /**
- * BPF control
- */
-#define CGROUP_PATH "/sys/fs/cgroup"
-
-struct bpf_object *obj;
-int prog_fd_sockops, prog_fd_sk_msg;
-int intercepted_sk_fd, free_sk_fd, target_ports_fd, socket_association_fd, server_port_fd;
-struct bpf_program *prog_tcp_destroy_sock;
-struct bpf_link *tcp_destroy_link;
-int cgroup_fd;
-
-/*
-struct bpf_obj
-{
-    struct bpf_object *obj;
-    int prog_fd_sockops;
-    int prog_fd_sk_msg;
-    int intercepted_sk_fd;
-    int free_sk_fd;
-    int target_ports_fd;
-    int socket_association_fd;
-    int server_port_fd;
-    struct bpf_program *prog_tcp_destroy_sock;
-    struct bpf_link *tcp_destroy_link;
-    int cgroup_fd;
-};
-*/
-
-void setup_bpf();
-void run_bpf();
-void cleanup_bpf();
-void set_target_ports();
-void push_sock_to_map();
-
-/**
  * Error handling
  */
 
@@ -97,28 +63,49 @@ int main()
 {
     signal(SIGINT, handle_signal);
 
-    setup_bpf();
+    bpf_context_t bpfctx = {0};
+    int err;
+
+    err = setup_bpf(&bpfctx);
+    check_error(err, "");
     printf("eBPF program setup complete\n");
 
-    set_target_ports();
+    // TODO: scale this to multiple ports
+    __u16 ports_to_set[1] = {TARGET_PORT};
+    int n = sizeof(ports_to_set) / sizeof(ports_to_set[0]);
+
+    err = set_target_ports(&bpfctx, ports_to_set, n, SRV_PORT);
+    check_error(err, "");
     printf("Target ports set\n");
 
-    run_bpf();
+    err = run_bpf(&bpfctx);
+    check_error(err, "");
     printf("eBPF program attached to socket\n");
 
     setup_sockets();
     printf("Sockets setup complete\n");
 
-    push_sock_to_map();
+    struct sock_id skids[NUMBER_OF_SOCKETS];
+
+    for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
+    {
+        skids[i].sip = client_sk_fd[i].ip;
+        skids[i].dip = inet_addr(SERVER_IP);
+        skids[i].sport = client_sk_fd[i].port;
+        skids[i].dport = SRV_PORT;
+    }
+
+    push_sock_to_map(&bpfctx, skids, NUMBER_OF_SOCKETS, client_sk_fd);
     printf("Map updated\n");
 
     printf("Waiting for messages, press Ctrl+C to exit...\n");
-    wait_for_msg();
+    wait_for_msg(&bpfctx);
 
     cleanup_socket();
     printf("Socket closed\n");
 
-    cleanup_bpf();
+    err = cleanup_bpf(&bpfctx);
+    check_error(err, "");
     printf("Successfully detached eBPF program\n");
 
     return 0;
@@ -178,7 +165,7 @@ void setup_sockets()
     printf("All clients connected (%d)\n", NUMBER_OF_SOCKETS);
 }
 
-void wait_for_msg()
+void wait_for_msg(bpf_context_t *ctx)
 {
     char buffer[BUFFER_SIZE];
     fd_set read_fds, temp_fds;
@@ -261,7 +248,7 @@ void wait_for_msg()
 
                     sk_assoc_k.proxy = sk_id_key;
 
-                    int ret = bpf_map_lookup_elem(socket_association_fd, &sk_assoc_k, &sk_assoc_v);
+                    int ret = bpf_map_lookup_elem(ctx->socket_association_fd, &sk_assoc_k, &sk_assoc_v);
                     check_error(ret, "Failed to lookup socket in socket_association_fd");
 
                     char src_ip_proxy[INET_ADDRSTRLEN],
@@ -355,48 +342,6 @@ void set_socket_nonblocking(int sockfd)
     check_fd(ret, "fcntl(F_SETFL)");
 }
 
-void set_target_ports()
-{
-    // TODO: scale this to multiple ports
-    int ports_to_set[1] = {TARGET_PORT};
-    int n = sizeof(ports_to_set) / sizeof(ports_to_set[0]);
-    int val = 1;
-
-    // set the target ports
-    for (int i = 0; i < n; i++)
-    {
-        int err = bpf_map_update_elem(target_ports_fd, &ports_to_set[i], &val, BPF_ANY);
-        check_error(err, "Failed to update target_ports map");
-    }
-
-    // set the server port
-    int k = 0;
-    __u16 p = SRV_PORT;
-    int err = bpf_map_update_elem(server_port_fd, &k, &p, BPF_ANY);
-    check_error(err, "Failed to update server_port map");
-}
-
-void push_sock_to_map()
-{
-    int err = 0;
-    for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
-    {
-        struct sock_id sk_id = {0};
-        sk_id.sip = client_sk_fd[i].ip;
-        sk_id.dip = inet_addr(SERVER_IP);
-        sk_id.sport = client_sk_fd[i].port;
-        sk_id.dport = SRV_PORT;
-
-        // push the socket to the free_sockets map
-        err = bpf_map_update_elem(free_sk_fd, NULL, &sk_id, BPF_ANY);
-        check_error(err, "Failed to update free_sockets map");
-
-        // add the socket to the intercepted_sockets map
-        int err = bpf_map_update_elem(intercepted_sk_fd, &sk_id, &client_sk_fd[i].fd, BPF_ANY);
-        check_error(err, "Failed to add socket to intercepted_sockets map");
-    }
-}
-
 void cleanup_socket()
 {
     // Notify all threads to exit
@@ -419,131 +364,6 @@ void cleanup_socket()
 void handle_signal(int signal)
 {
     STOP = true;
-}
-
-void cleanup_bpf()
-{
-    int err = 0;
-
-    // Detach sk_msg_prog from sockmap
-    if (intercepted_sk_fd > 0)
-    {
-        err = bpf_prog_detach2(prog_fd_sk_msg, intercepted_sk_fd, BPF_SK_MSG_VERDICT);
-        if (err != 0)
-        {
-            perror("Failed to detach sk_msg_prog from sockmap");
-        }
-    }
-
-    // Detach sockops_prog from cgroup
-    if (cgroup_fd > 0)
-    {
-        err = bpf_prog_detach2(prog_fd_sockops, cgroup_fd, BPF_CGROUP_SOCK_OPS);
-        if (err != 0)
-        {
-            perror("Failed to detach sockops_prog from cgroup");
-        }
-    }
-
-    // Detach tcp_destroy_sock_prog from tracepoint
-    if (tcp_destroy_link != NULL)
-    {
-        err = bpf_link__destroy(tcp_destroy_link);
-        if (err != 0)
-        {
-            perror("Failed to detach tcp_destroy_sock_prog from tracepoint");
-        }
-    }
-
-    // Close all file descriptors
-    wrap_close(intercepted_sk_fd);
-    wrap_close(free_sk_fd);
-    wrap_close(socket_association_fd);
-    wrap_close(target_ports_fd);
-    wrap_close(cgroup_fd);
-    wrap_close(prog_fd_sockops);
-    wrap_close(prog_fd_sk_msg);
-
-    // Destroy BPF object
-    bpf_object__close(obj);
-}
-
-void wrap_close(int fd)
-{
-    if (fd >= 0)
-    {
-        close(fd);
-    }
-}
-
-void setup_bpf()
-{
-    // open the BPF object file
-    obj = bpf_object__open_file("scap.bpf.o", NULL);
-    check_obj(obj, "Failed to open BPF object");
-
-    // load the BPF object file into the kernel
-    int err = bpf_object__load(obj);
-    check_error(err, "Failed to load BPF object");
-
-    struct bpf_map *intercepted_sockets, *socket_association, *target_ports, *server_port, *free_sk;
-
-    // find the maps in the object file
-    intercepted_sockets = bpf_object__find_map_by_name(obj, "intercepted_sockets");
-    check_obj(intercepted_sockets, "Failed to find the intercepted_sockets map");
-    free_sk = bpf_object__find_map_by_name(obj, "free_sockets");
-    check_obj(free_sk, "Failed to find the free_sk map");
-    socket_association = bpf_object__find_map_by_name(obj, "socket_association");
-    check_obj(socket_association, "Failed to find the socket_association map");
-    target_ports = bpf_object__find_map_by_name(obj, "target_ports");
-    check_obj(target_ports, "Failed to find the target_ports map");
-    server_port = bpf_object__find_map_by_name(obj, "server_port");
-    check_obj(server_port, "Failed to find the server_port map");
-
-    // get the file descriptor for the map
-    intercepted_sk_fd = bpf_map__fd(intercepted_sockets);
-    check_fd(intercepted_sk_fd, "Failed to get intercepted_sockets fd");
-    free_sk_fd = bpf_map__fd(free_sk);
-    check_fd(free_sk_fd, "Failed to get free_sockets fd");
-    socket_association_fd = bpf_map__fd(socket_association);
-    check_fd(socket_association_fd, "Failed to get socket_association fd");
-    target_ports_fd = bpf_map__fd(target_ports);
-    check_fd(target_ports_fd, "Failed to get target_ports fd");
-    server_port_fd = bpf_map__fd(server_port);
-    check_fd(server_port_fd, "Failed to get server_port fd");
-
-    struct bpf_program *prog_sockops, *prog_sk_msg;
-
-    // find the programs in the object file
-    prog_sockops = bpf_object__find_program_by_name(obj, "sockops_prog");
-    prog_fd_sockops = bpf_program__fd(prog_sockops);
-
-    prog_sk_msg = bpf_object__find_program_by_name(obj, "sk_msg_prog");
-    prog_fd_sk_msg = bpf_program__fd(prog_sk_msg);
-
-    // get the file descriptor for the cgroup
-    cgroup_fd = open(CGROUP_PATH, O_RDONLY);
-    check_fd(cgroup_fd, "Failed to open cgroup");
-
-    prog_tcp_destroy_sock = bpf_object__find_program_by_name(obj, "tcp_destroy_sock_prog");
-    check_obj(prog_tcp_destroy_sock, "Failed to find tcp_destroy_sock_prog");
-}
-
-void run_bpf()
-{
-    int err = 0;
-
-    // attach sockops_prog to the cgroup
-    err = bpf_prog_attach(prog_fd_sockops, cgroup_fd, BPF_CGROUP_SOCK_OPS, 0);
-    check_error(err, "Failed to attach sockops_prog to cgroup");
-
-    // Attach sk_msg_prog to the sockmap
-    err = bpf_prog_attach(prog_fd_sk_msg, intercepted_sk_fd, BPF_SK_MSG_VERDICT, 0);
-    check_error(err, "Failed to attach sk_msg_prog to sockmap");
-
-    // Attach tcp_destroy_sock_prog to the tracepoint
-    tcp_destroy_link = bpf_program__attach_tracepoint(prog_tcp_destroy_sock, "tcp", "tcp_destroy_sock");
-    check_obj(tcp_destroy_link, "Failed to attach tcp_destroy_sock_prog to tracepoint");
 }
 
 /**
@@ -585,6 +405,6 @@ void error_and_exit(const char *msg)
     perror("Error details");
     printf("Cleaning up resources...\n");
     cleanup_socket();
-    cleanup_bpf();
+    // cleanup_bpf();
     exit(EXIT_FAILURE);
 }

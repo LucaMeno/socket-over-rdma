@@ -1,5 +1,6 @@
 // scap.bpf.c
 
+
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
@@ -10,8 +11,6 @@
 #define DEBUG
 #define AF_INET 2
 #define AF_INET6 10
-
-// #define DEBUG 1
 
 /**
  * list of all the socket from witch i want to intercept the data
