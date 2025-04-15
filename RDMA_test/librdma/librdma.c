@@ -1,21 +1,7 @@
-
-
 #define _POSIX_C_SOURCE 200112L
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <errno.h>
-
-#include <rdma/rdma_cma.h>
-#include <rdma/rdma_verbs.h>
-
 #include "librdma.h"
+
 
 /** MISC */
 
@@ -623,10 +609,8 @@ int rdma_poll_cq(rdma_context_t *ctx)
     return 0;
 }
 
-int rdma_poll_memory(rdma_context_t *ctx, rdma_context_slice_t *slice)
+int rdma_poll_memory(transfer_buffer_t *buffer_to_read)
 {
-    transfer_buffer_t *buffer_to_read = (ctx->is_server == TRUE) ? slice->client_buffer : slice->server_buffer;
-
     volatile uint32_t *flag_to_poll = (volatile uint32_t *)&buffer_to_read->flags.data_ready;
 
     int i = 1;
@@ -993,6 +977,71 @@ void *rdma_manager_server_thread(void *arg)
     }
 
     return NULL;
+}
+
+int sk_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, char *tx_data, int tx_size, char *rx_data, int *rx_size, int fd)
+{
+    UNUSED(fd);
+    UNUSED(rx_data);
+    UNUSED(rx_size);
+
+    int ctx_id = rdma_manager_get_context_by_ip(ctxm, remote_ip);
+    if (ctx_id < 0)
+        return rdma_ret_err(NULL, "Failed to get context - sk_send");
+
+    rdma_context_t *ctx = &ctxm->ctxs[ctx_id];
+
+    rdma_context_slice_t *slice = rdma_manager_get_slice(ctxm, remote_ip, port);
+    if (slice == NULL)
+        return rdma_ret_err(NULL, "Failed to get slice - sk_send");
+
+    // copy the data to the buffer
+
+    transfer_buffer_t *buffer_to_write = NULL;
+    transfer_buffer_t *buffer_to_read = NULL;
+
+    if (ctx->is_server == TRUE)
+    {
+        buffer_to_write = slice->server_buffer;
+        buffer_to_read = slice->client_buffer;
+    }
+    else
+    {
+        buffer_to_write = slice->client_buffer;
+        buffer_to_read = slice->server_buffer;
+    }
+
+    if (tx_size > (int)SLICE_BUFFER_SIZE)
+        return rdma_ret_err(NULL, "Data size is too big - sk_send");
+
+    memcpy(buffer_to_write->buffer, tx_data, tx_size);
+    buffer_to_write->buffer_size = tx_size;
+
+    // write the data to the remote buffer
+    if (rdma_write_slice(ctx, slice) != 0)
+        return rdma_ret_err(NULL, "Failed to write slice - sk_send");
+
+    // notify the other side that the data is ready
+    if (slice->is_polling == FALSE)
+    {
+        if (rdma_send_notification(ctx, RDMA_DATA_READY, slice->slice_id) != 0)
+            return rdma_ret_err(NULL, "Failed to send notification - sk_send");
+        slice->is_polling = TRUE;
+    }
+
+    // poll the memory for the data to be ready
+    int ret = rdma_poll_memory(buffer_to_read);
+
+    if (ret < 0)
+    {
+        printf("Polling timeout\n");
+    }
+    else // ret == 0
+    {
+        printf("Data ready\n");
+    }
+
+    return 0;
 }
 
 /** POOL */

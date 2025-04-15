@@ -1,33 +1,30 @@
-
-
 #define _POSIX_C_SOURCE 200112L
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <errno.h>
-
-#include <rdma/rdma_cma.h>
-#include <rdma/rdma_verbs.h>
-
 #include "rdma_utils.h"
+
 
 /** MISC */
 
 int rdma_ret_err(rdma_context_t *rdma_ctx, char *msg)
 {
-    perror(msg);
+    fprintf(stderr, "ERROR: %s\n", msg);
     if (rdma_ctx)
     {
-        printf("Cleaning up RMDA...\n");
-        rdma_context_close(rdma_ctx);
+        /*printf("Cleaning up RMDA...\n");
+        rdma_context_close(rdma_ctx);*/
     }
     return -1;
+}
+
+void *rdma_ret_null(rdma_context_t *rdma_ctx, char *msg)
+{
+    fprintf(stderr, "ERROR: %s\n", msg);
+    if (rdma_ctx)
+    {
+        /*printf("Cleaning up RMDA...\n");
+        rdma_context_close(rdma_ctx);*/
+    }
+    return NULL;
 }
 
 const char *get_op_name(rdma_communication_code_t code)
@@ -44,6 +41,8 @@ const char *get_op_name(rdma_communication_code_t code)
         return "TEST";
     case EXCHANGE_REMOTE_INFO:
         return "EXCHANGE_REMOTE_INFO";
+    case RDMA_CLOSE_CONTEXT:
+        return "RDMA_CLOSE_CONTEXT";
     default:
         return "UNKNOWN";
     }
@@ -51,7 +50,7 @@ const char *get_op_name(rdma_communication_code_t code)
 
 /** SERVER */
 
-int rdma_server_setup(rdma_context_t *sctx, const char *port)
+int rdma_server_setup(rdma_context_t *sctx, u_int16_t server_port)
 {
     sctx->is_server = TRUE;
 
@@ -79,6 +78,8 @@ int rdma_server_setup(rdma_context_t *sctx, const char *port)
         return rdma_ret_err(sctx, "rdma_create_id");
 
     // 3. Resolve address of server
+    char port[6];
+    snprintf(port, sizeof(port), "%u", server_port);
     if (getaddrinfo(NULL, port, &hints, &res))
         return rdma_ret_err(sctx, "getaddrinfo");
 
@@ -145,7 +146,7 @@ int rdma_server_wait_client_connection(rdma_context_t *sctx)
     // Post a receive work request for receiving the remote address and rkey
     struct ibv_sge sge = {
         .addr = (uintptr_t)sctx->buffer, // address of the buffer
-        .length = (sizeof(notification_t) + sizeof(rdma_meta_info)),
+        .length = (sizeof(notification_t) + sizeof(rdma_meta_info_t)),
         .lkey = sctx->mr->lkey // local key of the registered memory region
     };
     struct ibv_recv_wr recv_wr = {.wr_id = 0, .sg_list = &sge, .num_sge = 1};
@@ -154,7 +155,7 @@ int rdma_server_wait_client_connection(rdma_context_t *sctx)
     if (bad_wr)
         return rdma_ret_err(sctx, "Failed to post recv - rdma_wait_for_client");
 
-    rdma_meta_info info = {
+    rdma_meta_info_t info = {
         .addr = (uintptr_t)sctx->buffer,
         .rkey = sctx->mr->rkey};
 
@@ -163,7 +164,7 @@ int rdma_server_wait_client_connection(rdma_context_t *sctx)
         .responder_resources = 1,
         .rnr_retry_count = 7,
         .private_data = (void *)&info,
-        .private_data_len = sizeof(rdma_meta_info)};
+        .private_data_len = sizeof(rdma_meta_info_t)};
 
     // 6. Accept connection using rdma_accept
     if (rdma_accept(sctx->conn, &conn_param))
@@ -180,8 +181,10 @@ int rdma_server_wait_client_connection(rdma_context_t *sctx)
 
 /** CLIENT */
 
-int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port)
+int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, u_int16_t port)
 {
+    // IP in HOST
+
     cctx->is_server = FALSE;
 
     for (int i = 0; i < N_TCP_PER_CONNECTION; i++)
@@ -198,18 +201,16 @@ int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port)
         return rdma_ret_err(cctx, "rdma_create_id - rdma_setup_client");
 
     // 3. Resolve address of server
-    struct addrinfo *res;
     char ip_str[INET_ADDRSTRLEN];
     char port_str[6];
-
-    // Convert IP address to string
     if (inet_ntop(AF_INET, &ip, ip_str, sizeof(ip_str)) == NULL)
         return rdma_ret_err(cctx, "inet_ntop - rdma_setup_client");
-
     snprintf(port_str, sizeof(port_str), "%u", port);
 
-    getaddrinfo(ip_str, port_str, NULL, &res);
+    printf("connecting to IP: %s, port: %s\n", ip_str, port_str);
 
+    struct addrinfo *res;
+    getaddrinfo(ip_str, port_str, NULL, &res);
     rdma_resolve_addr(cctx->conn, NULL, res->ai_addr, 2000);
     freeaddrinfo(res);
     if (!cctx->conn)
@@ -283,7 +284,7 @@ int rdma_client_connect(rdma_context_t *cctx)
     rdma_get_cm_event(cctx->ec, &event); // connection established
 
     // retrieve the remote address and rkey
-    rdma_meta_info *info = (rdma_meta_info *)event->param.conn.private_data;
+    rdma_meta_info_t *info = (rdma_meta_info_t *)event->param.conn.private_data;
     cctx->remote_addr = info->addr;
     cctx->remote_rkey = info->rkey;
 
@@ -297,14 +298,14 @@ int rdma_client_connect(rdma_context_t *cctx)
     notification->from_client.code = EXCHANGE_REMOTE_INFO; // code of the notification
     notification->from_client.slice_id = -1;               // ID of the slice (not used here)
 
-    rdma_meta_info *remote_info = (rdma_meta_info *)(cctx->buffer + sizeof(notification_t));
+    rdma_meta_info_t *remote_info = (rdma_meta_info_t *)(cctx->buffer + sizeof(notification_t));
     remote_info->addr = (uintptr_t)cctx->buffer;
     remote_info->rkey = cctx->mr->rkey;
 
     // post
     struct ibv_sge sge = {
         .addr = (uintptr_t)cctx->buffer, // address of the buffer
-        .length = (sizeof(notification_t) + sizeof(rdma_meta_info)),
+        .length = (sizeof(notification_t) + sizeof(rdma_meta_info_t)),
         .lkey = cctx->mr->lkey // Local key from registered memory region
     };
 
@@ -320,7 +321,8 @@ int rdma_client_connect(rdma_context_t *cctx)
     if (ibv_post_send(cctx->conn->qp, &send_wr, &bad_send_wr) != 0) // Post the send work request
         return rdma_ret_err(cctx, "Failed to post send - rdma_connect_server");
 
-    rdma_poll_cq(cctx); // wait for completion
+    if (rdma_poll_cq(cctx) != 0) // wait for completion
+        return rdma_ret_err(cctx, "Failed to poll CQ - rdma_connect_server");
     sleep(2);
     return 0;
 }
@@ -368,19 +370,18 @@ int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, 
 
     // Fill ibv_sge structure
     struct ibv_sge sge = {
-        .addr = (uintptr_t)notification, // address of the buffer
+        .addr = (uintptr_t)ctx->buffer, // address of the buffer
         .length = sizeof(notification_t),
         .lkey = ctx->mr->lkey // Local key from registered memory region
     };
 
     // 2. Prepare ibv_send_wr with IBV_WR_SEND
-    struct ibv_send_wr send_wr = {
-        .wr_id = 0,
-        .sg_list = &sge,
-        .num_sge = 1,
-        .opcode = IBV_WR_SEND,          // Send operation
-        .send_flags = IBV_SEND_SIGNALED // Request completion notification
-    };
+    struct ibv_send_wr send_wr = {0};
+    send_wr.wr_id = 0;
+    send_wr.sg_list = &sge;
+    send_wr.num_sge = 1;
+    send_wr.opcode = IBV_WR_SEND;
+    send_wr.send_flags = IBV_SEND_SIGNALED;
 
     // Post send with ibv_post_send
     struct ibv_send_wr *bad_send_wr;
@@ -388,15 +389,19 @@ int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, 
         return rdma_ret_err(ctx, "Failed to post send - rdma_send_notification");
 
     // Poll the completion queue
-    rdma_poll_cq(ctx);
+    if (rdma_poll_cq(ctx) != 0)
+        return rdma_ret_err(ctx, "Failed to poll CQ - rdma_send_notification");
 
+    printf("------------------------------------------------------------\n");
     if (ctx->is_server == TRUE)
     {
-        printf("S: send: %s, slide_id: %d\n", get_op_name(notification->from_server.code), notification->from_server.slice_id);
+        printf("S: send: %s (%d), slice_id: %d, ctx_id: %d\n",
+               get_op_name(notification->from_server.code), notification->from_server.code, notification->from_server.slice_id, ctx->context_id);
     }
     else
     {
-        printf("C: send: %s, slide_id: %d\n", get_op_name(notification->from_client.code), notification->from_client.slice_id);
+        printf("C: send: %s (%d), slice_id: %d, ctx_id: %d\n",
+               get_op_name(notification->from_client.code), notification->from_client.code, notification->from_client.slice_id, ctx->context_id);
     }
 
     return 0;
@@ -404,45 +409,35 @@ int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, 
 
 int rdma_recv_notification(rdma_context_t *ctx)
 {
-    // 1. Poll the completion queue
-    if (rdma_poll_cq(ctx) != 0)
-        return rdma_ret_err(ctx, "Failed to poll CQ - rdma_listen_notification");
-
-    // post another receive work request
-    struct ibv_sge sge = {
-        .addr = (uintptr_t)ctx->buffer, // address of the buffer
-        .length = sizeof(notification_t),
-        .lkey = ctx->mr->lkey};
-
-    // Prepare ibv_recv_wr with IBV_WR_RECV
-    struct ibv_recv_wr recv_wr = {.wr_id = 0, .sg_list = &sge, .num_sge = 1};
-    struct ibv_recv_wr *bad_wr;
-
-    // Post receive with ibv_post_recv
-    if (ibv_post_recv(ctx->conn->qp, &recv_wr, &bad_wr) != 0 || bad_wr)
-        return rdma_ret_err(ctx, "Failed to post recv - rdma_recv");
 
     notification_t *notification = (notification_t *)ctx->buffer;
     int code; // enum rdma_communication_code
     int slice_id = -1;
 
+    printf("------------------------------------------------------------\n");
     if (ctx->is_server == TRUE)
     {
         code = notification->from_client.code;
         slice_id = notification->from_client.slice_id;
-        printf("S: Received: %s, slide_id: %d\n", get_op_name(code), slice_id);
+        printf("S: Received: %s (%d), slide_id: %d, ctx_id: %d\n", get_op_name(code), code, slice_id, ctx->context_id);
     }
     else // client
     {
         code = notification->from_server.code;
         slice_id = notification->from_server.slice_id;
-        printf("C: Received: %s, slide_id: %d\n", get_op_name(code), slice_id);
+        printf("C: Received: %s (%d), slide_id: %d, ctx_id: %d\n", get_op_name(code), code, slice_id, ctx->context_id);
     }
 
     switch (code)
     {
     case EXCHANGE_REMOTE_INFO:
-        rdma_meta_info *remote_info = (rdma_meta_info *)(ctx->buffer + sizeof(notification_t));
+        if (ctx->remote_addr != 0)
+        {
+            printf("Remote address already set......\n");
+            return 0;
+        }
+
+        rdma_meta_info_t *remote_info = (rdma_meta_info_t *)(ctx->buffer + sizeof(notification_t));
 
         // save the remote address and rkey
         ctx->remote_addr = remote_info->addr;
@@ -506,6 +501,12 @@ int rdma_recv_notification(rdma_context_t *ctx)
         ctx->slices[slice_id].server_buffer = NULL;
 
         break;
+
+    case RDMA_CLOSE_CONTEXT:
+        // TODO
+
+        break;
+
     default:
         printf("Unknown notification code\n");
         break;
@@ -562,7 +563,7 @@ int rdma_write_slice(rdma_context_t *ctx, rdma_context_slice_t *slice)
     send_wr.wr.rdma.rkey = ctx->remote_rkey;
     send_wr.sg_list = &sge;
     send_wr.num_sge = 1;
-    send_wr.send_flags = IBV_SEND_SIGNALED;
+    // send_wr.send_flags = IBV_SEND_SIGNALED;
 
     // 4. Post send in SQ with ibv_post_send
     struct ibv_send_wr *bad_send_wr;
@@ -608,10 +609,8 @@ int rdma_poll_cq(rdma_context_t *ctx)
     return 0;
 }
 
-int rdma_poll_memory(rdma_context_t *ctx, rdma_context_slice_t *slice)
+int rdma_poll_memory(transfer_buffer_t *buffer_to_read)
 {
-    transfer_buffer_t *buffer_to_read = (ctx->is_server == TRUE) ? slice->client_buffer : slice->server_buffer;
-
     volatile uint32_t *flag_to_poll = (volatile uint32_t *)&buffer_to_read->flags.data_ready;
 
     int i = 1;
@@ -634,7 +633,9 @@ int rdma_poll_memory(rdma_context_t *ctx, rdma_context_slice_t *slice)
     return 0;
 }
 
-int rdma_new_slice(rdma_context_t *ctx, uint16_t port)
+/** UTILS */
+
+int rdma_new_slice(rdma_context_t *ctx, u_int16_t port)
 {
     // get the first free slice
     int slice_id = 0;
@@ -648,7 +649,7 @@ int rdma_new_slice(rdma_context_t *ctx, uint16_t port)
     }
 
     if (slice_id == N_TCP_PER_CONNECTION)
-        return rdma_ret_err(ctx, "No free slice available - rdma_new_slice");
+        return rdma_ret_err(NULL, "No free slice available - rdma_new_slice");
 
     // set the pointers to the buffers
     ctx->slices[slice_id].slice_id = slice_id;
@@ -670,10 +671,16 @@ int rdma_new_slice(rdma_context_t *ctx, uint16_t port)
     return slice_id;
 }
 
-int rdma_delete_slice(rdma_context_t *ctx, int slice_id)
+int rdma_delete_slice_by_port(rdma_context_t *ctx, u_int16_t port)
+{
+    int slice_id = rdma_slice_id_from_port(ctx, port);
+    return rdma_delete_slice_by_id(ctx, slice_id);
+}
+
+int rdma_delete_slice_by_id(rdma_context_t *ctx, int slice_id)
 {
     if (slice_id < 0 || slice_id >= N_TCP_PER_CONNECTION || ctx->is_id_free[slice_id] == TRUE)
-        return rdma_ret_err(ctx, "Invalid slice ID - rdma_delete_slice");
+        return rdma_ret_err(ctx, "Slice not found - rdma_delete_slice");
 
     ctx->is_id_free[slice_id] = TRUE; // Mark the slice as free
 
@@ -688,4 +695,16 @@ int rdma_delete_slice(rdma_context_t *ctx, int slice_id)
     printf("Deleted slice %d\n", slice_id);
 
     return 0;
+}
+
+int rdma_slice_id_from_port(rdma_context_t *ctx, uint16_t port)
+{
+    for (int i = 0; i < N_TCP_PER_CONNECTION; i++)
+    {
+        if (ctx->slices[i].src_port == port)
+        {
+            return i;
+        }
+    }
+    return -1;
 }

@@ -3,8 +3,20 @@
 #define LIB_RDMA_H
 
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <errno.h>
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
+
+#define UNUSED(x) (void)(x)
+
 
 #define MAX_PAYLOAD_SIZE 512
 #define SLICE_BUFFER_SIZE (2 * sizeof(transfer_buffer_t)) // size of the slice in memory. A slice is a double buffer used to exchange data
@@ -81,6 +93,7 @@ typedef struct
     transfer_buffer_t *server_buffer;
     transfer_buffer_t *client_buffer;
     __u16 src_port;
+    int is_polling; // TRUE if polling, FALSE if not
 } rdma_context_slice_t;
 
 /**
@@ -111,10 +124,16 @@ typedef struct
     int is_server;                                     // TRUE if server, FALSE if client
 } rdma_context_t;
 
+typedef struct
+{
+    rdma_context_t *ctx; // context
+    int slice_id;        // ID of the slice
+} thread_pool_arg_t;
+
 typedef struct task
 {
     void (*function)(void *);
-    void *arg;
+    thread_pool_arg_t *arg;
     struct task *next;
 } task_t;
 
@@ -163,7 +182,7 @@ int rdma_write_slice(rdma_context_t *ctx, rdma_context_slice_t *slice);
 
 // polling
 int rdma_poll_cq(rdma_context_t *ctx);
-int rdma_poll_memory(rdma_context_t *ctx, rdma_context_slice_t *slice);
+int rdma_poll_memory(transfer_buffer_t *buffer_to_read);
 
 /** UTILS */
 
@@ -184,6 +203,8 @@ int rdma_manager_run_listen_th(rdma_context_manager_t *ctxm);
 void *rdma_manager_listen_thread(void *arg);
 int rdma_manager_run_server_th(rdma_context_manager_t *ctxm);
 void *rdma_manager_server_thread(void *arg);
+
+int sk_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, char *tx_data, int tx_size, char *rx_data, int *rx_size, int fd);
 
 /** THREAD POOL */
 

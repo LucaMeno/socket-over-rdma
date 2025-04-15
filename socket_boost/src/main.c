@@ -10,7 +10,7 @@
 #include "common.h"
 #include "scap.h"
 #include "sk_utils.h"
-#include "rdma_utils.h"
+#include "rdma_manager.h"
 
 #define PROXY_PORT 5556
 #define SERVER_IP "127.0.0.1"
@@ -31,6 +31,7 @@ rdma_context_t rdma_ctx[MAX_NUMBER_OF_RDMA_CONN] = {0};
 
 int main()
 {
+
     signal(SIGINT, handle_signal);
 
     sk_context_t sk_ctx = {0};
@@ -75,7 +76,6 @@ int main()
 
     return 0;
 }
-
 
 void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx)
 {

@@ -18,8 +18,8 @@ all: $(BUILD) $(BIN) $(OBJ) $(OUT)
 $(BUILD) $(BIN) $(OBJ):
 	mkdir -p $@
 
-$(BIN)/scap: $(SRC)/main.c $(INC)/common.h $(OBJ)/scap.skel.h $(OBJ)/scap.o $(OBJ)/sk_utils.o $(OBJ)/rdma_utils.o
-	$(CC) $(CFLAGS) -I$(INC) -o $@ $< $(OBJ)/scap.o $(OBJ)/sk_utils.o $(OBJ)/rdma_utils.o $(LDLIBS)
+$(BIN)/scap: $(SRC)/main.c $(INC)/common.h $(OBJ)/scap.skel.h $(OBJ)/scap.o $(OBJ)/sk_utils.o $(OBJ)/rdma_utils.o $(OBJ)/rdma_manager.o
+	$(CC) $(CFLAGS) -I$(INC) -o $@ $< $(OBJ)/scap.o $(OBJ)/sk_utils.o $(OBJ)/rdma_utils.o $(OBJ)/rdma_manager.o $(LDLIBS)
 
 $(OBJ)/scap.o: $(SRC)/scap.c $(INC)/scap.h
 	$(CC) $(CFLAGS) -I$(INC) -c -o $@ $< $(LDLIBS)
@@ -28,6 +28,9 @@ $(OBJ)/sk_utils.o: $(SRC)/sk_utils.c $(INC)/sk_utils.h
 	$(CC) $(CFLAGS) -I$(INC) -c -o $@ $<
 
 $(OBJ)/rdma_utils.o: $(SRC)/rdma_utils.c $(INC)/rdma_utils.h
+	$(CC) $(CFLAGS) -I$(INC) -c -o $@ $<
+
+$(OBJ)/rdma_manager.o: $(SRC)/rdma_manager.c $(INC)/rdma_manager.h
 	$(CC) $(CFLAGS) -I$(INC) -c -o $@ $<
 
 $(OBJ)/scap.skel.h: $(OBJ)/scap.bpf.o

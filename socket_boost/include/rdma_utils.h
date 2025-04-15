@@ -3,17 +3,34 @@
 #define RDMA_UTILS_H
 
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <errno.h>
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
+
+#define UNUSED(x) (void)(x)
 
 #define MAX_PAYLOAD_SIZE 512
 #define SLICE_BUFFER_SIZE (2 * sizeof(transfer_buffer_t)) // size of the slice in memory. A slice is a double buffer used to exchange data
 
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t))
 #define N_TCP_PER_CONNECTION 5
+#define INITIAL_CONTEXT_NUMBER 10
+#define N_CONTEXT_REALLOC 5
 #define MR_SIZE ((SLICE_BUFFER_SIZE * N_TCP_PER_CONNECTION) + NOTIFICATION_OFFSET_SIZE)
 
 #define POLL_MEM_ATTEMPTS 10000
+
+#define N_POLL_PER_CQ 1000
+
+#define N_THREADS_POOL 5
 
 #define TRUE 1
 #define FALSE 0
@@ -22,7 +39,7 @@ typedef struct
 {
     uintptr_t addr;
     uint32_t rkey;
-} rdma_meta_info;
+} rdma_meta_info_t;
 
 /**
  * code that can be notified
@@ -34,6 +51,7 @@ typedef enum
     RDMA_DELETE_SLICE = 2,
     TEST = 3,
     EXCHANGE_REMOTE_INFO = 4,
+    RDMA_CLOSE_CONTEXT = 5
 } rdma_communication_code_t;
 
 /**
@@ -74,6 +92,7 @@ typedef struct
     transfer_buffer_t *server_buffer;
     transfer_buffer_t *client_buffer;
     __u16 src_port;
+    int is_polling; // TRUE if polling, FALSE if not
 } rdma_context_slice_t;
 
 /**
@@ -81,18 +100,24 @@ typedef struct
  */
 typedef struct
 {
-    struct rdma_event_channel *ec;                     // Event channel
-    struct rdma_cm_id *listener;                       // Listener ID (SERVER only)
-    struct rdma_cm_id *conn;                           // Connection ID
-    struct ibv_pd *pd;                                 // Protection Domain
-    struct ibv_mr *mr;                                 // Memory Region
-    struct ibv_cq *cq;                                 // Completion Queue
-    struct ibv_qp *qp;                                 // Queue Pair
-    char *buffer;                                      // Buffer to send
-    size_t buffer_size;                                // Size of the buffer
-    uintptr_t remote_addr;                             // Remote address
-    uint32_t remote_rkey;                              // Remote RKey
-    u_int32_t remote_ip;                               // Remote IP
+    // RDMA
+    struct rdma_event_channel *ec; // Event channel
+    struct rdma_cm_id *listener;   // Listener ID (SERVER only)
+    struct rdma_cm_id *conn;       // Connection ID
+    struct ibv_pd *pd;             // Protection Domain
+    struct ibv_mr *mr;             // Memory Region
+    struct ibv_cq *cq;             // Completion Queue
+    struct ibv_qp *qp;             // Queue Pair
+    char *buffer;                  // Buffer to send
+    size_t buffer_size;            // Size of the buffer
+    uintptr_t remote_addr;         // Remote address
+    uint32_t remote_rkey;          // Remote RKey
+
+    // Context id
+    int context_id;  // ID of the context
+    __u32 remote_ip; // Remote IP
+
+    // slices
     rdma_context_slice_t slices[N_TCP_PER_CONNECTION]; // Slices for each TCP connection
     int is_id_free[N_TCP_PER_CONNECTION];              // Free IDs for slices: 0 = free, 1 = used
     int is_server;                                     // TRUE if server, FALSE if client
@@ -101,11 +126,11 @@ typedef struct
 /** SETUP CONTEXT */
 
 // Server-side functions
-int rdma_server_setup(rdma_context_t *sctx, const char *port);
+int rdma_server_setup(rdma_context_t *sctx, u_int16_t server_port);
 int rdma_server_wait_client_connection(rdma_context_t *sctx);
 
 // Client-side functions
-int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port);
+int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, u_int16_t port);
 int rdma_client_connect(rdma_context_t *cctx);
 
 // cleanup
@@ -121,10 +146,13 @@ int rdma_write_slice(rdma_context_t *ctx, rdma_context_slice_t *slice);
 
 // polling
 int rdma_poll_cq(rdma_context_t *ctx);
-int rdma_poll_memory(rdma_context_t *ctx, rdma_context_slice_t *slice);
+int rdma_poll_memory(transfer_buffer_t *buffer_to_read);
 
-// management
-int rdma_new_slice(rdma_context_t *ctx, uint16_t port);
-int rdma_delete_slice(rdma_context_t *ctx, int slice_id);
+/** UTILS */
+
+int rdma_new_slice(rdma_context_t *ctx, u_int16_t port);
+int rdma_delete_slice_by_port(rdma_context_t *ctx, u_int16_t port);
+int rdma_delete_slice_by_id(rdma_context_t *ctx, int slice_id);
+int rdma_slice_id_from_port(rdma_context_t *ctx, uint16_t port);
 
 #endif // RDMA_UTILS_H
