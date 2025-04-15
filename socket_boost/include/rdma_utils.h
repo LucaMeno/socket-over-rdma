@@ -34,32 +34,32 @@ typedef enum
     RDMA_DELETE_SLICE = 2,
     TEST = 3,
     EXCHANGE_REMOTE_INFO = 4,
-} rdma_communication_code;
+} rdma_communication_code_t;
 
 /**
  * notification structure
  */
 typedef struct
 {
-    rdma_communication_code code; // code of the notification
-    int slice_id;                 // ID of the slice
-} notification_data;
+    rdma_communication_code_t code; // code of the notification
+    int slice_id;                   // ID of the slice
+} notification_data_t;
 
 typedef struct
 {
-    notification_data from_server; // notification from server
-    notification_data from_client; // notification from client
+    notification_data_t from_server; // notification from server
+    notification_data_t from_client; // notification from client
 } notification_t;
 
 typedef struct
 {
     volatile uint32_t data_ready;
-} flags;
+} flags_t;
 
 typedef struct
 {
     int buffer_size;
-    flags flags;
+    flags_t flags;
     char buffer[MAX_PAYLOAD_SIZE];
 } transfer_buffer_t;
 
@@ -74,57 +74,57 @@ typedef struct
     transfer_buffer_t *server_buffer;
     transfer_buffer_t *client_buffer;
     __u16 src_port;
-} rdma_context_slice;
+} rdma_context_slice_t;
 
 /**
  * context between two different nodes
  */
 typedef struct
 {
-    struct rdma_event_channel *ec;                   // Event channel
-    struct rdma_cm_id *listener;                     // Listener ID (SERVER only)
-    struct rdma_cm_id *conn;                         // Connection ID
-    struct ibv_pd *pd;                               // Protection Domain
-    struct ibv_mr *mr;                               // Memory Region
-    struct ibv_cq *cq;                               // Completion Queue
-    struct ibv_qp *qp;                               // Queue Pair
-    char *buffer;                                    // Buffer to send
-    size_t buffer_size;                              // Size of the buffer
-    uintptr_t remote_addr;                           // Remote address
-    uint32_t remote_rkey;                            // Remote RKey
-    __u32 remote_ip;                                 // Remote IP
-    rdma_context_slice slices[N_TCP_PER_CONNECTION]; // Slices for each TCP connection
-    int is_id_free[N_TCP_PER_CONNECTION];            // Free IDs for slices: 0 = free, 1 = used
-    int is_server;                                   // TRUE if server, FALSE if client
-} rdma_context;
+    struct rdma_event_channel *ec;                     // Event channel
+    struct rdma_cm_id *listener;                       // Listener ID (SERVER only)
+    struct rdma_cm_id *conn;                           // Connection ID
+    struct ibv_pd *pd;                                 // Protection Domain
+    struct ibv_mr *mr;                                 // Memory Region
+    struct ibv_cq *cq;                                 // Completion Queue
+    struct ibv_qp *qp;                                 // Queue Pair
+    char *buffer;                                      // Buffer to send
+    size_t buffer_size;                                // Size of the buffer
+    uintptr_t remote_addr;                             // Remote address
+    uint32_t remote_rkey;                              // Remote RKey
+    u_int32_t remote_ip;                               // Remote IP
+    rdma_context_slice_t slices[N_TCP_PER_CONNECTION]; // Slices for each TCP connection
+    int is_id_free[N_TCP_PER_CONNECTION];              // Free IDs for slices: 0 = free, 1 = used
+    int is_server;                                     // TRUE if server, FALSE if client
+} rdma_context_t;
 
 /** SETUP CONTEXT */
 
 // Server-side functions
-int rdma_server_setup(rdma_context *sctx, const char *port);
-int rdma_server_wait_client_connection(rdma_context *sctx);
+int rdma_server_setup(rdma_context_t *sctx, const char *port);
+int rdma_server_wait_client_connection(rdma_context_t *sctx);
 
 // Client-side functions
-int rdma_client_setup(rdma_context *cctx, const char *ip, const char *port);
-int rdma_client_connect(rdma_context *cctx);
+int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port);
+int rdma_client_connect(rdma_context_t *cctx);
 
 // cleanup
-int rdma_context_close(rdma_context *ctx);
+int rdma_context_close(rdma_context_t *ctx);
 
 /** COMMUNICATION */
 // send and receive
-int rdma_send_notification(rdma_context *ctx, rdma_communication_code code, int slice_id);
-int rdma_recv_notification(rdma_context *ctx);
+int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_id);
+int rdma_recv_notification(rdma_context_t *ctx);
 
 // write and read
-int rdma_write_slice(rdma_context *ctx, rdma_context_slice *slice);
+int rdma_write_slice(rdma_context_t *ctx, rdma_context_slice_t *slice);
 
 // polling
-int rdma_poll_cq(rdma_context *ctx);
-int rdma_poll_memory(rdma_context *ctx, rdma_context_slice *slice);
+int rdma_poll_cq(rdma_context_t *ctx);
+int rdma_poll_memory(rdma_context_t *ctx, rdma_context_slice_t *slice);
 
 // management
-int rdma_new_slice(rdma_context *ctx);
-int rdma_delete_slice(rdma_context *ctx, int slice_id);
+int rdma_new_slice(rdma_context_t *ctx, uint16_t port);
+int rdma_delete_slice(rdma_context_t *ctx, int slice_id);
 
 #endif // RDMA_UTILS_H

@@ -187,7 +187,7 @@ int set_target_ports(bpf_context_t *ctx, __u16 target_ports[], int n, __u16 serv
     return 0;
 }
 
-int push_sock_to_map(bpf_context_t *ctx, struct client_sk_t client_sks[], int n)
+int push_sock_to_map(bpf_context_t *ctx, client_sk_t client_sks[], int n)
 {
     int err = 0;
     for (int i = 0; i < n; i++)

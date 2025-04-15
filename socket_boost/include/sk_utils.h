@@ -18,15 +18,15 @@
 #include <bpf/bpf.h>
 #include "common.h"
 
-struct client_sk_t
+typedef struct 
 {
     int fd;
     struct sock_id sk_id;
-};
+}client_sk_t;
 
 typedef struct
 {
-    struct client_sk_t client_sk_fd[NUMBER_OF_SOCKETS];
+    client_sk_t client_sk_fd[NUMBER_OF_SOCKETS];
     int server_sk_fd;
     __u16 server_port;
     __u32 server_ip;

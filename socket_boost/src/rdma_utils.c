@@ -19,7 +19,7 @@
 
 /** MISC */
 
-int rdma_ret_err(rdma_context *rdma_ctx, char *msg)
+int rdma_ret_err(rdma_context_t *rdma_ctx, char *msg)
 {
     perror(msg);
     if (rdma_ctx)
@@ -30,7 +30,7 @@ int rdma_ret_err(rdma_context *rdma_ctx, char *msg)
     return -1;
 }
 
-const char *get_op_name(rdma_communication_code code)
+const char *get_op_name(rdma_communication_code_t code)
 {
     switch (code)
     {
@@ -51,7 +51,7 @@ const char *get_op_name(rdma_communication_code code)
 
 /** SERVER */
 
-int rdma_server_setup(rdma_context *sctx, const char *port)
+int rdma_server_setup(rdma_context_t *sctx, const char *port)
 {
     sctx->is_server = TRUE;
 
@@ -103,7 +103,7 @@ int rdma_server_setup(rdma_context *sctx, const char *port)
     return 0;
 }
 
-int rdma_server_wait_client_connection(rdma_context *sctx)
+int rdma_server_wait_client_connection(rdma_context_t *sctx)
 {
     // 1. Wait for RDMA_CM_EVENT_CONNECT_REQUEST
     struct rdma_cm_event *event;
@@ -180,7 +180,7 @@ int rdma_server_wait_client_connection(rdma_context *sctx)
 
 /** CLIENT */
 
-int rdma_client_setup(rdma_context *cctx, const char *ip, const char *port)
+int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port)
 {
     cctx->is_server = FALSE;
 
@@ -199,7 +199,17 @@ int rdma_client_setup(rdma_context *cctx, const char *ip, const char *port)
 
     // 3. Resolve address of server
     struct addrinfo *res;
-    getaddrinfo(ip, port, NULL, &res);
+    char ip_str[INET_ADDRSTRLEN];
+    char port_str[6];
+
+    // Convert IP address to string
+    if (inet_ntop(AF_INET, &ip, ip_str, sizeof(ip_str)) == NULL)
+        return rdma_ret_err(cctx, "inet_ntop - rdma_setup_client");
+
+    snprintf(port_str, sizeof(port_str), "%u", port);
+
+    getaddrinfo(ip_str, port_str, NULL, &res);
+
     rdma_resolve_addr(cctx->conn, NULL, res->ai_addr, 2000);
     freeaddrinfo(res);
     if (!cctx->conn)
@@ -257,7 +267,7 @@ int rdma_client_setup(rdma_context *cctx, const char *ip, const char *port)
     return 0;
 }
 
-int rdma_client_connect(rdma_context *cctx)
+int rdma_client_connect(rdma_context_t *cctx)
 {
     // 1. Call rdma_connect
     struct rdma_conn_param conn_param = {
@@ -317,7 +327,7 @@ int rdma_client_connect(rdma_context *cctx)
 
 /** COMMUNICATION */
 
-int rdma_context_close(rdma_context *ctx)
+int rdma_context_close(rdma_context_t *ctx)
 {
     if (ctx->conn)
     {
@@ -340,7 +350,7 @@ int rdma_context_close(rdma_context *ctx)
     return 0;
 }
 
-int rdma_send_notification(rdma_context *ctx, rdma_communication_code code, int slice_id)
+int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_id)
 {
 
     notification_t *notification = (notification_t *)ctx->buffer;
@@ -392,7 +402,7 @@ int rdma_send_notification(rdma_context *ctx, rdma_communication_code code, int 
     return 0;
 }
 
-int rdma_recv_notification(rdma_context *ctx)
+int rdma_recv_notification(rdma_context_t *ctx)
 {
     // 1. Poll the completion queue
     if (rdma_poll_cq(ctx) != 0)
@@ -504,7 +514,7 @@ int rdma_recv_notification(rdma_context *ctx)
     return 0;
 }
 
-int rdma_write_slice(rdma_context *ctx, rdma_context_slice *slice)
+int rdma_write_slice(rdma_context_t *ctx, rdma_context_slice_t *slice)
 {
     struct ibv_send_wr send_wr = {};
     struct ibv_sge sge;
@@ -575,7 +585,7 @@ int rdma_write_slice(rdma_context *ctx, rdma_context_slice *slice)
     return 0;
 }
 
-int rdma_poll_cq(rdma_context *ctx)
+int rdma_poll_cq(rdma_context_t *ctx)
 {
     if (ctx->cq == NULL)
         return rdma_ret_err(ctx, "CQ is NULL - rdma_poll_cq");
@@ -598,7 +608,7 @@ int rdma_poll_cq(rdma_context *ctx)
     return 0;
 }
 
-int rdma_poll_memory(rdma_context *ctx, rdma_context_slice *slice)
+int rdma_poll_memory(rdma_context_t *ctx, rdma_context_slice_t *slice)
 {
     transfer_buffer_t *buffer_to_read = (ctx->is_server == TRUE) ? slice->client_buffer : slice->server_buffer;
 
@@ -624,9 +634,8 @@ int rdma_poll_memory(rdma_context *ctx, rdma_context_slice *slice)
     return 0;
 }
 
-int rdma_new_slice(rdma_context *ctx)
+int rdma_new_slice(rdma_context_t *ctx, uint16_t port)
 {
-
     // get the first free slice
     int slice_id = 0;
     for (; slice_id < N_TCP_PER_CONNECTION; slice_id++)
@@ -649,7 +658,7 @@ int rdma_new_slice(rdma_context *ctx)
                                                                 slice_id * SLICE_BUFFER_SIZE +
                                                                 sizeof(transfer_buffer_t)); // skip the server buffer
 
-    ctx->slices[slice_id].src_port = 0; // TODO: set the source port
+    ctx->slices[slice_id].src_port = port;
 
     // notify the other side about the new slice
     if (rdma_send_notification(ctx, RDMA_NEW_SLICE, slice_id) != 0)
@@ -661,7 +670,7 @@ int rdma_new_slice(rdma_context *ctx)
     return slice_id;
 }
 
-int rdma_delete_slice(rdma_context *ctx, int slice_id)
+int rdma_delete_slice(rdma_context_t *ctx, int slice_id)
 {
     if (slice_id < 0 || slice_id >= N_TCP_PER_CONNECTION || ctx->is_id_free[slice_id] == TRUE)
         return rdma_ret_err(ctx, "Invalid slice ID - rdma_delete_slice");

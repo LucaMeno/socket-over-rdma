@@ -12,10 +12,12 @@
 #include "sk_utils.h"
 #include "rdma_utils.h"
 
-#define SRV_PORT 5556
+#define PROXY_PORT 5556
 #define SERVER_IP "127.0.0.1"
 #define TARGET_PORT 7777
-#define RDMA_PORT "7471"
+#define RDMA_PORT 7471
+
+#define MAX_NUMBER_OF_RDMA_CONN NUMBER_OF_SOCKETS
 
 volatile sig_atomic_t STOP = false;
 
@@ -25,15 +27,14 @@ void error_and_exit(const char *msg);
 
 void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx);
 
+rdma_context_t rdma_ctx[MAX_NUMBER_OF_RDMA_CONN] = {0};
+
 int main()
 {
     signal(SIGINT, handle_signal);
 
     sk_context_t sk_ctx = {0};
     bpf_context_t bpf_ctx = {0};
-    rdma_context rdma_ctx = {0};
-
-    rdma_server_setup(&rdma_ctx, RDMA_PORT);
 
     int err;
 
@@ -45,7 +46,7 @@ int main()
     __u16 ports_to_set[1] = {TARGET_PORT};
     int n = sizeof(ports_to_set) / sizeof(ports_to_set[0]);
 
-    err = set_target_ports(&bpf_ctx, ports_to_set, n, SRV_PORT);
+    err = set_target_ports(&bpf_ctx, ports_to_set, n, PROXY_PORT);
     check_error(err, "");
     printf("Target ports set\n");
 
@@ -53,7 +54,7 @@ int main()
     check_error(err, "");
     printf("eBPF program attached to socket\n");
 
-    err = setup_sockets(&sk_ctx, SRV_PORT, inet_addr(SERVER_IP));
+    err = setup_sockets(&sk_ctx, PROXY_PORT, inet_addr(SERVER_IP));
     check_error(err, "");
     printf("Sockets setup complete\n");
 
@@ -74,6 +75,7 @@ int main()
 
     return 0;
 }
+
 
 void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx)
 {
@@ -192,9 +194,6 @@ void handle_signal(int signal)
     STOP = true;
 }
 
-/**
- * error if result is not 0
- */
 void check_error(int result, const char *msg)
 {
     if (result != 0)
