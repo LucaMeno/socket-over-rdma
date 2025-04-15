@@ -2,9 +2,12 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/socket.h>
 #include "librdma/librdma.h"
 
-#define PORT "7471"
+#define RDMA_PORT 7471
 #define SERVER_IP "192.168.109.132"
 
 #define UNUSED(x) (void)(x)
@@ -21,56 +24,49 @@ void check_error(int err, const char *msg)
 
 int main()
 {
-    rdma_context cctx = {0};
+    // convert IP into u_int32_t
+    struct in_addr addr;
+    if (inet_pton(AF_INET, SERVER_IP, &addr) <= 0)
+    {
+        perror("inet_pton");
+        return -1;
+    }
+    uint32_t ip = addr.s_addr;
 
-    int err;
+    rdma_context_manager_t ctx_mng = {};
+    int err = rdma_manager_init(&ctx_mng, RDMA_PORT);
 
-    err = rdma_client_setup(&cctx, SERVER_IP, PORT);
-    check_error(err, "Failed to setup client");
-    printf("Client setup complete.\n");
+    printf("Context maanger initialized.\n");
 
-    err = rdma_client_connect(&cctx);
-    check_error(err, "Failed to connect to server");
-    printf("Connected to server.\n");
-
-    printf("---------------------------------------------------------\n");
-
-    // create a slice
-    int slice_id = rdma_new_slice(&cctx);
-    check_error(slice_id, "Failed to create slice");
-
-    printf("---------------------------------------------------------\n");
+    rdma_context_slice_t *slice = NULL;
+    uint16_t port = 10100;
+    slice = rdma_manager_get_slice(&ctx_mng, ip, port);
+    rdma_context_t *cctx = &ctx_mng.ctxs[rdma_manager_get_context_by_ip(&ctx_mng, ip)];
 
     // write
     char *data = "Hello, TEST RDMA!";
     int data_size = strlen(data) + 1; // +1 for null terminator
 
-    transfer_buffer_t *buffer_to_write = cctx.slices[slice_id].client_buffer;
+    transfer_buffer_t *buffer_to_write = slice->client_buffer;
 
     buffer_to_write->buffer_size = data_size;
     memcpy(buffer_to_write->buffer, data, data_size);
     buffer_to_write->buffer[data_size] = '\0'; // null terminate the string
 
-    err = rdma_write_slice(&cctx, &cctx.slices[slice_id]);
+    err = rdma_write_slice(cctx, slice);
     check_error(err, "Failed to write data");
 
-    printf("---------------------------------------------------------\n");
-
     // notify the server that data is ready
-    err = rdma_send_notification(&cctx, RDMA_DATA_READY, slice_id);
+    err = rdma_send_notification(cctx, RDMA_DATA_READY, slice->slice_id);
     check_error(err, "Failed to send notification");
 
-    printf("---------------------------------------------------------\n");
-
     // delete the slice
-    err = rdma_delete_slice(&cctx, slice_id);
+    err = rdma_delete_slice_by_id(cctx, slice->slice_id);
     check_error(err, "Failed to delete slice");
 
-    printf("---------------------------------------------------------\n");
-
     // disonnect and cleanup
-    err = rdma_context_close(&cctx);
-    check_error(err, "Failed to close connection");
+
+    rdma_manager_destroy(&ctx_mng);
     printf("Connection closed and resources cleaned up.\n");
 
     return 0;

@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include "librdma/librdma.h"
 
-#define PORT "7471"
+#define PORT 7471
 
 void check_error(int err, const char *msg)
 {
@@ -17,44 +17,30 @@ void check_error(int err, const char *msg)
 
 int main()
 {
-    int err;
-    rdma_context sctx = {};
 
-    err = rdma_server_setup(&sctx, PORT);
-    check_error(err, "Failed to setup server");
-    printf("Server setup complete.\n");
+    rdma_context_manager_t ctx_mng = {};
+    int err = rdma_manager_init(&ctx_mng, PORT);
+    check_error(err, "Failed to initialize context manager");
 
-    err = rdma_server_wait_client_connection(&sctx);
-    check_error(err, "Failed to wait for client");
-    printf("Client connected.\n");
+    printf("Context manager initialized.\n");
 
-    
-    printf("---------------------------------------------------------\n");
+    // start the server
+    err = rdma_manager_run_server_th(&ctx_mng);
+    check_error(err, "Failed to start server");
 
-    // create a slice
-    err = rdma_recv_notification(&sctx);
-    check_error(err, "Failed to listen for notifications");
+    printf("Server started.\n");
 
-    
-    printf("---------------------------------------------------------\n");
+    printf("Listening for notifications...\n");
 
-    // noification data ready
-    err = rdma_recv_notification(&sctx);
-    check_error(err, "Failed to listen for notifications");
-
-    
-    printf("---------------------------------------------------------\n");
-
-    // delete the slice
-    err = rdma_recv_notification(&sctx);
-    check_error(err, "Failed to send notification");
-
-    
-    printf("---------------------------------------------------------\n");
-
-    err = rdma_context_close(&sctx);
-    check_error(err, "Failed to close connection");
-    printf("Connection closed and resources cleaned up.\n");
+    // wait for the server thread to finish
+    if (ctx_mng.server_thread != 0)
+    {
+        pthread_join(ctx_mng.server_thread, NULL);
+        pthread_join(ctx_mng.notification_thread, NULL);
+        printf("Server thread finished.\n");
+    }
+    printf("STOPPING SERVER\n");
+    err = rdma_manager_destroy(&ctx_mng);
 
     return 0;
 }
