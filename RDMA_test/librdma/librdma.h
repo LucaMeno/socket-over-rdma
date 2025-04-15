@@ -40,6 +40,7 @@ typedef enum
     RDMA_DELETE_SLICE = 2,
     TEST = 3,
     EXCHANGE_REMOTE_INFO = 4,
+    RDMA_CLOSE_CONTEXT = 5
 } rdma_communication_code_t;
 
 /**
@@ -136,6 +137,7 @@ typedef struct
     pthread_t notification_thread;
     pthread_t server_thread;
     thread_pool_t *pool; // thread pool for worker threads
+    int stop_threads;    // flag to stop the threads
 } rdma_context_manager_t;
 
 /** SETUP CONTEXT */

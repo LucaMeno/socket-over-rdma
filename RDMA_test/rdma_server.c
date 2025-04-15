@@ -39,6 +39,7 @@ int main()
         pthread_join(ctx_mng.notification_thread, NULL);
         printf("Server thread finished.\n");
     }
+    
     printf("STOPPING SERVER\n");
     err = rdma_manager_destroy(&ctx_mng);
 

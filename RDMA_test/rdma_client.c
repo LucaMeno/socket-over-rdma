@@ -64,6 +64,8 @@ int main()
     err = rdma_delete_slice_by_id(cctx, slice->slice_id);
     check_error(err, "Failed to delete slice");
 
+    err = rdma_send_notification(cctx, RDMA_CLOSE_CONTEXT, -1);
+
     // disonnect and cleanup
 
     rdma_manager_destroy(&ctx_mng);

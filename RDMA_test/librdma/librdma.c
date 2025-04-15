@@ -55,6 +55,8 @@ const char *get_op_name(rdma_communication_code_t code)
         return "TEST";
     case EXCHANGE_REMOTE_INFO:
         return "EXCHANGE_REMOTE_INFO";
+    case RDMA_CLOSE_CONTEXT:
+        return "RDMA_CLOSE_CONTEXT";
     default:
         return "UNKNOWN";
     }
@@ -513,6 +515,12 @@ int rdma_recv_notification(rdma_context_t *ctx)
         ctx->slices[slice_id].server_buffer = NULL;
 
         break;
+
+    case RDMA_CLOSE_CONTEXT:
+        // TODO
+
+        break;
+
     default:
         printf("Unknown notification code\n");
         break;
@@ -762,6 +770,30 @@ int rdma_manager_destroy(rdma_context_manager_t *ctxm)
 {
     for (int i = 0; i < ctxm->ctx_count; i++)
         rdma_context_close(&ctxm->ctxs[i]);
+    free(ctxm->ctxs);
+    ctxm->ctxs = NULL;
+    ctxm->ctx_count = 0;
+    ctxm->rdma_port = 0;
+
+    // destroy the thread pool
+    thread_pool_destroy(ctxm->pool);
+    ctxm->pool = NULL;
+
+    // stop the threads
+    ctxm->stop_threads = TRUE;
+
+    if (ctxm->notification_thread)
+    {
+        pthread_join(ctxm->notification_thread, NULL);
+        ctxm->notification_thread = 0;
+    }
+
+    if (ctxm->server_thread)
+    {
+        pthread_join(ctxm->server_thread, NULL);
+        ctxm->server_thread = 0;
+    }
+
     return 0;
 }
 
@@ -856,7 +888,7 @@ void *rdma_manager_listen_thread(void *arg)
     rdma_context_manager_t *ctxm = (rdma_context_manager_t *)arg;
     printf("Notification thread running\n");
 
-    while (1)
+    while (ctxm->stop_threads == FALSE)
     {
         rdma_context_t *ctx = NULL;
         int j;
@@ -935,7 +967,7 @@ void *rdma_manager_server_thread(void *arg)
 {
     rdma_context_manager_t *ctxm = (rdma_context_manager_t *)arg;
     printf("Server thread running\n");
-    while (1)
+    while (ctxm->stop_threads == FALSE)
     {
         rdma_context_t *ctx = NULL;
         int ctx_id = rdma_manager_get_free_context(ctxm);
