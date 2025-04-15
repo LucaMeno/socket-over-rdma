@@ -15,13 +15,18 @@
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 
-#include "librdma.h"
+#include "rdma_utils.h"
 
 /** MISC */
 
-int ret_err(const char *msg)
+int rdma_ret_err(rdma_context *rdma_ctx, char *msg)
 {
     perror(msg);
+    if (rdma_ctx)
+    {
+        printf("Cleaning up RMDA...\n");
+        rdma_context_close(rdma_ctx);
+    }
     return -1;
 }
 
@@ -67,30 +72,30 @@ int rdma_server_setup(rdma_context *sctx, const char *port)
     // 1. Create event channel
     sctx->ec = rdma_create_event_channel();
     if (!sctx->ec)
-        return ret_err("rdma_create_event_channel - rdma_setup_server");
+        return rdma_ret_err(sctx, "rdma_create_event_channel - rdma_setup_server");
 
     // 2. Create RDMA ID for listener
     if (rdma_create_id(sctx->ec, &sctx->listener, NULL, RDMA_PS_TCP))
-        return ret_err("rdma_create_id");
+        return rdma_ret_err(sctx, "rdma_create_id");
 
     // 3. Resolve address of server
     if (getaddrinfo(NULL, port, &hints, &res))
-        return ret_err("getaddrinfo");
+        return rdma_ret_err(sctx, "getaddrinfo");
 
     // 4. Bind address to listener
     if (rdma_bind_addr(sctx->listener, res->ai_addr))
-        return ret_err("rdma_bind_addr");
+        return rdma_ret_err(sctx, "rdma_bind_addr");
 
     freeaddrinfo(res);
 
     // 5. start listening for incoming connections
     if (rdma_listen(sctx->listener, 1))
-        return ret_err("rdma_listen");
+        return rdma_ret_err(sctx, "rdma_listen");
 
     // 6. set up the buffer
     sctx->buffer = malloc(MR_SIZE);
     if (!sctx->buffer)
-        return ret_err("malloc buffer - rdma_setup_server");
+        return rdma_ret_err(sctx, "malloc buffer - rdma_setup_server");
     // memset(sctx->buffer, 0, MR_SIZE);
 
     sctx->buffer_size = MR_SIZE;
@@ -103,7 +108,7 @@ int rdma_server_wait_client_connection(rdma_context *sctx)
     // 1. Wait for RDMA_CM_EVENT_CONNECT_REQUEST
     struct rdma_cm_event *event;
     if (rdma_get_cm_event(sctx->ec, &event))
-        return ret_err("rdma_get_cm_event - rdma_wait_for_client");
+        return rdma_ret_err(sctx, "rdma_get_cm_event - rdma_wait_for_client");
 
     // 2. Extract conn ID from event and also get the remote IP
     sctx->conn = event->id;
@@ -130,12 +135,12 @@ int rdma_server_wait_client_connection(rdma_context *sctx)
 
     qp_attr.send_cq = qp_attr.recv_cq = ibv_create_cq(sctx->conn->verbs, 2, NULL, NULL, 0);
     if (!qp_attr.send_cq)
-        return ret_err("ibv_create_cq - rdma_wait_for_client");
+        return rdma_ret_err(sctx, "ibv_create_cq - rdma_wait_for_client");
 
     sctx->cq = qp_attr.send_cq;
 
     if (rdma_create_qp(sctx->conn, sctx->pd, &qp_attr))
-        return ret_err("rdma_create_qp");
+        return rdma_ret_err(sctx, "rdma_create_qp");
 
     // Post a receive work request for receiving the remote address and rkey
     struct ibv_sge sge = {
@@ -147,7 +152,7 @@ int rdma_server_wait_client_connection(rdma_context *sctx)
     struct ibv_recv_wr *bad_wr;
     ibv_post_recv(sctx->conn->qp, &recv_wr, &bad_wr);
     if (bad_wr)
-        return ret_err("Failed to post recv - rdma_wait_for_client");
+        return rdma_ret_err(sctx, "Failed to post recv - rdma_wait_for_client");
 
     rdma_meta_info info = {
         .addr = (uintptr_t)sctx->buffer,
@@ -162,10 +167,10 @@ int rdma_server_wait_client_connection(rdma_context *sctx)
 
     // 6. Accept connection using rdma_accept
     if (rdma_accept(sctx->conn, &conn_param))
-        ret_err("rdma_accept");
+        rdma_ret_err(sctx, "rdma_accept");
 
     if (rdma_get_cm_event(sctx->ec, &event))
-        return ret_err("rdma_get_cm_event - rdma_wait_for_client");
+        return rdma_ret_err(sctx, "rdma_get_cm_event - rdma_wait_for_client");
 
     // 7. Wait for RDMA_CM_EVENT_ESTABLISHED
     rdma_ack_cm_event(event);
@@ -190,7 +195,7 @@ int rdma_client_setup(rdma_context *cctx, const char *ip, const char *port)
     // 2. Create RDMA ID for connection
     rdma_create_id(cctx->ec, &cctx->conn, NULL, RDMA_PS_TCP);
     if (!cctx->conn)
-        return ret_err("rdma_create_id - rdma_setup_client");
+        return rdma_ret_err(cctx, "rdma_create_id - rdma_setup_client");
 
     // 3. Resolve address of server
     struct addrinfo *res;
@@ -198,7 +203,7 @@ int rdma_client_setup(rdma_context *cctx, const char *ip, const char *port)
     rdma_resolve_addr(cctx->conn, NULL, res->ai_addr, 2000);
     freeaddrinfo(res);
     if (!cctx->conn)
-        return ret_err("rdma_resolve_addr - rdma_setup_client");
+        return rdma_ret_err(cctx, "rdma_resolve_addr - rdma_setup_client");
 
     cctx->remote_ip = ((struct sockaddr_in *)res->ai_addr)->sin_addr.s_addr;
 
@@ -217,12 +222,12 @@ int rdma_client_setup(rdma_context *cctx, const char *ip, const char *port)
     // 7. Allocate PD
     cctx->pd = ibv_alloc_pd(cctx->conn->verbs);
     if (!cctx->pd)
-        return ret_err("ibv_alloc_pd - rdma_setup_client");
+        return rdma_ret_err(cctx, "ibv_alloc_pd - rdma_setup_client");
 
     // 8. set up the buffer
     cctx->buffer = malloc(MR_SIZE);
     if (!cctx->buffer)
-        return ret_err("malloc buffer - rdma_setup_client");
+        return rdma_ret_err(cctx, "malloc buffer - rdma_setup_client");
 
     cctx->buffer_size = MR_SIZE;
 
@@ -240,14 +245,14 @@ int rdma_client_setup(rdma_context *cctx, const char *ip, const char *port)
 
     qp_attr.send_cq = qp_attr.recv_cq = ibv_create_cq(cctx->conn->verbs, 2, NULL, NULL, 0);
     if (!qp_attr.send_cq)
-        return ret_err("ibv_create_cq - rdma_setup_client");
+        return rdma_ret_err(cctx, "ibv_create_cq - rdma_setup_client");
 
     cctx->cq = qp_attr.send_cq; // :-(
 
     // 10. Create QP with ctx->conn and PD
     rdma_create_qp(cctx->conn, cctx->pd, &qp_attr);
     if (!cctx->conn->qp)
-        return ret_err("rdma_create_qp - rdma_setup_client");
+        return rdma_ret_err(cctx, "rdma_create_qp - rdma_setup_client");
 
     return 0;
 }
@@ -261,7 +266,7 @@ int rdma_client_connect(rdma_context *cctx)
         .rnr_retry_count = 7};
 
     if (rdma_connect(cctx->conn, &conn_param) != 0)
-        return ret_err("rdma_connect - rdma_connect_server");
+        return rdma_ret_err(cctx, "rdma_connect - rdma_connect_server");
 
     // 2. Wait for RDMA_CM_EVENT_ESTABLISHED
     struct rdma_cm_event *event = NULL;
@@ -303,7 +308,7 @@ int rdma_client_connect(rdma_context *cctx)
 
     struct ibv_send_wr *bad_send_wr;
     if (ibv_post_send(cctx->conn->qp, &send_wr, &bad_send_wr) != 0) // Post the send work request
-        return ret_err("Failed to post send - rdma_connect_server");
+        return rdma_ret_err(cctx, "Failed to post send - rdma_connect_server");
 
     rdma_poll_cq(cctx); // wait for completion
     sleep(2);
@@ -370,7 +375,7 @@ int rdma_send_notification(rdma_context *ctx, rdma_communication_code code, int 
     // Post send with ibv_post_send
     struct ibv_send_wr *bad_send_wr;
     if (ibv_post_send(ctx->conn->qp, &send_wr, &bad_send_wr) != 0) // Post the send work request
-        return ret_err("Failed to post send - rdma_send_notification");
+        return rdma_ret_err(ctx, "Failed to post send - rdma_send_notification");
 
     // Poll the completion queue
     rdma_poll_cq(ctx);
@@ -391,7 +396,7 @@ int rdma_recv_notification(rdma_context *ctx)
 {
     // 1. Poll the completion queue
     if (rdma_poll_cq(ctx) != 0)
-        return ret_err("Failed to poll CQ - rdma_listen_notification");
+        return rdma_ret_err(ctx, "Failed to poll CQ - rdma_listen_notification");
 
     // post another receive work request
     struct ibv_sge sge = {
@@ -405,7 +410,7 @@ int rdma_recv_notification(rdma_context *ctx)
 
     // Post receive with ibv_post_recv
     if (ibv_post_recv(ctx->conn->qp, &recv_wr, &bad_wr) != 0 || bad_wr)
-        return ret_err("Failed to post recv - rdma_recv");
+        return rdma_ret_err(ctx, "Failed to post recv - rdma_recv");
 
     notification_t *notification = (notification_t *)ctx->buffer;
     int code; // enum rdma_communication_code
@@ -445,7 +450,7 @@ int rdma_recv_notification(rdma_context *ctx)
 
     case RDMA_DATA_READY:
         if (slice_id < 0 || slice_id >= N_TCP_PER_CONNECTION || ctx->is_id_free[slice_id] == TRUE)
-            return ret_err("Invalid slice ID - rdma_listen_notification RDMA_DATA_READY");
+            return rdma_ret_err(ctx, "Invalid slice ID - rdma_listen_notification RDMA_DATA_READY");
 
         printf("Data ready in slice %d\n", slice_id);
 
@@ -461,7 +466,7 @@ int rdma_recv_notification(rdma_context *ctx)
     case RDMA_NEW_SLICE:
 
         if (slice_id < 0 || slice_id >= N_TCP_PER_CONNECTION || ctx->is_id_free[slice_id] == FALSE)
-            return ret_err("Invalid slice ID - rdma_listen_notification RDMA_NEW_SLICE");
+            return rdma_ret_err(ctx, "Invalid slice ID - rdma_listen_notification RDMA_NEW_SLICE");
 
         ctx->is_id_free[slice_id] = FALSE; // Mark the slice as used
 
@@ -482,7 +487,7 @@ int rdma_recv_notification(rdma_context *ctx)
     case RDMA_DELETE_SLICE:
 
         if (slice_id < 0 || slice_id >= N_TCP_PER_CONNECTION || ctx->is_id_free[slice_id] == TRUE)
-            return ret_err("Invalid slice ID - rdma_listen_notification RDMA_DELETE_SLICE");
+            return rdma_ret_err(ctx, "Invalid slice ID - rdma_listen_notification RDMA_DELETE_SLICE");
 
         ctx->is_id_free[slice_id] = TRUE; // Mark the slice as free
 
@@ -552,7 +557,7 @@ int rdma_write_slice(rdma_context *ctx, rdma_context_slice *slice)
     // 4. Post send in SQ with ibv_post_send
     struct ibv_send_wr *bad_send_wr;
     if (ibv_post_send(ctx->conn->qp, &send_wr, &bad_send_wr) != 0) // Post the send work request
-        return ret_err("Failed to post send - rdma_write");
+        return rdma_ret_err(ctx, "Failed to post send - rdma_write");
 
     if (ctx->is_server)
     {
@@ -573,7 +578,7 @@ int rdma_write_slice(rdma_context *ctx, rdma_context_slice *slice)
 int rdma_poll_cq(rdma_context *ctx)
 {
     if (ctx->cq == NULL)
-        return ret_err("CQ is NULL - rdma_poll_cq");
+        return rdma_ret_err(ctx, "CQ is NULL - rdma_poll_cq");
 
     struct ibv_wc wc;
     int num_completions;
@@ -583,11 +588,11 @@ int rdma_poll_cq(rdma_context *ctx)
     } while (num_completions == 0); // poll until we get a completion
 
     if (num_completions < 0)
-        return ret_err("Failed to poll CQ (num_completions<0) - rdma_poll_cq");
+        return rdma_ret_err(ctx, "Failed to poll CQ (num_completions<0) - rdma_poll_cq");
     if (wc.status != IBV_WC_SUCCESS)
     {
         fprintf(stderr, "CQ error: %s (%d)\n", ibv_wc_status_str(wc.status), wc.status);
-        return ret_err("Failed to poll CQ - rdma_poll_cq");
+        return rdma_ret_err(ctx, "Failed to poll CQ - rdma_poll_cq");
     }
 
     return 0;
@@ -634,7 +639,7 @@ int rdma_new_slice(rdma_context *ctx)
     }
 
     if (slice_id == N_TCP_PER_CONNECTION)
-        return ret_err("No free slice available - rdma_new_slice");
+        return rdma_ret_err(ctx, "No free slice available - rdma_new_slice");
 
     // set the pointers to the buffers
     ctx->slices[slice_id].slice_id = slice_id;
@@ -648,7 +653,7 @@ int rdma_new_slice(rdma_context *ctx)
 
     // notify the other side about the new slice
     if (rdma_send_notification(ctx, RDMA_NEW_SLICE, slice_id) != 0)
-        return ret_err("Failed to send notification - rdma_new_slice");
+        return rdma_ret_err(ctx, "Failed to send notification - rdma_new_slice");
 
     printf("Added slice %d, server buffer: %p, client buffer: %p\n",
            slice_id, ctx->slices[slice_id].server_buffer, ctx->slices[slice_id].client_buffer);
@@ -659,7 +664,7 @@ int rdma_new_slice(rdma_context *ctx)
 int rdma_delete_slice(rdma_context *ctx, int slice_id)
 {
     if (slice_id < 0 || slice_id >= N_TCP_PER_CONNECTION || ctx->is_id_free[slice_id] == TRUE)
-        return ret_err("Invalid slice ID - rdma_delete_slice");
+        return rdma_ret_err(ctx, "Invalid slice ID - rdma_delete_slice");
 
     ctx->is_id_free[slice_id] = TRUE; // Mark the slice as free
 
@@ -669,7 +674,7 @@ int rdma_delete_slice(rdma_context *ctx, int slice_id)
 
     // notify the other side about the deletion
     if (rdma_send_notification(ctx, RDMA_DELETE_SLICE, slice_id) != 0)
-        return ret_err("Failed to send notification - rdma_delete_slice");
+        return rdma_ret_err(ctx, "Failed to send notification - rdma_delete_slice");
 
     printf("Deleted slice %d\n", slice_id);
 

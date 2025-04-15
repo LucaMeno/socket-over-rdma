@@ -2,6 +2,14 @@
 #ifndef SCAP_H
 #define SCAP_H
 
+#include <stdio.h>
+#include <bpf/libbpf.h>
+#include <bpf/bpf.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include "common.h"
+#include "sk_utils.h"
+
 #define CGROUP_PATH "/sys/fs/cgroup"
 #define PATH_TO_BPF_OBJ_FILE "build/obj/scap.bpf.o"
 
@@ -24,6 +32,6 @@ int setup_bpf(bpf_context_t *ctx);
 int run_bpf(bpf_context_t *ctx);
 int cleanup_bpf(bpf_context_t *ctx);
 int set_target_ports(bpf_context_t *ctx, __u16 target_p[], int n,  __u16 server_port);
-int push_sock_to_map(bpf_context_t *ctx, struct sock_id sk_ids[], int n, struct client_sk_t client_sks[]);
+int push_sock_to_map(bpf_context_t *ctx, struct client_sk_t client_sks[], int n);
 
 #endif // SCAP_H
