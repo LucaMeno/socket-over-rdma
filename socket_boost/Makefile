@@ -6,12 +6,13 @@ LDLIBS = -lbpf -lrdmacm -libverbs
 
 SRC = src
 INC = include
+TEST_RDMA = tests/rdma
+TEST_SOCKET = tests/socket
 
 BUILD = build
 BIN = $(BUILD)/bin
 OBJ = $(BUILD)/obj
 OUT = $(BIN)/scap
-
 
 all: $(BUILD) $(BIN) $(OBJ) $(OUT)
 
@@ -39,7 +40,12 @@ $(OBJ)/scap.skel.h: $(OBJ)/scap.bpf.o
 $(OBJ)/scap.bpf.o: $(SRC)/scap.bpf.c $(INC)/common.h
 	clang $(CLANG_FLAGS) -I$(INC) -c $< -o $@
 
+test: $(BIN) $(OBJ) $(OBJ)/rdma_manager.o $(OBJ)/rdma_utils.o
+	$(CC) $(CFLAGS) -I$(INC) -o $(BIN)/rdma_client $(TEST_RDMA)/rdma_client.c $(OBJ)/rdma_manager.o $(OBJ)/rdma_utils.o $(LDLIBS)
+	$(CC) $(CFLAGS) -I$(INC) -o $(BIN)/rdma_server $(TEST_RDMA)/rdma_server.c $(OBJ)/rdma_manager.o $(OBJ)/rdma_utils.o $(LDLIBS)
+	$(CC) $(CFLAGS) -I$(INC) -o $(BIN)/client $(TEST_SOCKET)/client.c $(LDLIBS)
+	$(CC) $(CFLAGS) -I$(INC) -o $(BIN)/server $(TEST_SOCKET)/server.c $(LDLIBS)
 
-
+	
 clean:
 	rm -rf $(BUILD)

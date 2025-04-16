@@ -1,7 +1,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include "librdma/librdma.h"
+#include "rdma_manager.h"
 
 #define PORT 7471
 
@@ -27,8 +27,6 @@ int main()
     // start the server
     err = rdma_manager_run_server_th(&ctx_mng);
     check_error(err, "Failed to start server");
-
-    printf("Server started.\n");
 
     printf("Listening for notifications...\n");
 

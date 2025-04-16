@@ -52,8 +52,10 @@ typedef struct
     uint16_t rdma_port; // port used for RDMA
     pthread_t notification_thread;
     pthread_t server_thread;
-    thread_pool_t *pool; // thread pool for worker threads
-    int stop_threads;    // flag to stop the threads
+    thread_pool_t *pool;                  // thread pool for worker threads
+    int stop_threads;                     // flag to stop the threads
+    struct rdma_cm_id *listener;          // Listener ID for incoming connections
+    struct rdma_event_channel *server_ec; // Event channel
 } rdma_context_manager_t;
 
 rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port);
@@ -69,6 +71,7 @@ void *rdma_manager_server_thread(void *arg);
 
 int sk_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, char *tx_data, int tx_size, char *rx_data, int *rx_size, int fd);
 
+int rdma_server_setup(rdma_context_manager_t *ctxm);
 /** THREAD POOL */
 
 void rdma_recv_notfication_th(void *arg);

@@ -2,7 +2,6 @@
 
 #include "rdma_utils.h"
 
-
 /** MISC */
 
 int rdma_ret_err(rdma_context_t *rdma_ctx, char *msg)
@@ -50,279 +49,221 @@ const char *get_op_name(rdma_communication_code_t code)
 
 /** SERVER */
 
-int rdma_server_setup(rdma_context_t *sctx, u_int16_t server_port)
+int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel *server_ec)
 {
-    sctx->is_server = TRUE;
+    ctx->pd = ibv_alloc_pd(ctx->conn->verbs);
+    if (!ctx->pd)
+        return rdma_ret_err(ctx, "ibv_alloc_pd");
 
-    for (int i = 0; i < N_TCP_PER_CONNECTION; i++)
-    {
-        sctx->is_id_free[i] = TRUE;
-    }
+    ctx->buffer = malloc(MR_SIZE);
+    ctx->buffer_size = MR_SIZE;
 
-    struct addrinfo *res; // to hold resolved address
+    ctx->mr = ibv_reg_mr(ctx->pd, ctx->buffer, MR_SIZE,
+                         IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
 
-    struct addrinfo hints = {
-        // hints for getaddrinfo
-        .ai_flags = AI_PASSIVE,    // AI_PASSIVE for server
-        .ai_family = AF_INET,      // AF_INET for IPv4
-        .ai_socktype = SOCK_STREAM // TCP socket
-    };
-
-    // 1. Create event channel
-    sctx->ec = rdma_create_event_channel();
-    if (!sctx->ec)
-        return rdma_ret_err(sctx, "rdma_create_event_channel - rdma_setup_server");
-
-    // 2. Create RDMA ID for listener
-    if (rdma_create_id(sctx->ec, &sctx->listener, NULL, RDMA_PS_TCP))
-        return rdma_ret_err(sctx, "rdma_create_id");
-
-    // 3. Resolve address of server
-    char port[6];
-    snprintf(port, sizeof(port), "%u", server_port);
-    if (getaddrinfo(NULL, port, &hints, &res))
-        return rdma_ret_err(sctx, "getaddrinfo");
-
-    // 4. Bind address to listener
-    if (rdma_bind_addr(sctx->listener, res->ai_addr))
-        return rdma_ret_err(sctx, "rdma_bind_addr");
-
-    freeaddrinfo(res);
-
-    // 5. start listening for incoming connections
-    if (rdma_listen(sctx->listener, 1))
-        return rdma_ret_err(sctx, "rdma_listen");
-
-    // 6. set up the buffer
-    sctx->buffer = malloc(MR_SIZE);
-    if (!sctx->buffer)
-        return rdma_ret_err(sctx, "malloc buffer - rdma_setup_server");
-    // memset(sctx->buffer, 0, MR_SIZE);
-
-    sctx->buffer_size = MR_SIZE;
-
-    return 0;
-}
-
-int rdma_server_wait_client_connection(rdma_context_t *sctx)
-{
-    // 1. Wait for RDMA_CM_EVENT_CONNECT_REQUEST
-    struct rdma_cm_event *event;
-    if (rdma_get_cm_event(sctx->ec, &event))
-        return rdma_ret_err(sctx, "rdma_get_cm_event - rdma_wait_for_client");
-
-    // 2. Extract conn ID from event and also get the remote IP
-    sctx->conn = event->id;
-    struct sockaddr_in *addr_in = (struct sockaddr_in *)&event->id->route.addr.src_addr;
-    sctx->remote_ip = addr_in->sin_addr.s_addr;
-    rdma_ack_cm_event(event);
-
-    // 3. Allocate PD and register MR
-    sctx->pd = ibv_alloc_pd(sctx->conn->verbs);
-
-    sctx->mr = ibv_reg_mr(sctx->pd, sctx->buffer, MR_SIZE,
-                          IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
-
-    // 4. Create CQ and QP
     struct ibv_qp_init_attr qp_attr = {
         .cap = {
-            .max_send_wr = 10,  // Max outstanding send requests
-            .max_recv_wr = 10,  // Max outstanding receive requests
-            .max_send_sge = 10, // Max scatter/gather elements for send
-            .max_recv_sge = 10  // Max scatter/gather elements for recv
-        },
-        .qp_type = IBV_QPT_RC // Reliable connection QP type
-    };
+            .max_send_wr = 10,
+            .max_recv_wr = 10,
+            .max_send_sge = 1,
+            .max_recv_sge = 1},
+        .qp_type = IBV_QPT_RC};
 
-    qp_attr.send_cq = qp_attr.recv_cq = ibv_create_cq(sctx->conn->verbs, 2, NULL, NULL, 0);
-    if (!qp_attr.send_cq)
-        return rdma_ret_err(sctx, "ibv_create_cq - rdma_wait_for_client");
+    ctx->cq = ibv_create_cq(ctx->conn->verbs, 2, NULL, NULL, 0);
+    if (!ctx->cq)
+        return rdma_ret_err(ctx, "ibv_create_cq");
 
-    sctx->cq = qp_attr.send_cq;
+    qp_attr.send_cq = ctx->cq;
+    qp_attr.recv_cq = ctx->cq;
 
-    if (rdma_create_qp(sctx->conn, sctx->pd, &qp_attr))
-        return rdma_ret_err(sctx, "rdma_create_qp");
+    if (rdma_create_qp(ctx->conn, ctx->pd, &qp_attr))
+        return rdma_ret_err(ctx, "rdma_create_qp");
 
-    // Post a receive work request for receiving the remote address and rkey
+    // Post a receive work request to receive the remote address and rkey
     struct ibv_sge sge = {
-        .addr = (uintptr_t)sctx->buffer, // address of the buffer
-        .length = (sizeof(notification_t) + sizeof(rdma_meta_info_t)),
-        .lkey = sctx->mr->lkey // local key of the registered memory region
-    };
+        .addr = (uintptr_t)ctx->buffer,
+        .length = sizeof(notification_t) + sizeof(rdma_meta_info_t),
+        .lkey = ctx->mr->lkey};
+
     struct ibv_recv_wr recv_wr = {.wr_id = 0, .sg_list = &sge, .num_sge = 1};
     struct ibv_recv_wr *bad_wr;
-    ibv_post_recv(sctx->conn->qp, &recv_wr, &bad_wr);
-    if (bad_wr)
-        return rdma_ret_err(sctx, "Failed to post recv - rdma_wait_for_client");
+    ibv_post_recv(ctx->conn->qp, &recv_wr, &bad_wr);
 
+    // Accept the connection and send the remote address and rkey
     rdma_meta_info_t info = {
-        .addr = (uintptr_t)sctx->buffer,
-        .rkey = sctx->mr->rkey};
+        .addr = (uintptr_t)ctx->buffer,
+        .rkey = ctx->mr->rkey};
 
     struct rdma_conn_param conn_param = {
         .initiator_depth = 1,
         .responder_resources = 1,
         .rnr_retry_count = 7,
-        .private_data = (void *)&info,
-        .private_data_len = sizeof(rdma_meta_info_t)};
+        .private_data = &info,
+        .private_data_len = sizeof(info)};
 
-    // 6. Accept connection using rdma_accept
-    if (rdma_accept(sctx->conn, &conn_param))
-        rdma_ret_err(sctx, "rdma_accept");
+    if (rdma_accept(ctx->conn, &conn_param))
+        return rdma_ret_err(ctx, "rdma_accept");
 
-    if (rdma_get_cm_event(sctx->ec, &event))
-        return rdma_ret_err(sctx, "rdma_get_cm_event - rdma_wait_for_client");
+    struct rdma_cm_event *event;
+    if (rdma_get_cm_event(server_ec, &event))
+        return rdma_ret_err(ctx, "rdma_get_cm_event");
 
-    // 7. Wait for RDMA_CM_EVENT_ESTABLISHED
+    if (event->event != RDMA_CM_EVENT_ESTABLISHED)
+        return rdma_ret_err(ctx, "rdma_get_cm_event - not established");
     rdma_ack_cm_event(event);
 
-    return rdma_recv_notification(sctx); // needed to exchange remote info
+    return 0;
 }
 
 /** CLIENT */
 
-int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, u_int16_t port)
+int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port)
 {
-    // IP in HOST
-
     cctx->is_server = FALSE;
 
-    for (int i = 0; i < N_TCP_PER_CONNECTION; i++)
-    {
-        cctx->is_id_free[i] = TRUE;
-    }
+    cctx->conn = NULL;
+    cctx->client_ec = rdma_create_event_channel();
+    if (!cctx->client_ec)
+        return rdma_ret_err(cctx, "rdma_create_event_channel");
 
-    // 1. Create event channel
-    cctx->ec = rdma_create_event_channel();
+    if (rdma_create_id(cctx->client_ec, &cctx->conn, NULL, RDMA_PS_TCP))
+        return rdma_ret_err(cctx, "rdma_create_id - rdma_client_setup");
 
-    // 2. Create RDMA ID for connection
-    rdma_create_id(cctx->ec, &cctx->conn, NULL, RDMA_PS_TCP);
-    if (!cctx->conn)
-        return rdma_ret_err(cctx, "rdma_create_id - rdma_setup_client");
-
-    // 3. Resolve address of server
+    // Resolve the address
     char ip_str[INET_ADDRSTRLEN];
+    if (!inet_ntop(AF_INET, &ip, ip_str, sizeof(ip_str)))
+        return rdma_ret_err(cctx, "inet_ntop - rdma_client_setup");
+
     char port_str[6];
-    if (inet_ntop(AF_INET, &ip, ip_str, sizeof(ip_str)) == NULL)
-        return rdma_ret_err(cctx, "inet_ntop - rdma_setup_client");
     snprintf(port_str, sizeof(port_str), "%u", port);
 
-    printf("connecting to IP: %s, port: %s\n", ip_str, port_str);
-
+    struct addrinfo hints = {
+        .ai_family = AF_INET,
+        .ai_socktype = SOCK_STREAM};
     struct addrinfo *res;
-    getaddrinfo(ip_str, port_str, NULL, &res);
-    rdma_resolve_addr(cctx->conn, NULL, res->ai_addr, 2000);
-    freeaddrinfo(res);
-    if (!cctx->conn)
-        return rdma_ret_err(cctx, "rdma_resolve_addr - rdma_setup_client");
+    if (getaddrinfo(ip_str, port_str, &hints, &res) != 0)
+        return rdma_ret_err(cctx, "getaddrinfo - rdma_client_setup");
+
+    if (rdma_resolve_addr(cctx->conn, NULL, res->ai_addr, 2000))
+        return rdma_ret_err(cctx, "rdma_resolve_addr");
 
     cctx->remote_ip = ((struct sockaddr_in *)res->ai_addr)->sin_addr.s_addr;
 
-    // 4. Wait for RDMA_CM_EVENT_ADDR_RESOLVED
+    freeaddrinfo(res);
+
+    // Wait for the ADDR_RESOLVED event
     struct rdma_cm_event *event = NULL;
-    rdma_get_cm_event(cctx->ec, &event);
+    if (rdma_get_cm_event(cctx->client_ec, &event))
+        return rdma_ret_err(cctx, "rdma_get_cm_event - addr_resolved");
+
+    if (event->event != RDMA_CM_EVENT_ADDR_RESOLVED)
+        return rdma_ret_err(cctx, "unexpected event - not ADDR_RESOLVED");
+
     rdma_ack_cm_event(event);
 
-    // 5. Resolve route to server
-    rdma_resolve_route(cctx->conn, 2000); // Timeout in milliseconds
-    rdma_get_cm_event(cctx->ec, &event);
+    // Resolve the route
+    if (rdma_resolve_route(cctx->conn, 2000))
+        return rdma_ret_err(cctx, "rdma_resolve_route");
 
-    // 6. Wait for RDMA_CM_EVENT_ROUTE_RESOLVED
+    if (rdma_get_cm_event(cctx->client_ec, &event))
+        return rdma_ret_err(cctx, "rdma_get_cm_event - route_resolved");
+
+    if (event->event != RDMA_CM_EVENT_ROUTE_RESOLVED)
+        return rdma_ret_err(cctx, "unexpected event - not ROUTE_RESOLVED");
+
     rdma_ack_cm_event(event);
 
-    // 7. Allocate PD
+    // PD, buffer, MR
     cctx->pd = ibv_alloc_pd(cctx->conn->verbs);
     if (!cctx->pd)
-        return rdma_ret_err(cctx, "ibv_alloc_pd - rdma_setup_client");
+        return rdma_ret_err(cctx, "ibv_alloc_pd");
 
-    // 8. set up the buffer
     cctx->buffer = malloc(MR_SIZE);
     if (!cctx->buffer)
-        return rdma_ret_err(cctx, "malloc buffer - rdma_setup_client");
+        return rdma_ret_err(cctx, "malloc buffer");
 
     cctx->buffer_size = MR_SIZE;
 
     cctx->mr = ibv_reg_mr(cctx->pd, cctx->buffer, MR_SIZE,
                           IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
 
-    // 9. Create CQ
+    if (!cctx->mr)
+        return rdma_ret_err(cctx, "ibv_reg_mr");
+
+    // CQ + QP
     struct ibv_qp_init_attr qp_attr = {
-        .cap.max_send_wr = 10,  // Max outstanding send requests
-        .cap.max_recv_wr = 10,  // Max outstanding receive requests
-        .cap.max_send_sge = 10, // Max scatter/gather elements for send
-        .cap.max_recv_sge = 10, // Max scatter/gather elements for recv
-        .qp_type = IBV_QPT_RC   // Reliable connection QP type
-    };
+        .send_cq = NULL,
+        .recv_cq = NULL,
+        .qp_type = IBV_QPT_RC,
+        .cap = {
+            .max_send_wr = 10,
+            .max_recv_wr = 10,
+            .max_send_sge = 10,
+            .max_recv_sge = 10}};
 
     qp_attr.send_cq = qp_attr.recv_cq = ibv_create_cq(cctx->conn->verbs, 2, NULL, NULL, 0);
     if (!qp_attr.send_cq)
-        return rdma_ret_err(cctx, "ibv_create_cq - rdma_setup_client");
+        return rdma_ret_err(cctx, "ibv_create_cq");
 
-    cctx->cq = qp_attr.send_cq; // :-(
+    cctx->cq = qp_attr.send_cq;
 
-    // 10. Create QP with ctx->conn and PD
-    rdma_create_qp(cctx->conn, cctx->pd, &qp_attr);
-    if (!cctx->conn->qp)
-        return rdma_ret_err(cctx, "rdma_create_qp - rdma_setup_client");
+    if (rdma_create_qp(cctx->conn, cctx->pd, &qp_attr))
+        return rdma_ret_err(cctx, "rdma_create_qp");
 
     return 0;
 }
 
 int rdma_client_connect(rdma_context_t *cctx)
 {
-    // 1. Call rdma_connect
     struct rdma_conn_param conn_param = {
         .initiator_depth = 1,
         .responder_resources = 1,
         .rnr_retry_count = 7};
 
-    if (rdma_connect(cctx->conn, &conn_param) != 0)
-        return rdma_ret_err(cctx, "rdma_connect - rdma_connect_server");
+    if (rdma_connect(cctx->conn, &conn_param))
+        return rdma_ret_err(cctx, "rdma_connect");
 
-    // 2. Wait for RDMA_CM_EVENT_ESTABLISHED
     struct rdma_cm_event *event = NULL;
-    rdma_get_cm_event(cctx->ec, &event); // connection established
+    if (rdma_get_cm_event(cctx->client_ec, &event))
+        return rdma_ret_err(cctx, "rdma_get_cm_event - connect");
 
-    // retrieve the remote address and rkey
+    if (event->event != RDMA_CM_EVENT_ESTABLISHED)
+        return rdma_ret_err(cctx, "unexpected event - not ESTABLISHED");
+
     rdma_meta_info_t *info = (rdma_meta_info_t *)event->param.conn.private_data;
     cctx->remote_addr = info->addr;
     cctx->remote_rkey = info->rkey;
 
     rdma_ack_cm_event(event);
 
-    printf("C: My address: %p, my rkey: %u\n", (void *)cctx->buffer, cctx->mr->rkey);
-    printf("C: Remote address: %p, Remote rkey: %u\n", (void *)cctx->remote_addr, cctx->remote_rkey);
-
-    // post a SEND work request to send the remote address and rkey
+    // send the remote address and rkey to the server
     notification_t *notification = (notification_t *)cctx->buffer;
-    notification->from_client.code = EXCHANGE_REMOTE_INFO; // code of the notification
-    notification->from_client.slice_id = -1;               // ID of the slice (not used here)
+    notification->from_client.code = EXCHANGE_REMOTE_INFO;
+    notification->from_client.slice_id = -1;
 
     rdma_meta_info_t *remote_info = (rdma_meta_info_t *)(cctx->buffer + sizeof(notification_t));
     remote_info->addr = (uintptr_t)cctx->buffer;
     remote_info->rkey = cctx->mr->rkey;
 
-    // post
     struct ibv_sge sge = {
-        .addr = (uintptr_t)cctx->buffer, // address of the buffer
-        .length = (sizeof(notification_t) + sizeof(rdma_meta_info_t)),
-        .lkey = cctx->mr->lkey // Local key from registered memory region
-    };
+        .addr = (uintptr_t)cctx->buffer,
+        .length = sizeof(notification_t) + sizeof(rdma_meta_info_t),
+        .lkey = cctx->mr->lkey};
 
     struct ibv_send_wr send_wr = {
         .wr_id = 0,
         .sg_list = &sge,
         .num_sge = 1,
-        .opcode = IBV_WR_SEND,          // Send operation
-        .send_flags = IBV_SEND_SIGNALED // Request completion notification
-    };
+        .opcode = IBV_WR_SEND,
+        .send_flags = IBV_SEND_SIGNALED};
 
-    struct ibv_send_wr *bad_send_wr;
-    if (ibv_post_send(cctx->conn->qp, &send_wr, &bad_send_wr) != 0) // Post the send work request
-        return rdma_ret_err(cctx, "Failed to post send - rdma_connect_server");
+    struct ibv_send_wr *bad_wr;
+    if (ibv_post_send(cctx->conn->qp, &send_wr, &bad_wr))
+        return rdma_ret_err(cctx, "ibv_post_send");
 
-    if (rdma_poll_cq(cctx) != 0) // wait for completion
-        return rdma_ret_err(cctx, "Failed to poll CQ - rdma_connect_server");
+    if (rdma_poll_cq(cctx))
+        return rdma_ret_err(cctx, "rdma_poll_cq");
+
     sleep(2);
     return 0;
 }
@@ -336,18 +277,38 @@ int rdma_context_close(rdma_context_t *ctx)
         rdma_destroy_qp(ctx->conn);
         rdma_destroy_id(ctx->conn);
     }
-    if (ctx->listener)
-        rdma_destroy_id(ctx->listener);
     if (ctx->cq)
         ibv_destroy_cq(ctx->cq);
     if (ctx->mr)
         ibv_dereg_mr(ctx->mr);
     if (ctx->pd)
         ibv_dealloc_pd(ctx->pd);
-    if (ctx->ec)
-        rdma_destroy_event_channel(ctx->ec);
     if (ctx->buffer)
         free(ctx->buffer);
+    if (ctx->client_ec)
+        rdma_destroy_event_channel(ctx->client_ec);
+    ctx->conn = NULL;
+    ctx->pd = NULL;
+    ctx->mr = NULL;
+    ctx->remote_ip = 0;
+    ctx->remote_addr = 0;
+    ctx->remote_rkey = 0;
+    ctx->buffer = NULL;
+    ctx->buffer_size = 0;
+
+    return 0;
+}
+
+int rdma_setup_context(rdma_context_t *ctx)
+{
+    // Initialize the slices
+    for (int i = 0; i < N_TCP_PER_CONNECTION; i++)
+    {
+        ctx->slices[i].slice_id = -1;
+        ctx->slices[i].server_buffer = NULL;
+        ctx->slices[i].client_buffer = NULL;
+        ctx->is_id_free[i] = TRUE;
+    }
 
     return 0;
 }

@@ -101,17 +101,16 @@ typedef struct
 typedef struct
 {
     // RDMA
-    struct rdma_event_channel *ec; // Event channel
-    struct rdma_cm_id *listener;   // Listener ID (SERVER only)
-    struct rdma_cm_id *conn;       // Connection ID
-    struct ibv_pd *pd;             // Protection Domain
-    struct ibv_mr *mr;             // Memory Region
-    struct ibv_cq *cq;             // Completion Queue
-    struct ibv_qp *qp;             // Queue Pair
-    char *buffer;                  // Buffer to send
-    size_t buffer_size;            // Size of the buffer
-    uintptr_t remote_addr;         // Remote address
-    uint32_t remote_rkey;          // Remote RKey
+    struct rdma_event_channel *client_ec; // for client only
+    struct rdma_cm_id *conn;              // Connection ID
+    struct ibv_pd *pd;                    // Protection Domain
+    struct ibv_mr *mr;                    // Memory Region
+    struct ibv_cq *cq;                    // Completion Queue
+    struct ibv_qp *qp;                    // Queue Pair
+    char *buffer;                         // Buffer to send
+    size_t buffer_size;                   // Size of the buffer
+    uintptr_t remote_addr;                // Remote address
+    uint32_t remote_rkey;                 // Remote RKey
 
     // Context id
     int context_id;  // ID of the context
@@ -126,8 +125,7 @@ typedef struct
 /** SETUP CONTEXT */
 
 // Server-side functions
-int rdma_server_setup(rdma_context_t *sctx, u_int16_t server_port);
-int rdma_server_wait_client_connection(rdma_context_t *sctx);
+int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel *server_ec);
 
 // Client-side functions
 int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, u_int16_t port);
@@ -135,6 +133,7 @@ int rdma_client_connect(rdma_context_t *cctx);
 
 // cleanup
 int rdma_context_close(rdma_context_t *ctx);
+int rdma_setup_context(rdma_context_t *ctx);
 
 /** COMMUNICATION */
 // send and receive

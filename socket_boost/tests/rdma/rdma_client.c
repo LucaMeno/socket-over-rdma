@@ -5,7 +5,7 @@
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include "librdma/librdma.h"
+#include "rdma_manager.h"
 
 #define RDMA_PORT 7471
 #define SERVER_IP "192.168.109.132"
