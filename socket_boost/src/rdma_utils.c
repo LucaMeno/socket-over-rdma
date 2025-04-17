@@ -210,6 +210,8 @@ int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port)
     if (rdma_create_qp(cctx->conn, cctx->pd, &qp_attr))
         return rdma_ret_err(cctx, "rdma_create_qp");
 
+    printf("Client connecting to %s:%u\n", ip_str, port);
+
     return 0;
 }
 

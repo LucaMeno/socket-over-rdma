@@ -35,6 +35,8 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
     }
 
+    printf("Connecting to server %s:%d...\n", SERVER_IP, SERVER_PORT);
+
     // Connect to the server
     if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
     {
