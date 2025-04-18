@@ -26,6 +26,17 @@ void *manager_ret_null(rdma_context_t *rdma_ctx, char *msg)
     return NULL;
 }
 
+void manager_ret_void(rdma_context_t *rdma_ctx, char *msg)
+{
+    fprintf(stderr, "ERROR: %s\n", msg);
+    if (rdma_ctx)
+    {
+        /*printf("Cleaning up RMDA...\n");
+        rdma_context_close(rdma_ctx);*/
+    }
+    return;
+}
+
 /** WRAPPER */
 
 int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port)
@@ -34,25 +45,7 @@ int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port)
     for (int i = 0; i < INITIAL_CONTEXT_NUMBER; i++)
     {
         ctxm->ctxs[i].context_id = i;
-        ctxm->ctxs[i].is_server = FALSE;
-        ctxm->ctxs[i].remote_ip = 0;
-        ctxm->ctxs[i].is_id_free[0] = TRUE;
-        ctxm->ctxs[i].buffer = NULL;
-        ctxm->ctxs[i].buffer_size = 0;
-        ctxm->ctxs[i].conn = NULL;
-        ctxm->ctxs[i].pd = NULL;
-        ctxm->ctxs[i].mr = NULL;
-        ctxm->ctxs[i].cq = NULL;
-        ctxm->ctxs[i].remote_addr = 0;
-        ctxm->ctxs[i].remote_rkey = 0;
-        for (int j = 0; j < N_TCP_PER_CONNECTION; j++)
-        {
-            ctxm->ctxs[i].is_id_free[j] = TRUE;
-            ctxm->ctxs[i].slices[j].slice_id = -1;
-            ctxm->ctxs[i].slices[j].src_port = 0;
-            ctxm->ctxs[i].slices[j].server_buffer = NULL;
-            ctxm->ctxs[i].slices[j].client_buffer = NULL;
-        }
+        rdma_setup_context(&ctxm->ctxs[i]);
     }
     ctxm->ctx_count = INITIAL_CONTEXT_NUMBER;
     ctxm->rdma_port = rdma_port;
@@ -148,7 +141,7 @@ int rdma_manager_get_context_by_ip(rdma_context_manager_t *ctxm, uint32_t remote
     return -1;
 }
 
-rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, int socket_fd)
+rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t client_port, int socket_fd)
 {
     // search for the context
     int ctx_id = rdma_manager_get_context_by_ip(ctxm, remote_ip);
@@ -172,26 +165,26 @@ rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint3
     }
 
     // search for the slice
-    int slice_id = rdma_slice_id_from_port(&ctxm->ctxs[ctx_id], port);
+    int slice_offset = rdma_slice_offset_from_port(&ctxm->ctxs[ctx_id], client_port);
 
-    if (slice_id < 0)
+    if (slice_offset < 0)
     {
         printf("Slice not found, creating a new one\n");
         // slice not found, create a new one
-        slice_id = rdma_new_slice(&ctxm->ctxs[ctx_id], port);
-        if (slice_id < 0)
+        slice_offset = rdma_new_slice(&ctxm->ctxs[ctx_id], client_port, socket_fd);
+        if (slice_offset < 0)
             return manager_ret_null(NULL, "Failed to create new slice - rdma_get_slice");
 
         // initi the slice
-        rdma_context_slice_t *slice = &ctxm->ctxs[ctx_id].slices[slice_id];
+        rdma_context_slice_t *slice = &ctxm->ctxs[ctx_id].slices[slice_offset];
         slice->socket_fd = socket_fd;
-        slice->is_polling = FALSE;
-        slice->src_port = port;
-        slice->slice_id = slice_id;
+        // slice->is_polling = FALSE;
+        slice->client_port = client_port;
+        slice->slice_offset = slice_offset;
     }
 
     // return the slice
-    return &ctxm->ctxs[ctx_id].slices[slice_id];
+    return &ctxm->ctxs[ctx_id].slices[slice_offset];
 }
 
 /** NOTIFICATION */
@@ -358,7 +351,7 @@ void *rdma_manager_server_thread(void *arg)
             client_ctx->conn = event->id;
             client_ctx->is_server = TRUE;
             struct sockaddr_in *addr_in = (struct sockaddr_in *)&event->id->route.addr.src_addr;
-            client_ctx->remote_ip = addr_in->sin_addr.s_addr;
+            client_ctx->remote_ip = addr_in->sin_addr.s_addr; // get the IP address of the client
 
             rdma_ack_cm_event(event);
 
@@ -381,21 +374,44 @@ void *rdma_manager_server_thread(void *arg)
     return NULL;
 }
 
-int sk_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, char *tx_data, int tx_size, char *rx_data, int *rx_size, int fd)
+int sk_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t client_port, char *tx_data, int tx_size, char *rx_data, int *rx_size, int fd)
 {
-    UNUSED(fd);
-    UNUSED(rx_data);
-    UNUSED(rx_size);
+    // prepare the arguments for the thread
+    thread_pool_arg_t *arg = malloc(sizeof(thread_pool_arg_t));
+    if (arg == NULL)
+        return manager_ret_err(NULL, "Failed to allocate memory for thread pool argument - sk_send");
 
-    int ctx_id = rdma_manager_get_context_by_ip(ctxm, remote_ip);
+    arg->ctxm = ctxm;
+    arg->remote_ip = remote_ip;
+    arg->client_port = client_port;
+    arg->tx_data = tx_data;
+    arg->tx_size = tx_size;
+    arg->rx_data = rx_data;
+    arg->rx_size = rx_size;
+    arg->fd = fd;
+
+    // add the task to the thread pool
+    if (thread_pool_add(ctxm->pool, sk_thread, arg) != 0)
+    {
+        free(arg);
+        return manager_ret_err(NULL, "Failed to add task to thread pool - sk_send");
+    }
+    return 0;
+}
+
+void sk_thread(void *arg)
+{
+    thread_pool_arg_t *param = (thread_pool_arg_t *)arg;
+
+    int ctx_id = rdma_manager_get_context_by_ip(param->ctxm, param->remote_ip);
     if (ctx_id < 0)
-        return manager_ret_err(NULL, "Failed to get context - sk_send");
+        return manager_ret_void(NULL, "Failed to get context - sk_send");
 
-    rdma_context_t *ctx = &ctxm->ctxs[ctx_id];
+    rdma_context_t *ctx = &param->ctxm->ctxs[ctx_id];
 
-    rdma_context_slice_t *slice = rdma_manager_get_slice(ctxm, remote_ip, port, fd);
+    rdma_context_slice_t *slice = rdma_manager_get_slice(param->ctxm, param->remote_ip, param->client_port, param->fd);
     if (slice == NULL)
-        return manager_ret_err(NULL, "Failed to get slice - sk_send");
+        return manager_ret_void(NULL, "Failed to get slice - sk_send");
 
     // copy the data to the buffer
 
@@ -413,25 +429,26 @@ int sk_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, cha
         buffer_to_read = slice->server_buffer;
     }
 
-    if (tx_size > (int)SLICE_BUFFER_SIZE)
-        return manager_ret_err(NULL, "Data size is too big - sk_send");
+    if (param->tx_size > (int)SLICE_BUFFER_SIZE)
+        return manager_ret_void(NULL, "Data size is too big - sk_send");
 
-    memcpy(buffer_to_write->buffer, tx_data, tx_size);
-    buffer_to_write->buffer_size = tx_size;
+    // set the flags
+    buffer_to_write->flags.data_ready = TRUE;
+
+    // write the data to the local buffer
+    memcpy(buffer_to_write->buffer, param->tx_data, param->tx_size);
+    buffer_to_write->buffer_size = param->tx_size;
 
     // write the data to the remote buffer
     if (rdma_write_slice(ctx, slice) != 0)
-        return manager_ret_err(NULL, "Failed to write slice - sk_send");
+        return manager_ret_void(NULL, "Failed to write slice - sk_send");
 
     // notify the other side that the data is ready
-    if (slice->is_polling == FALSE)
-    {
-        if (rdma_send_notification(ctx, RDMA_DATA_READY, slice->slice_id, 0) != 0)
-            return manager_ret_err(NULL, "Failed to send notification - sk_send");
-        slice->is_polling = TRUE;
-    }
+    if (rdma_send_notification(ctx, RDMA_DATA_READY, slice->slice_offset, slice->client_port) != 0)
+        return manager_ret_void(NULL, "Failed to send notification - sk_send");
 
     // poll the memory for the data to be ready
+    // wait for the answer
     int ret = rdma_poll_memory(buffer_to_read);
 
     if (ret < 0)
@@ -440,10 +457,16 @@ int sk_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, cha
     }
     else // ret == 0
     {
-        printf("Data ready\n");
+        // copy the data from the buffer
+        if (buffer_to_read->buffer_size > *param->rx_size)
+            return manager_ret_void(NULL, "Data size is too big - sk_send");
+
+        memcpy(param->rx_data, buffer_to_read->buffer, buffer_to_read->buffer_size);
     }
 
-    return 0;
+    free(param);
+
+    return;
 }
 
 /** POOL */

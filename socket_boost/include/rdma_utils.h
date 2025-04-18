@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
+#include "sk_utils.h"
 
 #define UNUSED(x) (void)(x)
 
@@ -60,8 +61,8 @@ typedef enum
 typedef struct
 {
     rdma_communication_code_t code; // code of the notification
-    int slice_id;                   // ID of the slice
-    u_int16_t client_port;          // port of the slice
+    int slice_offset;               // offset of the slice in the buffer
+    u_int16_t client_port;          // port of the client connected to this slice
 } notification_data_t;
 
 typedef struct
@@ -73,13 +74,15 @@ typedef struct
 typedef struct
 {
     volatile uint32_t data_ready;
+    volatile uint32_t data_received;
+    volatile uint32_t data_written;
 } flags_t;
 
 typedef struct
 {
     int buffer_size;
     flags_t flags;
-    char buffer[MAX_PAYLOAD_SIZE];
+    char buffer[MAX_PAYLOAD_SIZE]; // this must be the last field in the struct
 } transfer_buffer_t;
 
 /**
@@ -89,12 +92,11 @@ typedef struct
  */
 typedef struct
 {
-    int slice_id; // ID of the slice
     transfer_buffer_t *server_buffer;
     transfer_buffer_t *client_buffer;
-    __u16 src_port;
-    int is_polling; // TRUE if polling, FALSE if not
-    int socket_fd;  // socket fd
+    uint16_t client_port; // port of the client
+    int socket_fd;        // socket fd
+    int slice_offset;     // offset of the slice in the buffer
 } rdma_context_slice_t;
 
 /**
@@ -120,7 +122,7 @@ typedef struct
 
     // slices
     rdma_context_slice_t slices[N_TCP_PER_CONNECTION]; // Slices for each TCP connection
-    int is_id_free[N_TCP_PER_CONNECTION];              // Free IDs for slices: 0 = free, 1 = used
+    int is_id_free[N_TCP_PER_CONNECTION];              // Free IDs for slices: 0 = free, 1 = used // TODO: remove this and use client_port
     int is_server;                                     // TRUE if server, FALSE if client
 } rdma_context_t;
 
@@ -138,8 +140,9 @@ int rdma_context_close(rdma_context_t *ctx);
 int rdma_setup_context(rdma_context_t *ctx);
 
 /** COMMUNICATION */
+
 // send and receive
-int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_id, u_int16_t port);
+int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_offset, u_int16_t client_port);
 int rdma_recv_notification(rdma_context_t *ctx);
 
 // write and read
@@ -151,9 +154,9 @@ int rdma_poll_memory(transfer_buffer_t *buffer_to_read);
 
 /** UTILS */
 
-int rdma_new_slice(rdma_context_t *ctx, u_int16_t port);
-int rdma_delete_slice_by_port(rdma_context_t *ctx, u_int16_t port);
-int rdma_delete_slice_by_id(rdma_context_t *ctx, int slice_id);
-int rdma_slice_id_from_port(rdma_context_t *ctx, uint16_t port);
+int rdma_new_slice(rdma_context_t *ctx, u_int16_t port, int socket_fd);
+int rdma_delete_slice_by_port(rdma_context_t *ctx, u_int16_t client_port);
+int rdma_delete_slice_by_offset(rdma_context_t *ctx, int slice_offset);
+int rdma_slice_offset_from_port(rdma_context_t *ctx, uint16_t client_port);
 
 #endif // RDMA_UTILS_H

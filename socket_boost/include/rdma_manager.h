@@ -21,20 +21,12 @@
 #define N_POLL_PER_CQ 1000
 #define N_THREADS_POOL 5
 
-typedef struct
-{
-    rdma_context_t *ctx; // context
-    int slice_id;        // ID of the slice
-} thread_pool_arg_t;
+typedef struct task task_t;
+typedef struct thread_pool thread_pool_t;
+typedef struct rdma_context_manager rdma_context_manager_t;
+typedef struct thread_pool_arg thread_pool_arg_t;
 
-typedef struct task
-{
-    void (*function)(void *);
-    thread_pool_arg_t *arg;
-    struct task *next;
-} task_t;
-
-typedef struct
+struct thread_pool
 {
     pthread_mutex_t lock;
     pthread_cond_t cond;
@@ -43,9 +35,9 @@ typedef struct
     int stop;
     pthread_t *threads;
     int thread_count;
-} thread_pool_t;
+};
 
-typedef struct
+struct rdma_context_manager 
 {
     rdma_context_t *ctxs;
     int ctx_count;      // number of contexts
@@ -56,7 +48,26 @@ typedef struct
     int stop_threads;                     // flag to stop the threads
     struct rdma_cm_id *listener;          // Listener ID for incoming connections
     struct rdma_event_channel *server_ec; // Event channel
-} rdma_context_manager_t;
+};
+
+struct thread_pool_arg 
+{
+    rdma_context_manager_t *ctxm;
+    uint32_t remote_ip;
+    uint16_t client_port;
+    char *tx_data;
+    int tx_size;
+    char *rx_data;
+    int *rx_size;
+    int fd;
+};
+
+struct task
+{
+    void (*function)(void *);
+    thread_pool_arg_t *arg;
+    struct task *next;
+};
 
 rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, int socket_fd);
 int rdma_manager_get_free_context(rdma_context_manager_t *ctxm);
@@ -70,6 +81,7 @@ int rdma_manager_run_server_th(rdma_context_manager_t *ctxm);
 void *rdma_manager_server_thread(void *arg);
 
 int sk_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, char *tx_data, int tx_size, char *rx_data, int *rx_size, int fd);
+void sk_thread(void *arg);
 
 int rdma_server_setup(rdma_context_manager_t *ctxm);
 /** THREAD POOL */

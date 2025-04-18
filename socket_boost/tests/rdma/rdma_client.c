@@ -58,11 +58,11 @@ int main()
     check_error(err, "Failed to write data");
 
     // notify the server that data is ready
-    err = rdma_send_notification(cctx, RDMA_DATA_READY, slice->slice_id, 0);
+    err = rdma_send_notification(cctx, RDMA_DATA_READY, slice->slice_offset, slice->client_port);
     check_error(err, "Failed to send notification");
 
     // delete the slice
-    err = rdma_delete_slice_by_id(cctx, slice->slice_id);
+    err = rdma_delete_slice_by_offset(cctx, slice->slice_offset);
     check_error(err, "Failed to delete slice");
 
     err = rdma_send_notification(cctx, RDMA_CLOSE_CONTEXT, -1, 0);

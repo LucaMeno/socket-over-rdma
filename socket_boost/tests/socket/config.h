@@ -2,5 +2,5 @@
 
 //#define RESPONSE 0
 #define SERVER_PORT 7777
-#define SERVER_IP "192.168.109.132"
+#define SERVER_IP "192.168.109.133"
 #define BUFFER_SIZE 1024
