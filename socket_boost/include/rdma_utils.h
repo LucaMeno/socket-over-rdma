@@ -61,6 +61,7 @@ typedef struct
 {
     rdma_communication_code_t code; // code of the notification
     int slice_id;                   // ID of the slice
+    u_int16_t client_port;          // port of the slice
 } notification_data_t;
 
 typedef struct
@@ -93,6 +94,7 @@ typedef struct
     transfer_buffer_t *client_buffer;
     __u16 src_port;
     int is_polling; // TRUE if polling, FALSE if not
+    int socket_fd;  // socket fd
 } rdma_context_slice_t;
 
 /**
@@ -137,7 +139,7 @@ int rdma_setup_context(rdma_context_t *ctx);
 
 /** COMMUNICATION */
 // send and receive
-int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_id);
+int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_id, u_int16_t port);
 int rdma_recv_notification(rdma_context_t *ctx);
 
 // write and read

@@ -40,7 +40,8 @@ int main()
 
     rdma_context_slice_t *slice = NULL;
     uint16_t port = 10100;
-    slice = rdma_manager_get_slice(&ctx_mng, ip, port);
+    int fd = 20;
+    slice = rdma_manager_get_slice(&ctx_mng, ip, port, fd);
     rdma_context_t *cctx = &ctx_mng.ctxs[rdma_manager_get_context_by_ip(&ctx_mng, ip)];
 
     // write
@@ -57,14 +58,14 @@ int main()
     check_error(err, "Failed to write data");
 
     // notify the server that data is ready
-    err = rdma_send_notification(cctx, RDMA_DATA_READY, slice->slice_id);
+    err = rdma_send_notification(cctx, RDMA_DATA_READY, slice->slice_id, 0);
     check_error(err, "Failed to send notification");
 
     // delete the slice
     err = rdma_delete_slice_by_id(cctx, slice->slice_id);
     check_error(err, "Failed to delete slice");
 
-    err = rdma_send_notification(cctx, RDMA_CLOSE_CONTEXT, -1);
+    err = rdma_send_notification(cctx, RDMA_CLOSE_CONTEXT, -1, 0);
 
     // disonnect and cleanup
 

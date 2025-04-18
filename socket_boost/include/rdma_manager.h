@@ -58,7 +58,7 @@ typedef struct
     struct rdma_event_channel *server_ec; // Event channel
 } rdma_context_manager_t;
 
-rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port);
+rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, int socket_fd);
 int rdma_manager_get_free_context(rdma_context_manager_t *ctxm);
 int rdma_manager_destroy(rdma_context_manager_t *ctxm);
 int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port);

@@ -148,7 +148,7 @@ int rdma_manager_get_context_by_ip(rdma_context_manager_t *ctxm, uint32_t remote
     return -1;
 }
 
-rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port)
+rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, int socket_fd)
 {
     // search for the context
     int ctx_id = rdma_manager_get_context_by_ip(ctxm, remote_ip);
@@ -181,6 +181,13 @@ rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint3
         slice_id = rdma_new_slice(&ctxm->ctxs[ctx_id], port);
         if (slice_id < 0)
             return manager_ret_null(NULL, "Failed to create new slice - rdma_get_slice");
+
+        // initi the slice
+        rdma_context_slice_t *slice = &ctxm->ctxs[ctx_id].slices[slice_id];
+        slice->socket_fd = socket_fd;
+        slice->is_polling = FALSE;
+        slice->src_port = port;
+        slice->slice_id = slice_id;
     }
 
     // return the slice
@@ -386,7 +393,7 @@ int sk_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, cha
 
     rdma_context_t *ctx = &ctxm->ctxs[ctx_id];
 
-    rdma_context_slice_t *slice = rdma_manager_get_slice(ctxm, remote_ip, port);
+    rdma_context_slice_t *slice = rdma_manager_get_slice(ctxm, remote_ip, port, fd);
     if (slice == NULL)
         return manager_ret_err(NULL, "Failed to get slice - sk_send");
 
@@ -419,7 +426,7 @@ int sk_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, cha
     // notify the other side that the data is ready
     if (slice->is_polling == FALSE)
     {
-        if (rdma_send_notification(ctx, RDMA_DATA_READY, slice->slice_id) != 0)
+        if (rdma_send_notification(ctx, RDMA_DATA_READY, slice->slice_id, 0) != 0)
             return manager_ret_err(NULL, "Failed to send notification - sk_send");
         slice->is_polling = TRUE;
     }

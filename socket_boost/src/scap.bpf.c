@@ -1,6 +1,5 @@
 // scap.bpf.c
 
-
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
@@ -113,13 +112,21 @@ int sockops_prog(struct bpf_sock_ops *skops)
 
 		// check if the destination port is the target one
 		int key = sk_id.dport;
-		int *is_port_target = bpf_map_lookup_elem(&target_ports, &key);
+		int *is_port_target_1 = bpf_map_lookup_elem(&target_ports, &key);
 
-		if (is_port_target == NULL)
-		{
-			// bpf_printk("SKIP [SRC: %u:%u, DST: %u:%u] - not target port", sk_id.sip, sk_id.sport, sk_id.dip, sk_id.dport);
-			return 0;
-		}
+		if (is_port_target_1 != NULL)
+			goto is_target;
+
+		key = sk_id.sport;
+		int *is_port_target_2 = bpf_map_lookup_elem(&target_ports, &key);
+
+		if (is_port_target_2 != NULL)
+			goto is_target;
+
+		// bpf_printk("SKIP [SRC: %u:%u, DST: %u:%u] - not target port", sk_id.sip, sk_id.sport, sk_id.dip, sk_id.dport);
+		return 0;
+
+	is_target:
 
 #ifdef DEBUG
 		bpf_printk("----------sockops-----------");

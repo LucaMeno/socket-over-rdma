@@ -315,7 +315,7 @@ int rdma_setup_context(rdma_context_t *ctx)
     return 0;
 }
 
-int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_id)
+int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_id, u_int16_t port)
 {
 
     notification_t *notification = (notification_t *)ctx->buffer;
@@ -324,11 +324,13 @@ int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, 
     {
         notification->from_server.code = code;
         notification->from_server.slice_id = slice_id;
+        notification->from_server.client_port = port;
     }
     else
     {
         notification->from_client.code = code;
         notification->from_client.slice_id = slice_id;
+        notification->from_client.client_port = port;
     }
 
     // Fill ibv_sge structure
@@ -358,13 +360,13 @@ int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, 
     printf("------------------------------------------------------------\n");
     if (ctx->is_server == TRUE)
     {
-        printf("S: send: %s (%d), slice_id: %d, ctx_id: %d\n",
-               get_op_name(notification->from_server.code), notification->from_server.code, notification->from_server.slice_id, ctx->context_id);
+        printf("S: send: %s (%d), slice_id: %d, client_port: %u, ctx_id: %d\n",
+               get_op_name(notification->from_server.code), notification->from_server.code, notification->from_server.slice_id, port, ctx->context_id);
     }
     else
     {
-        printf("C: send: %s (%d), slice_id: %d, ctx_id: %d\n",
-               get_op_name(notification->from_client.code), notification->from_client.code, notification->from_client.slice_id, ctx->context_id);
+        printf("C: send: %s (%d), slice_id: %d, client_port: %u, ctx_id: %d\n",
+               get_op_name(notification->from_client.code), notification->from_client.code, notification->from_client.slice_id, port, ctx->context_id);
     }
 
     return 0;
@@ -372,23 +374,27 @@ int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, 
 
 int rdma_recv_notification(rdma_context_t *ctx)
 {
-
     notification_t *notification = (notification_t *)ctx->buffer;
     int code; // enum rdma_communication_code
     int slice_id = -1;
+    u_int16_t port = 0;
 
     printf("------------------------------------------------------------\n");
     if (ctx->is_server == TRUE)
     {
         code = notification->from_client.code;
         slice_id = notification->from_client.slice_id;
-        printf("S: Received: %s (%d), slide_id: %d, ctx_id: %d\n", get_op_name(code), code, slice_id, ctx->context_id);
+        port = notification->from_client.client_port;
+        printf("S: Received: %s (%d), slide_id: %d, client_port: %u, ctx_id: %d\n",
+               get_op_name(code), code, slice_id, port, ctx->context_id);
     }
     else // client
     {
         code = notification->from_server.code;
         slice_id = notification->from_server.slice_id;
-        printf("C: Received: %s (%d), slide_id: %d, ctx_id: %d\n", get_op_name(code), code, slice_id, ctx->context_id);
+        port = notification->from_server.client_port;
+        printf("C: Received: %s (%d), slide_id: %d, client_port: %u, ctx_id: %d\n",
+               get_op_name(code), code, slice_id, port, ctx->context_id);
     }
 
     switch (code)
@@ -440,6 +446,7 @@ int rdma_recv_notification(rdma_context_t *ctx)
 
         // set the pointers to the buffers
         ctx->slices[slice_id].slice_id = slice_id;
+        ctx->slices[slice_id].src_port = port;
         ctx->slices[slice_id].server_buffer = (transfer_buffer_t *)(ctx->buffer + NOTIFICATION_OFFSET_SIZE +
                                                                     slice_id * SLICE_BUFFER_SIZE);
 
@@ -447,8 +454,8 @@ int rdma_recv_notification(rdma_context_t *ctx)
                                                                     slice_id * SLICE_BUFFER_SIZE +
                                                                     sizeof(transfer_buffer_t)); // skip the server buffer
 
-        printf("Added slice %d, server buffer: %p, client buffer: %p\n",
-               slice_id, ctx->slices[slice_id].server_buffer, ctx->slices[slice_id].client_buffer);
+        printf("Added slice %d, server buffer: %p, client buffer: %p, client_port: %u\n",
+               slice_id, ctx->slices[slice_id].server_buffer, ctx->slices[slice_id].client_buffer, port);
 
         break;
 
@@ -625,7 +632,7 @@ int rdma_new_slice(rdma_context_t *ctx, u_int16_t port)
     ctx->slices[slice_id].src_port = port;
 
     // notify the other side about the new slice
-    if (rdma_send_notification(ctx, RDMA_NEW_SLICE, slice_id) != 0)
+    if (rdma_send_notification(ctx, RDMA_NEW_SLICE, slice_id, port) != 0)
         return rdma_ret_err(ctx, "Failed to send notification - rdma_new_slice");
 
     printf("Added slice %d, server buffer: %p, client buffer: %p\n",
@@ -652,7 +659,7 @@ int rdma_delete_slice_by_id(rdma_context_t *ctx, int slice_id)
     ctx->slices[slice_id].server_buffer = NULL;
 
     // notify the other side about the deletion
-    if (rdma_send_notification(ctx, RDMA_DELETE_SLICE, slice_id) != 0)
+    if (rdma_send_notification(ctx, RDMA_DELETE_SLICE, slice_id, 0) != 0)
         return rdma_ret_err(ctx, "Failed to send notification - rdma_delete_slice");
 
     printf("Deleted slice %d\n", slice_id);
