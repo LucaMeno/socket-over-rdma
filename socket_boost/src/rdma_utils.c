@@ -439,12 +439,19 @@ int rdma_recv_notification(rdma_context_t *ctx)
 
         printf("Data ready in slice %d\n", slice_offset);
 
+        rdma_context_slice_t *slice = &ctx->slices[slice_offset];
+
         transfer_buffer_t *buffer_to_read;
 
-        buffer_to_read = (ctx->is_server == TRUE) ? ctx->slices[slice_offset].client_buffer : ctx->slices[slice_offset].server_buffer;
+        buffer_to_read = (ctx->is_server == TRUE) ? slice->client_buffer : slice->server_buffer;
 
-        printf("Buffer size: %d\n", buffer_to_read->buffer_size);
-        printf("Buffer: %s\n", buffer_to_read->buffer);
+        //printf("Buffer size: %d\n", buffer_to_read->buffer_size);
+        //printf("Buffer: %s\n", buffer_to_read->buffer);
+
+        // send the data to the socket
+        int server_socket_fd = slice->socket_fd;
+
+        write(server_socket_fd, buffer_to_read->buffer, buffer_to_read->buffer_size);
 
         break;
 

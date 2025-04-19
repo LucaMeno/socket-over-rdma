@@ -461,7 +461,10 @@ void sk_thread(void *arg)
         if (buffer_to_read->buffer_size > *param->rx_size)
             return manager_ret_void(NULL, "Data size is too big - sk_send");
 
-        memcpy(param->rx_data, buffer_to_read->buffer, buffer_to_read->buffer_size);
+        //memcpy(param->rx_data, buffer_to_read->buffer, buffer_to_read->buffer_size);
+
+        int client_socket_fd = slice->socket_fd;
+        write(client_socket_fd, buffer_to_read->buffer, buffer_to_read->buffer_size);
     }
 
     free(param);

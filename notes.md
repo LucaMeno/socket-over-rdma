@@ -1,8 +1,31 @@
 
 
 
+### clear docker
+```sh
+docker compose down --volumes --rmi all --remove-orphans
 
-Build and install libbpf:
+docker stop $(docker ps -aq)
+
+docker rm $(docker ps -aq)
+
+docker rmi $(docker images -q)
+```
+
+### add bpftool and libbpf as submodules
+```sh
+
+cd / && \
+apt-get install git llvm -y && \
+git clone https://github.com/libbpf/bpftool.git && \
+cd bpftool && \
+git submodule update --init --recursive && \
+cd src && \
+make && \
+make install
+```
+
+### Build and install libbpf:
 ```sh
 cd ./libbpf/src
 make
@@ -17,8 +40,6 @@ sudo ldconfig /usr/lib64
 # git submodule add https://github.com/libbpf/bpftool.git bpftool
 # git submodule add https://github.com/libbpf/libbpf.git libbpf
 ```
-
-
 
 
 

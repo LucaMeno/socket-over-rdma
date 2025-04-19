@@ -31,7 +31,6 @@ rdma_context_t rdma_ctx[MAX_NUMBER_OF_RDMA_CONN] = {0};
 
 int main()
 {
-
     signal(SIGINT, handle_signal);
 
     sk_context_t sk_ctx = {0};
