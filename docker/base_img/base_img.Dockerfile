@@ -13,6 +13,7 @@ RUN apt-get update && \
     iproute2 \
     git \
     llvm \
+    iputils-ping \
     ca-certificates && \
     apt-get clean
 

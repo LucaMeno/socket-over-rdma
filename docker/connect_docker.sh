@@ -5,6 +5,12 @@ if [ "$#" -lt 1 ]; then
   exit 1
 fi
 
+if ! rdma link show | grep -q .; then
+  echo "Adding RDMA device"
+  sudo rdma link add rxe0 type rxe netdev ens33
+fi
+
+
 DOCKER_COMPOSE_FILE=$1
 # --force-recreate 
 docker compose -f docker-compose.yaml up -d sk-boost-$DOCKER_COMPOSE_FILE
