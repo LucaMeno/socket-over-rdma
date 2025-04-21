@@ -8,43 +8,49 @@ services:
 
   sk-boost-1:
     container_name: sk-boost-c-1
+    depends_on:
+      - base_img
     build:
       context: ./../socket_boost
       dockerfile: socket-boost.Dockerfile
-    depends_on:
-      - base_img
     privileged: true
-    network_mode: host
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug
       - /lib/modules:/lib/modules:ro
       - ./../socket_boost:/socket_boost
+      - /dev:/dev
+      - /sys/class/infiniband:/sys/class/infiniband
     environment:
       - NETDEV=eth0
-      - REMOTE_IP=192.168.88.130
-  
+      - REMOTE_IP=192.168.100.11
+    networks:
+      rdma-net:
+        ipv4_address: 192.168.100.10
 
   sk-boost-2:
     container_name: sk-boost-c-2
+    depends_on:
+      - base_img
     build:
       context: ./../socket_boost
       dockerfile: socket-boost.Dockerfile
-    depends_on:
-      - base_img
     privileged: true
-    network_mode: host
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug
-      - /lib/modules:/lib/modules:ro 
+      - /lib/modules:/lib/modules:ro
       - ./../socket_boost:/socket_boost
+      - /dev:/dev
+      - /sys/class/infiniband:/sys/class/infiniband
     environment:
       - NETDEV=eth0
-      - REMOTE_IP=192.168.88.130
+      - REMOTE_IP=192.168.100.10
+    networks:
+      rdma-net:
+        ipv4_address: 192.168.100.11
 
 networks:
-  sk-net:
+  rdma-net:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.28.0.0/16
-          gateway: 172.28.0.1
+        - subnet: 192.168.100.0/24

@@ -1,5 +1,24 @@
 
 
+### RDMA
+```sh
+ibv_rc_pingpong -g 0 -d rxe0
+ibv_rc_pingpong -g 0 -d rxe0 192.168.100.11
+```
+
+### Sync VMs
+```sh
+ssh-keygen -t rsa -b 2048
+ssh-copy-id lucam@192.168.88.131
+
+#add custom alia
+nano ~/.bashrc
+alias push='rsync -avz --delete /home/lucam/poli/ lucam@192.168.88.131:/home/lucam/poli'
+
+source ~/.bashrc
+
+```
+
 
 ### clear docker
 ```sh

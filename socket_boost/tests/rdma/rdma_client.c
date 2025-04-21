@@ -8,7 +8,7 @@
 #include "rdma_manager.h"
 
 #define RDMA_PORT 7471
-//#define SERVER_IP "192.168.109.132"
+#define SERVER_IP "192.168.88.130"
 
 #define UNUSED(x) (void)(x)
 
@@ -24,7 +24,6 @@ void check_error(int err, const char *msg)
 
 int main()
 {
-    const char *SERVER_IP = getenv("REMOTE_IP");
     // convert IP into u_int32_t
     struct in_addr addr;
     if (inet_pton(AF_INET, SERVER_IP, &addr) <= 0)
@@ -43,6 +42,11 @@ int main()
     uint16_t port = 10100;
     int fd = 20;
     slice = rdma_manager_get_slice(&ctx_mng, ip, port, fd);
+    if(slice == NULL)
+    {
+        printf("Failed to get slice.\n");
+        return -1;
+    }
     rdma_context_t *cctx = &ctx_mng.ctxs[rdma_manager_get_context_by_ip(&ctx_mng, ip)];
 
     // write

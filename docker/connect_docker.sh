@@ -1,5 +1,7 @@
 #!/bin/bash
 
+LOCAL_NETDEV="ens33"
+
 if [ "$#" -lt 1 ]; then
   echo "Usage: $0 <number>"
   exit 1
@@ -7,8 +9,9 @@ fi
 
 if ! rdma link show | grep -q .; then
   echo "Adding RDMA device"
-  sudo rdma link add rxe0 type rxe netdev ens33
+  #sudo rdma link add rxe0 type rxe netdev $LOCAL_NETDEV
 fi
+
 
 
 DOCKER_COMPOSE_FILE=$1
@@ -18,5 +21,3 @@ docker compose -f docker-compose.yaml up -d sk-boost-$DOCKER_COMPOSE_FILE
 echo "⏳ Waiting for the container to be up..."
 sleep 3
 docker exec -it sk-boost-c-"$DOCKER_COMPOSE_FILE" /bin/bash
-
-docker exec -it sk-boost-c-2 /bin/bash

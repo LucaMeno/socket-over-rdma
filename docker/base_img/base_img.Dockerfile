@@ -14,9 +14,11 @@ RUN apt-get update && \
     git \
     llvm \
     iputils-ping \
+    perftest \
+    ibverbs-utils \
     ca-certificates && \
     apt-get clean
-
+    
 # Clone, build, and install bpftool
 RUN git clone https://github.com/libbpf/bpftool.git && \
     cd bpftool && \
