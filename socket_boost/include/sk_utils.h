@@ -18,11 +18,11 @@
 #include <bpf/bpf.h>
 #include "common.h"
 
-typedef struct 
+typedef struct
 {
     int fd;
     struct sock_id sk_id;
-}client_sk_t;
+} client_sk_t;
 
 typedef struct
 {

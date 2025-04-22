@@ -445,8 +445,8 @@ int rdma_recv_notification(rdma_context_t *ctx)
 
         buffer_to_read = (ctx->is_server == TRUE) ? slice->client_buffer : slice->server_buffer;
 
-        //printf("Buffer size: %d\n", buffer_to_read->buffer_size);
-        //printf("Buffer: %s\n", buffer_to_read->buffer);
+        // printf("Buffer size: %d\n", buffer_to_read->buffer_size);
+        // printf("Buffer: %s\n", buffer_to_read->buffer);
 
         // send the data to the socket
         int server_socket_fd = slice->socket_fd;

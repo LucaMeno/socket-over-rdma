@@ -11,11 +11,7 @@
 #include "scap.h"
 #include "sk_utils.h"
 #include "rdma_manager.h"
-
-#define PROXY_PORT 5556
-#define SERVER_IP "127.0.0.1"
-#define TARGET_PORT 7777
-#define RDMA_PORT 7471
+#include "config.h"
 
 #define MAX_NUMBER_OF_RDMA_CONN NUMBER_OF_SOCKETS
 
@@ -25,7 +21,7 @@ void handle_signal(int signal);
 void check_error(int result, const char *msg);
 void error_and_exit(const char *msg);
 
-void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx);
+void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_manager_t *rdma_ctx);
 
 rdma_context_t rdma_ctx[MAX_NUMBER_OF_RDMA_CONN] = {0};
 
@@ -35,6 +31,7 @@ int main()
 
     sk_context_t sk_ctx = {0};
     bpf_context_t bpf_ctx = {0};
+    rdma_context_manager_t rdma_ctxm = {0};
 
     int err;
 
@@ -62,8 +59,11 @@ int main()
     check_error(err, "");
     printf("Map updated\n");
 
+    // RDMA
+    err = rdma_manager_run(&rdma_ctxm, RDMA_PORT);
+
     printf("Waiting for messages, press Ctrl+C to exit...\n");
-    wait_for_msg(&bpf_ctx, &sk_ctx);
+    wait_for_msg(&bpf_ctx, &sk_ctx, &rdma_ctxm);
 
     err = cleanup_socket(&sk_ctx);
     check_error(err, "");
@@ -76,7 +76,7 @@ int main()
     return 0;
 }
 
-void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx)
+void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_manager_t *rdma_ctx)
 {
     char buffer[BUFFER_SIZE];
     fd_set read_fds, temp_fds;
@@ -172,8 +172,12 @@ void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx)
 
                     printf("Original sk:\t[SRC: %s:%u, DST: %s:%u]\n", src_ip_app, sk_assoc_v.app.sport, dst_ip_app, sk_assoc_v.app.dport);
 
+                    // Send the message using RDMA
+
+                    // sk_send(rdma_ctx, sk_assoc_v.app.dip, sk_assoc_v.app.dport, buffer, bytes_received, i);
+
                     // respond to the client with the same message
-                    ssize_t sent_size = send(i, buffer, bytes_received, 0);
+                    /*ssize_t sent_size = send(i, buffer, bytes_received, 0);
                     if (sent_size < 0)
                     {
                         perror("send");
@@ -181,7 +185,7 @@ void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx)
                     else
                     {
                         printf("Response:\tsent\n");
-                    }
+                    }*/
                 }
             }
         }

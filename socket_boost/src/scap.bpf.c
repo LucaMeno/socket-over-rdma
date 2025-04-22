@@ -6,8 +6,8 @@
 #include <bpf/bpf_endian.h>
 
 #include "common.h"
+#include "config.h"
 
-#define DEBUG
 #define AF_INET 2
 #define AF_INET6 10
 
@@ -83,6 +83,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 	int op = (int)skops->op;
 
 	struct sock_id sk_id = {0};
+	struct sock_id sk_id_reverse = {0};
 
 	struct bpf_sock *sk = skops->sk;
 	long ret;
@@ -110,7 +111,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		sk_id.sport = sk->src_port;
 		sk_id.dport = bpf_ntohs(sk->dst_port);
 
-		// check if the destination port is the target one
+		// check if SRC or DST port is the one of the target ports
 		int key = sk_id.dport;
 		int *is_port_target_1 = bpf_map_lookup_elem(&target_ports, &key);
 
@@ -128,9 +129,11 @@ int sockops_prog(struct bpf_sock_ops *skops)
 
 	is_target:
 
-#ifdef DEBUG
+#ifdef EBPF_DEBUG_MODE
 		bpf_printk("----------sockops-----------");
-#endif // DEBUG
+#endif // EBPF_DEBUG_MODE
+
+		/* NOP */; //  just to avoid the warning
 
 		// get one free socket from the free_sockets queue
 		struct sock_id free_sk = {0};
@@ -173,11 +176,11 @@ int sockops_prog(struct bpf_sock_ops *skops)
 			return 0;
 		}
 
-#ifdef DEBUG
+#ifdef EBPF_DEBUG_MODE
 		bpf_printk("ADD: APP [SRC: %u:%u, DST: %u:%u] <-> PROXY [SRC: %u:%u, DST: %u:%u]",
 				   sk_association_app.app.sip, sk_association_app.app.sport, sk_association_app.app.dip, sk_association_app.app.dport,
 				   sk_association_proxy.proxy.sip, sk_association_proxy.proxy.sport, sk_association_proxy.proxy.dip, sk_association_proxy.proxy.dport);
-#endif // DEBUG
+#endif // EBPF_DEBUG_MODE
 
 		break;
 	case BPF_SOCK_OPS_STATE_CB:
@@ -195,9 +198,9 @@ int sockops_prog(struct bpf_sock_ops *skops)
 SEC("sk_msg")
 int sk_msg_prog(struct sk_msg_md *msg)
 {
-#ifdef DEBUG
+#ifdef EBPF_DEBUG_MODE
 	bpf_printk("----------sk_msg-----------");
-#endif // DEBUG
+#endif // EBPF_DEBUG_MODE
 
 	// Only process IPv4 packets
 	if (msg->family != AF_INET)
@@ -237,9 +240,9 @@ int sk_msg_prog(struct sk_msg_md *msg)
 		sk_association_key.app = sk_id;
 	}
 
-#ifdef DEBUG
+#ifdef EBPF_DEBUG_MODE
 	bpf_printk("SRC -- [SRC: %u:%u, DST: %u:%u]", sk_id.sip, sk_id.sport, sk_id.dip, sk_id.dport);
-#endif // DEBUG
+#endif // EBPF_DEBUG_MODE
 
 	// Lookup socket association
 	sk_association_val = bpf_map_lookup_elem(&socket_association, &sk_association_key);
@@ -252,9 +255,9 @@ int sk_msg_prog(struct sk_msg_md *msg)
 	// Determine the destination socket ID based on the direction
 	struct sock_id dest_sk_id = (sk_id.dport == *server_port_ptr) ? sk_association_val->app : sk_association_val->proxy;
 
-#ifdef DEBUG
+#ifdef EBPF_DEBUG_MODE
 	bpf_printk("DST -- [SRC: %u:%u, DST: %u:%u]", dest_sk_id.sip, dest_sk_id.sport, dest_sk_id.dip, dest_sk_id.dport);
-#endif // DEBUG
+#endif // EBPF_DEBUG_MODE
 
 	// Redirect the message to the associated socket
 	ret = bpf_msg_redirect_hash(msg, &intercepted_sockets, &dest_sk_id, BPF_F_INGRESS);
@@ -264,9 +267,9 @@ int sk_msg_prog(struct sk_msg_md *msg)
 		return SK_PASS;
 	}
 
-#ifdef DEBUG
+#ifdef EBPF_DEBUG_MODE
 	bpf_printk("Redirect msg to %s", (sk_id.dport == *server_port_ptr) ? "app" : "proxy");
-#endif // DEBUG
+#endif // EBPF_DEBUG_MODE
 
 	return SK_PASS;
 }
@@ -294,12 +297,12 @@ int tcp_destroy_sock_prog(struct trace_event_raw_tcp_event_sk *ctx)
 		return 0;
 	}
 
-#ifdef DEBUG
+#ifdef EBPF_DEBUG_MODE
 	bpf_printk("----------sk_close-----------");
 	bpf_printk("REM: APP [SRC: %u:%u, DST: %u:%u] <-> PROXY [SRC: %u:%u, DST: %u:%u]",
 			   sk_association_app.app.sip, sk_association_app.app.sport, sk_association_app.app.dip, sk_association_app.app.dport,
 			   sk_association_proxy->proxy.sip, sk_association_proxy->proxy.sport, sk_association_proxy->proxy.dip, sk_association_proxy->proxy.dport);
-#endif // DEBUG
+#endif // EBPF_DEBUG_MODE
 
 	struct sock_id sk_id_proxy = sk_association_proxy->proxy;
 
@@ -330,10 +333,10 @@ int tcp_destroy_sock_prog(struct trace_event_raw_tcp_event_sk *ctx)
 	// the socket is not removed from the intercepted_sockets map
 	// because it will be automatically removed when the socket is closed
 
-#ifdef DEBUG
+#ifdef EBPF_DEBUG_MODE
 	bpf_printk("Free sk: [SRC: %u:%u, DST: %u:%u]",
 			   sk_id_proxy.sip, sk_id_proxy.sport, sk_id_proxy.dip, sk_id_proxy.dport);
-#endif // DEBUG
+#endif // EBPF_DEBUG_MODE
 
 	return 0;
 }

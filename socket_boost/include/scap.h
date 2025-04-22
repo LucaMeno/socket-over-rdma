@@ -31,7 +31,7 @@ typedef struct
 int setup_bpf(bpf_context_t *ctx);
 int run_bpf(bpf_context_t *ctx);
 int cleanup_bpf(bpf_context_t *ctx);
-int set_target_ports(bpf_context_t *ctx, __u16 target_p[], int n,  __u16 server_port);
+int set_target_ports(bpf_context_t *ctx, __u16 target_p[], int n, __u16 server_port);
 int push_sock_to_map(bpf_context_t *ctx, client_sk_t client_sks[], int n);
 
 #endif // SCAP_H

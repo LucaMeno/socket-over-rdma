@@ -2,8 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "rdma_manager.h"
-
-#define PORT 7471
+#include "config.h"
 
 void check_error(int err, const char *msg)
 {
@@ -19,14 +18,8 @@ int main()
 {
 
     rdma_context_manager_t ctx_mng = {};
-    int err = rdma_manager_init(&ctx_mng, PORT);
-    check_error(err, "Failed to initialize context manager");
-
-    printf("Context manager initialized.\n");
-
-    // start the server
-    err = rdma_manager_run_server_th(&ctx_mng);
-    check_error(err, "Failed to start server");
+    int err = rdma_manager_run(&ctx_mng, RDMA_PORT);
+    check_error(err, "Failed to run RDMA manager");
 
     printf("Listening for notifications...\n");
 

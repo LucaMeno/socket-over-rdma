@@ -11,7 +11,7 @@ int main()
     int server_fd, new_socket;
     struct sockaddr_in address;
     int addrlen = sizeof(address);
-    char buffer[BUFFER_SIZE] = {0};
+    char buffer[TEST_BUFFER_SIZE] = {0};
 
     // Create socket
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0)
@@ -22,7 +22,7 @@ int main()
 
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(SERVER_PORT);
+    address.sin_port = htons(TEST_SERVER_PORT);
 
     // Bind the socket to the port
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
@@ -38,7 +38,7 @@ int main()
         exit(EXIT_FAILURE);
     }
 
-    printf("Server is listening on port %d...\n", SERVER_PORT);
+    printf("Server is listening on %s:%d...\n", REMOTE_IP, TEST_SERVER_PORT);
 
     // Accept client connection
     if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0)
@@ -52,7 +52,7 @@ int main()
     ssize_t bytes_received;
     while (1)
     {
-        bytes_received = read(new_socket, buffer, BUFFER_SIZE);
+        bytes_received = read(new_socket, buffer, TEST_BUFFER_SIZE);
         if (bytes_received <= 0)
         {
             printf("Client disconnected or error occurred.\n");
@@ -61,7 +61,7 @@ int main()
 
         printf("Received message: %s\n", buffer);
 
-#ifdef RESPONSE
+#ifdef SERVER_SEND_RESP
         send(new_socket, buffer, strlen(buffer), 0);
 #endif
     }

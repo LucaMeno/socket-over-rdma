@@ -37,7 +37,7 @@ struct thread_pool
     int thread_count;
 };
 
-struct rdma_context_manager 
+struct rdma_context_manager
 {
     rdma_context_t *ctxs;
     int ctx_count;      // number of contexts
@@ -50,15 +50,13 @@ struct rdma_context_manager
     struct rdma_event_channel *server_ec; // Event channel
 };
 
-struct thread_pool_arg 
+struct thread_pool_arg
 {
     rdma_context_manager_t *ctxm;
     uint32_t remote_ip;
     uint16_t client_port;
     char *tx_data;
     int tx_size;
-    char *rx_data;
-    int *rx_size;
     int fd;
 };
 
@@ -69,27 +67,12 @@ struct task
     struct task *next;
 };
 
-rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, int socket_fd);
-int rdma_manager_get_free_context(rdma_context_manager_t *ctxm);
+int rdma_manager_run(rdma_context_manager_t *ctxm, uint16_t srv_port);
 int rdma_manager_destroy(rdma_context_manager_t *ctxm);
+
+int rdma_manager_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t client_port, char *tx_data, int tx_size, int fd);
+
+// REMOVE
 int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port);
-int rdma_manager_get_context_by_ip(rdma_context_manager_t *ctxm, uint32_t remote_ip);
-
-int rdma_manager_run_listen_th(rdma_context_manager_t *ctxm);
-void *rdma_manager_listen_thread(void *arg);
-int rdma_manager_run_server_th(rdma_context_manager_t *ctxm);
-void *rdma_manager_server_thread(void *arg);
-
-int sk_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t port, char *tx_data, int tx_size, char *rx_data, int *rx_size, int fd);
-void sk_thread(void *arg);
-
-int rdma_server_setup(rdma_context_manager_t *ctxm);
-/** THREAD POOL */
-
-void rdma_recv_notfication_th(void *arg);
-void *worker(void *arg);
-thread_pool_t *thread_pool_create(int num_threads);
-int thread_pool_add(thread_pool_t *pool, void (*function)(void *), void *arg);
-void thread_pool_destroy(thread_pool_t *pool);
 
 #endif // RDMA_MANAGER_H

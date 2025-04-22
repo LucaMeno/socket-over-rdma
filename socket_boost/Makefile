@@ -3,6 +3,7 @@ CC = gcc
 CLANG_FLAGS = -g -O2 -target bpf
 BPFTOOL = bpftool
 LDLIBS = -lbpf -lrdmacm -libverbs
+PUSH = rsync -avz --delete /home/lucam/poli/socket-over-rdma/socket_boost lucam@192.168.88.131:/home/lucam/poli/socket-over-rdma
 
 SRC = src
 INC = include
@@ -21,6 +22,7 @@ $(BUILD) $(BIN) $(OBJ):
 
 $(BIN)/scap: $(SRC)/main.c $(INC)/common.h $(OBJ)/scap.skel.h $(OBJ)/scap.o $(OBJ)/sk_utils.o $(OBJ)/rdma_utils.o $(OBJ)/rdma_manager.o
 	$(CC) $(CFLAGS) -I$(INC) -o $@ $< $(OBJ)/scap.o $(OBJ)/sk_utils.o $(OBJ)/rdma_utils.o $(OBJ)/rdma_manager.o $(LDLIBS)
+	$(PUSH)
 
 $(OBJ)/scap.o: $(SRC)/scap.c $(INC)/scap.h
 	$(CC) $(CFLAGS) -I$(INC) -c -o $@ $< $(LDLIBS)
@@ -45,6 +47,7 @@ test: $(BIN) $(OBJ) $(OBJ)/rdma_manager.o $(OBJ)/rdma_utils.o
 	$(CC) $(CFLAGS) -I$(INC) -o $(BIN)/rdma_server $(TEST_RDMA)/rdma_server.c $(OBJ)/rdma_manager.o $(OBJ)/rdma_utils.o $(LDLIBS)
 	$(CC) $(CFLAGS) -I$(INC) -o $(BIN)/client $(TEST_SOCKET)/client.c $(LDLIBS)
 	$(CC) $(CFLAGS) -I$(INC) -o $(BIN)/server $(TEST_SOCKET)/server.c $(LDLIBS)
+	$(PUSH)
 
 	
 clean:

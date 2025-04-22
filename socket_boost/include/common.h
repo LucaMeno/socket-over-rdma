@@ -19,5 +19,4 @@ struct association_t
 	struct sock_id app;
 };
 
-
 #endif // COMMON_H

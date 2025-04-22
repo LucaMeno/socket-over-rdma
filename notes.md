@@ -1,4 +1,11 @@
 
+VM1
+192.168.88.134:7777             192.168.88.131:35576 
+
+VM2
+192.168.88.131:35576              192.168.88.134:7777
+
+
 
 ### RDMA
 ```sh
@@ -10,10 +17,13 @@ ibv_rc_pingpong -g 0 -d rxe0 192.168.100.11
 ```sh
 ssh-keygen -t rsa -b 2048
 ssh-copy-id lucam@192.168.88.131
+mkdir -p /home/lucam/poli/socket-over-rdma
 
 #add custom alia
 nano ~/.bashrc
-alias push='rsync -avz --delete /home/lucam/poli/ lucam@192.168.88.131:/home/lucam/poli'
+alias push='rsync -avz --delete /home/lucam/poli/socket-over-rdma/socket_boost lucam@192.168.88.131:/home/lucam/poli/socket-over-rdma'
+
+ssh lucam@192.168.88.131
 
 source ~/.bashrc
 

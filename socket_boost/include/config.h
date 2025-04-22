@@ -1,0 +1,25 @@
+
+#ifndef CONFIG_H
+#define CONFIG_H
+
+#define REMOTE_IP "192.168.88.134"
+
+// RDMA
+
+#define RDMA_PORT 7471
+
+// CS TEST
+#define TEST_SERVER_PORT 7777
+#define TEST_BUFFER_SIZE 1024
+//#define SERVER_SEND_RESP 1
+#define CLIENT_WAIT_RESP 1 
+
+// MAIN
+#define PROXY_PORT 5556
+#define SERVER_IP "127.0.0.1"
+#define TARGET_PORT TEST_SERVER_PORT
+
+// EBPF
+#define EBPF_DEBUG_MODE
+
+#endif

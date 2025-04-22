@@ -5,7 +5,6 @@
 #include <arpa/inet.h>
 #include "config.h"
 
-#define RESPONSE
 
 int main(int argc, char **argv)
 {
@@ -26,16 +25,16 @@ int main(int argc, char **argv)
     }
 
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(SERVER_PORT);
+    server_addr.sin_port = htons(TEST_SERVER_PORT);
 
     // Convert IP address from text to binary form
-    if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0)
+    if (inet_pton(AF_INET, REMOTE_IP, &server_addr.sin_addr) <= 0)
     {
         perror("Invalid address or Address not supported");
         exit(EXIT_FAILURE);
     }
 
-    printf("Connecting to server %s:%d...\n", SERVER_IP, SERVER_PORT);
+    printf("Connecting to server %s:%d...\n", REMOTE_IP, TEST_SERVER_PORT);
 
     // Connect to the server
     if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
@@ -48,7 +47,7 @@ int main(int argc, char **argv)
 
     int i = N;
     int gap = 1000000;
-    char msg[BUFFER_SIZE] = {0};
+    char msg[TEST_BUFFER_SIZE] = {0};
     while (1)
     {
         if (i == N + gap)
@@ -64,19 +63,19 @@ int main(int argc, char **argv)
             sprintf(msg, "%d", i);
         }
         i++;
-        send(sock, msg, strlen(msg), 0);
-        printf("Sent message: %s\n", msg);
         if (argc != 2)
         {
             // wait user input
             printf("Press Enter to continue...\n");
             getchar();
         }
+        send(sock, msg, strlen(msg), 0);
+        printf("Sent message: %s\n", msg);
 
-#ifdef RESPONSE
+#ifdef CLIENT_WAIT_RESP
         //  Receive response from server
-        char buffer[BUFFER_SIZE];
-        ssize_t len = recv(sock, buffer, BUFFER_SIZE - 1, 0);
+        char buffer[TEST_BUFFER_SIZE];
+        ssize_t len = recv(sock, buffer, TEST_BUFFER_SIZE - 1, 0);
         buffer[len] = '\0'; // Null-terminate the string
         printf("Received message: %s\n", buffer);
         if (strcmp(msg, buffer) != 0)
