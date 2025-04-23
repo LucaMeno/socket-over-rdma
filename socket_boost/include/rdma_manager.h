@@ -19,7 +19,7 @@
 #include "rdma_utils.h"
 
 #define N_POLL_PER_CQ 1000
-#define N_THREADS_POOL 5
+#define N_THREADS_POOL 2
 
 typedef struct task task_t;
 typedef struct thread_pool thread_pool_t;
@@ -71,8 +71,5 @@ int rdma_manager_run(rdma_context_manager_t *ctxm, uint16_t srv_port);
 int rdma_manager_destroy(rdma_context_manager_t *ctxm);
 
 int rdma_manager_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t client_port, char *tx_data, int tx_size, int fd);
-
-// REMOVE
-int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port);
 
 #endif // RDMA_MANAGER_H

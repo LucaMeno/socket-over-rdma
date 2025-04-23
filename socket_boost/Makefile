@@ -3,7 +3,7 @@ CC = gcc
 CLANG_FLAGS = -g -O2 -target bpf
 BPFTOOL = bpftool
 LDLIBS = -lbpf -lrdmacm -libverbs
-PUSH = rsync -avz --delete /home/lucam/poli/socket-over-rdma/socket_boost lucam@192.168.88.131:/home/lucam/poli/socket-over-rdma
+PUSH = rsync -avz --delete /home/lucam/poli/socket-over-rdma/socket_boost/build/bin lucam@192.168.100.6:/home/lucam/poli/socket-over-rdma
 
 SRC = src
 INC = include

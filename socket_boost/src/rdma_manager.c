@@ -6,8 +6,6 @@
 
 rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t client_port, int socket_fd);
 
-
-
 void *rdma_manager_listen_thread(void *arg);
 void *rdma_manager_server_thread(void *arg);
 
@@ -80,6 +78,9 @@ int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port)
 
 int rdma_manager_destroy(rdma_context_manager_t *ctxm)
 {
+    // stop the threads
+    ctxm->stop_threads = TRUE;
+
     for (int i = 0; i < ctxm->ctx_count; i++)
         rdma_context_close(&ctxm->ctxs[i]);
     free(ctxm->ctxs);
@@ -105,9 +106,6 @@ int rdma_manager_destroy(rdma_context_manager_t *ctxm)
         ctxm->server_ec = NULL;
     }
 
-    // stop the threads
-    ctxm->stop_threads = TRUE;
-
     if (ctxm->notification_thread)
     {
         pthread_join(ctxm->notification_thread, NULL);
@@ -116,16 +114,17 @@ int rdma_manager_destroy(rdma_context_manager_t *ctxm)
 
     if (ctxm->server_thread)
     {
+        // TODO: stop the server thread
         pthread_join(ctxm->server_thread, NULL);
         ctxm->server_thread = 0;
     }
+
 
     return 0;
 }
 
 int rdma_manager_get_free_context_id(rdma_context_manager_t *ctxm)
 {
-    printf("count: %d\n", ctxm->ctx_count);
     int free_ctx_id = 0;
     for (; free_ctx_id < ctxm->ctx_count; free_ctx_id++)
     {
@@ -390,12 +389,11 @@ int rdma_manager_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t
     arg->tx_size = tx_size;
     arg->fd = fd;
 
-    printf("Count11: %d\n", ctxm->ctx_count);
-
     // add the task to the thread pool
-    if (thread_pool_add(ctxm->pool, send_thread, &arg) != 0)
+    if (thread_pool_add(ctxm->pool, send_thread, arg) != 0)
     {
         free(arg);
+        arg = NULL;
         return manager_ret_err(NULL, "Failed to add task to thread pool - sk_send");
     }
     return 0;
@@ -405,8 +403,11 @@ void send_thread(void *arg)
 {
     thread_pool_arg_t *param = (thread_pool_arg_t *)arg;
 
-    printf("Params: %u, %u, %s, %d, %d\n", param->remote_ip, param->client_port, param->tx_data, param->tx_size, param->fd);
-    printf("Ctxm: count: %d\n", param->ctxm->ctx_count);
+    if (param->ctxm->ctx_count == 0)
+    {
+        printf("No context available\n");
+        return;
+    }
 
     rdma_context_slice_t *slice = rdma_manager_get_slice(param->ctxm, param->remote_ip, param->client_port, param->fd);
 
@@ -461,6 +462,9 @@ void send_thread(void *arg)
 
     // poll the memory for the data to be ready
     // wait for the answer
+
+    return;
+
     int ret = rdma_poll_memory(buffer_to_read);
 
     if (ret < 0)
@@ -477,8 +481,6 @@ void send_thread(void *arg)
         int client_socket_fd = slice->socket_fd;
         write(client_socket_fd, buffer_to_read->buffer, buffer_to_read->buffer_size);
     }
-
-    free(param);
 
     return;
 }
@@ -516,27 +518,30 @@ void *worker(void *arg)
     while (1)
     {
         pthread_mutex_lock(&pool->lock);
-        while (pool->head == NULL && !pool->stop)
+        while (pool->head == NULL && !pool->stop) // wait for a task
         {
             pthread_cond_wait(&pool->cond, &pool->lock);
         }
-        if (pool->stop && pool->head == NULL)
+        if (pool->stop && pool->head == NULL) // no more tasks and pool is stopping
         {
             pthread_mutex_unlock(&pool->lock);
             break;
         }
         task_t *task = pool->head;
-        if (task)
+        if (task) // task found
         {
             pool->head = task->next;
             if (pool->head == NULL)
                 pool->tail = NULL;
         }
         pthread_mutex_unlock(&pool->lock);
-        if (task)
+        if (task) // execute the task
         {
             task->function(task->arg);
+            free(task->arg);
+            task->arg = NULL;
             free(task);
+            task = NULL;
         }
     }
     return NULL;
@@ -556,6 +561,7 @@ thread_pool_t *thread_pool_create(int num_threads)
     if (!pool->threads)
     {
         free(pool);
+        pool = NULL;
         return NULL;
     }
     for (int i = 0; i < num_threads; ++i)
@@ -584,6 +590,8 @@ int thread_pool_add(thread_pool_t *pool, void (*function)(void *), void *arg)
     {
         pool->head = pool->tail = task;
     }
+    thread_pool_arg_t *arg2 = (thread_pool_arg_t *)arg;
+
     pthread_cond_signal(&pool->cond);
     pthread_mutex_unlock(&pool->lock);
     return 0;
@@ -606,10 +614,13 @@ void thread_pool_destroy(thread_pool_t *pool)
         task_t *tmp = pool->head;
         pool->head = pool->head->next;
         free(tmp);
+        tmp = NULL;
     }
 
     free(pool->threads);
+    pool->threads = NULL;
     pthread_mutex_destroy(&pool->lock);
     pthread_cond_destroy(&pool->cond);
     free(pool);
+    pool = NULL;
 }

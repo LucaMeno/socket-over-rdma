@@ -8,6 +8,13 @@
 
 int main(int argc, char **argv)
 {
+    const char *remote_ip = getenv("REMOTE_IP");
+    if (remote_ip == NULL)
+    {
+        fprintf(stderr, "remote_ip environment variable not set.\n");
+        return -1;
+    }
+
     int N;
     if (argc != 2)
         N = 0;
@@ -28,13 +35,13 @@ int main(int argc, char **argv)
     server_addr.sin_port = htons(TEST_SERVER_PORT);
 
     // Convert IP address from text to binary form
-    if (inet_pton(AF_INET, REMOTE_IP, &server_addr.sin_addr) <= 0)
+    if (inet_pton(AF_INET, remote_ip, &server_addr.sin_addr) <= 0)
     {
         perror("Invalid address or Address not supported");
         exit(EXIT_FAILURE);
     }
 
-    printf("Connecting to server %s:%d...\n", REMOTE_IP, TEST_SERVER_PORT);
+    printf("Connecting to server %s:%d...\n", remote_ip, TEST_SERVER_PORT);
 
     // Connect to the server
     if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)

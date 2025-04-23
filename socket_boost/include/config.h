@@ -2,7 +2,7 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#define REMOTE_IP "192.168.88.134"
+//#define REMOTE_IP "192.168.88.134"
 
 // RDMA
 

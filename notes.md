@@ -1,19 +1,14 @@
 
-VM1
-192.168.88.134:7777             192.168.88.131:35576 
-
-VM2
-192.168.88.131:35576              192.168.88.134:7777
-
-
-
 ### RDMA
 ```sh
 ibv_rc_pingpong -g 0 -d rxe0
 ibv_rc_pingpong -g 0 -d rxe0 192.168.100.11
 ```
 
-### Sync VMs
+### VMs setup
+
+fiel sync
+
 ```sh
 ssh-keygen -t rsa -b 2048
 ssh-copy-id lucam@192.168.88.131
@@ -21,7 +16,7 @@ mkdir -p /home/lucam/poli/socket-over-rdma
 
 #add custom alia
 nano ~/.bashrc
-alias push='rsync -avz --delete /home/lucam/poli/socket-over-rdma/socket_boost lucam@192.168.88.131:/home/lucam/poli/socket-over-rdma'
+alias push='rsync -avz --delete /home/lucam/poli/socket-over-rdma/socket_boost/build/bin lucam@192.168.100.6:/home/lucam/poli/socket-over-rdma'
 
 ssh lucam@192.168.88.131
 
@@ -29,6 +24,52 @@ source ~/.bashrc
 
 ```
 
+change prompt color
+```sh
+PS1='${debian_chroot:+($debian_chroot)}\[\033[01;33m\]\u@\h\[\033[00m\]:\[\033[01;35m\]\w\[\033[00m\]\[\033[01;31m\]\$\[\033[00m\] '
+```
+
+
+script at boot time
+```sh
+nano /home/lucam/.bashrc
+
+# VM1
+export REMOTE_IP="192.168.100.6"
+export LOCAL_IP="192.168.100.5"
+
+# VM2
+export REMOTE_IP="192.168.100.5"
+export LOCAL_IP="192.168.100.6"
+
+# COMMON
+LOCAL_NETDEV="ens33"
+if ! rdma link show | grep -q .; then
+  echo "Adding RDMA device"
+  sudo rdma link add rxe0 type rxe netdev $LOCAL_NETDEV
+fi
+
+```
+
+
+ip conf
+```sh
+lucam@lucamsrv:~$ sudo cat /etc/netplan/50-cloud-init.yaml
+network:
+  version: 2
+  ethernets:
+    ens33:
+      dhcp4: false
+      addresses:
+        - 192.168.100.5/24
+      nameservers:
+        addresses:
+          - 192.168.100.2
+      routes:
+        - to: 0.0.0.0/0
+
+sudo netplan apply
+```
 
 ### clear docker
 ```sh

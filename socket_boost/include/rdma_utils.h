@@ -31,7 +31,6 @@
 
 #define N_POLL_PER_CQ 1000
 
-#define N_THREADS_POOL 5
 
 #define TRUE 1
 #define FALSE 0

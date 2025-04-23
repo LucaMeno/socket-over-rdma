@@ -38,7 +38,14 @@ int main()
         exit(EXIT_FAILURE);
     }
 
-    printf("Server is listening on %s:%d...\n", REMOTE_IP, TEST_SERVER_PORT);
+    const char *local_ip = getenv("LOCAL_IP");
+    if (local_ip == NULL)
+    {
+        fprintf(stderr, "LOCAL_IP environment variable not set.\n");
+        return -1;
+    }
+
+    printf("Server is listening on %s:%d...\n", local_ip, TEST_SERVER_PORT);
 
     // Accept client connection
     if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0)
