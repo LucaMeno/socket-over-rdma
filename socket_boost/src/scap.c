@@ -2,6 +2,11 @@
 
 #include "scap.h"
 
+// PRIVATE FUNCTIONS
+
+int bpf_launch_poll_thread(bpf_context_t *ctx);
+void *bpf_ringbuf_poll(void *ctx);
+
 void wrap_close(int fd)
 {
     if (fd >= 0)
@@ -19,8 +24,60 @@ int scap_ret_err(bpf_context_t *bpf_ctx, char *msg)
     return -1;
 }
 
-int setup_bpf(bpf_context_t *ctx)
+void *bpf_ringbuf_poll(void *ctx)
 {
+    bpf_context_t *bpf_ctx = (bpf_context_t *)ctx;
+    int err = 0;
+
+    // create a ring buffer to poll events
+    bpf_ctx->rb = ring_buffer__new(
+        bpf_ctx->ring_buffer_fd,
+        bpf_ctx->new_sk_event_handler.handle_event,
+        bpf_ctx->new_sk_event_handler.ctx,
+        NULL);
+
+    if (!bpf_ctx->rb)
+    {
+        perror("Failed to create ring buffer - bpf_ringbuf_poll");
+        return NULL;
+    }
+
+    // poll the ring buffer for events
+    while (bpf_ctx->stop_threads == FALSE)
+    {
+        err = ring_buffer__poll(bpf_ctx->rb, POOL_RB_INTERVAL);
+        if (err < 0)
+        {
+            perror("Failed to poll ring buffer - bpf_ringbuf_poll");
+            break;
+        }
+    }
+
+    return NULL;
+}
+
+int bpf_launch_poll_thread(bpf_context_t *ctx)
+{
+    int err = 0;
+    ctx->stop_threads = FALSE;
+
+    // create a thread to poll the ring buffer
+    err = pthread_create(&ctx->thread_pool_rb, NULL, (void *)bpf_ringbuf_poll, ctx);
+    if (err != 0)
+        return scap_ret_err(ctx, "Failed to create thread for ring buffer");
+
+    return 0;
+}
+
+int setup_bpf(bpf_context_t *ctx, EventHandler event_handler)
+{
+    if (!ctx)
+        return -1;
+
+    // set the event handler
+    ctx->new_sk_event_handler.ctx = event_handler.ctx;
+    ctx->new_sk_event_handler.handle_event = event_handler.handle_event;
+
     // open the BPF object file
     ctx->obj = bpf_object__open_file(PATH_TO_BPF_OBJ_FILE, NULL);
 
@@ -32,7 +89,7 @@ int setup_bpf(bpf_context_t *ctx)
     if (err != 0)
         return scap_ret_err(ctx, "Failed to load BPF object");
 
-    struct bpf_map *intercepted_sockets, *socket_association, *target_ports, *server_port, *free_sk;
+    struct bpf_map *intercepted_sockets, *socket_association, *target_ports, *server_port, *free_sk, *rb_map;
 
     // find the maps in the object file
     intercepted_sockets = bpf_object__find_map_by_name(ctx->obj, "intercepted_sockets");
@@ -55,6 +112,10 @@ int setup_bpf(bpf_context_t *ctx)
     if (!server_port)
         return scap_ret_err(ctx, "Failed to find the server_port map");
 
+    rb_map = bpf_object__find_map_by_name(ctx->obj, "new_sk");
+    if (!rb_map)
+        return scap_ret_err(ctx, "Failed to find the new_sk map");
+
     // get the file descriptor for the map
     ctx->intercepted_sk_fd = bpf_map__fd(intercepted_sockets);
     if (ctx->intercepted_sk_fd < 0)
@@ -75,6 +136,10 @@ int setup_bpf(bpf_context_t *ctx)
     ctx->server_port_fd = bpf_map__fd(server_port);
     if (ctx->server_port_fd < 0)
         return scap_ret_err(ctx, "Failed to get server_port fd");
+
+    ctx->ring_buffer_fd = bpf_map__fd(rb_map);
+    if (ctx->ring_buffer_fd < 0)
+        return scap_ret_err(ctx, "Failed to get ring buffer fd");
 
     // find the programs in the object file
     struct bpf_program *prog_sockops, *prog_sk_msg;
@@ -136,6 +201,8 @@ int cleanup_bpf(bpf_context_t *ctx)
     wrap_close(ctx->cgroup_fd);
     wrap_close(ctx->prog_fd_sockops);
     wrap_close(ctx->prog_fd_sk_msg);
+    wrap_close(ctx->ring_buffer_fd);
+    ring_buffer__free(ctx->rb);
 
     // Destroy BPF object
     bpf_object__close(ctx->obj);
@@ -161,6 +228,11 @@ int run_bpf(bpf_context_t *ctx)
     ctx->tcp_destroy_link = bpf_program__attach_tracepoint(ctx->prog_tcp_destroy_sock, "tcp", "tcp_destroy_sock");
     if (!ctx->tcp_destroy_link)
         return scap_ret_err(ctx, "Failed to attach tcp_destroy_sock_prog to tracepoint");
+
+    // create a thread to poll the ring buffer
+    err = bpf_launch_poll_thread(ctx);
+    if (err != 0)
+        return scap_ret_err(ctx, "Failed to create thread for ring buffer");
 
     return 0;
 }

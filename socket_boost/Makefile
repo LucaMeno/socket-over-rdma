@@ -30,7 +30,7 @@ $(OBJ)/scap.o: $(SRC)/scap.c $(INC)/scap.h
 $(OBJ)/sk_utils.o: $(SRC)/sk_utils.c $(INC)/sk_utils.h
 	$(CC) $(CFLAGS) -I$(INC) -c -o $@ $<
 
-$(OBJ)/rdma_utils.o: $(SRC)/rdma_utils.c $(INC)/rdma_utils.h
+$(OBJ)/rdma_utils.o: $(SRC)/rdma_utils.c $(INC)/rdma_utils.h $(INC)/scap.h
 	$(CC) $(CFLAGS) -I$(INC) -c -o $@ $<
 
 $(OBJ)/rdma_manager.o: $(SRC)/rdma_manager.c $(INC)/rdma_manager.h $(INC)/rdma_utils.h $(INC)/scap.h
@@ -43,8 +43,6 @@ $(OBJ)/scap.bpf.o: $(SRC)/scap.bpf.c $(INC)/common.h
 	clang $(CLANG_FLAGS) -I$(INC) -c $< -o $@
 
 test: $(BIN) $(OBJ) $(OBJ)/rdma_manager.o $(OBJ)/rdma_utils.o
-	$(CC) $(CFLAGS) -I$(INC) -o $(BIN)/rdma_client $(TEST_RDMA)/rdma_client.c $(OBJ)/rdma_manager.o $(OBJ)/rdma_utils.o $(LDLIBS)
-	$(CC) $(CFLAGS) -I$(INC) -o $(BIN)/rdma_server $(TEST_RDMA)/rdma_server.c $(OBJ)/rdma_manager.o $(OBJ)/rdma_utils.o $(LDLIBS)
 	$(CC) $(CFLAGS) -I$(INC) -o $(BIN)/client $(TEST_SOCKET)/client.c $(LDLIBS)
 	$(CC) $(CFLAGS) -I$(INC) -o $(BIN)/server $(TEST_SOCKET)/server.c $(LDLIBS)
 	$(PUSH)
@@ -52,3 +50,8 @@ test: $(BIN) $(OBJ) $(OBJ)/rdma_manager.o $(OBJ)/rdma_utils.o
 	
 clean:
 	rm -rf $(BUILD)
+
+
+
+# $(CC) $(CFLAGS) -I$(INC) -o $(BIN)/rdma_client $(TEST_RDMA)/rdma_client.c $(OBJ)/rdma_manager.o $(OBJ)/rdma_utils.o $(LDLIBS)
+# $(CC) $(CFLAGS) -I$(INC) -o $(BIN)/rdma_server $(TEST_RDMA)/rdma_server.c $(OBJ)/rdma_manager.o $(OBJ)/rdma_utils.o $(LDLIBS)

@@ -17,7 +17,6 @@
 #include <pthread.h>
 
 #include "rdma_utils.h"
-#include "scap.h"
 
 #define N_POLL_PER_CQ 1000
 #define N_THREADS_POOL 2
@@ -41,18 +40,16 @@ struct thread_pool
 struct rdma_context_manager
 {
     rdma_context_t *ctxs;
-    int ctx_count;      // number of contexts
-    uint16_t rdma_port; // port used for RDMA
-    pthread_t notification_thread;
-    pthread_t server_thread;
+    int ctx_count;                        // number of contexts
+    uint16_t rdma_port;                   // port used for RDMA
+    pthread_t notification_thread;        // thread for the notification
+    pthread_t server_thread;              // thread for the server
     thread_pool_t *pool;                  // thread pool for worker threads
     int stop_threads;                     // flag to stop the threads
     struct rdma_cm_id *listener;          // Listener ID for incoming connections
     struct rdma_event_channel *server_ec; // Event channel
-
-    // TODO: add a list of client sockets and INIT it
-    client_sk_t *client_sks; // list of client sockets 
-    bpf_context_t *bpf_ctx; // BPF context
+    client_sk_t *client_sks;              // list of client sockets
+    bpf_context_t *bpf_ctx;               // BPF context
 };
 
 struct thread_pool_arg
@@ -63,6 +60,7 @@ struct thread_pool_arg
     char *tx_data;
     int tx_size;
     int fd;
+    struct sock_id original_socket; // id of the socket
 };
 
 struct task
@@ -75,8 +73,8 @@ struct task
 int rdma_manager_run(rdma_context_manager_t *ctxm, uint16_t srv_port, bpf_context_t *bpf_ctx, client_sk_t *proxy_sks);
 int rdma_manager_destroy(rdma_context_manager_t *ctxm);
 
-int rdma_manager_send(rdma_context_manager_t *ctxm, char *tx_data, int tx_size, uint32_t remote_ip, uint16_t client_port);
+// int rdma_manager_send(rdma_context_manager_t *ctxm, char *tx_data, int tx_size, uint32_t remote_ip, uint16_t client_port);
 
-
+int rdma_manager_connect(rdma_context_manager_t *ctxm, uint32_t remote_ip, struct sock_id original_socket, int proxy_fd);
 
 #endif // RDMA_MANAGER_H

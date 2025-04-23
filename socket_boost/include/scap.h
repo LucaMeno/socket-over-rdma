@@ -7,11 +7,22 @@
 #include <bpf/bpf.h>
 #include <unistd.h>
 #include <fcntl.h>
+
 #include "common.h"
 #include "sk_utils.h"
+#include "config.h"
+// #include "rdma_manager.h"
 
 #define CGROUP_PATH "/sys/fs/cgroup"
 #define PATH_TO_BPF_OBJ_FILE "build/obj/scap.bpf.o"
+
+#define POOL_RB_INTERVAL 100
+
+typedef struct
+{
+    void *ctx;
+    int (*handle_event)(void *ctx, void *data, size_t len);
+} EventHandler;
 
 typedef struct
 {
@@ -23,12 +34,17 @@ typedef struct
     int target_ports_fd;
     int socket_association_fd;
     int server_port_fd;
+    int ring_buffer_fd;
     struct bpf_program *prog_tcp_destroy_sock;
     struct bpf_link *tcp_destroy_link;
     int cgroup_fd;
+    struct ring_buffer *rb;
+    pthread_t thread_pool_rb;
+    int stop_threads;
+    EventHandler new_sk_event_handler;
 } bpf_context_t;
 
-int setup_bpf(bpf_context_t *ctx);
+int setup_bpf(bpf_context_t *ctx, EventHandler event_handler);
 int run_bpf(bpf_context_t *ctx);
 int cleanup_bpf(bpf_context_t *ctx);
 int set_target_ports(bpf_context_t *ctx, __u16 target_p[], int n, __u16 server_port);

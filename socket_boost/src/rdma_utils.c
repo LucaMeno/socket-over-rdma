@@ -2,6 +2,9 @@
 
 #include "rdma_utils.h"
 
+// PRIVATE FUNCTIONS
+int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_offset, struct sock_id original_sk_id);
+
 /** MISC */
 
 int rdma_ret_err(rdma_context_t *rdma_ctx, char *msg)
@@ -269,7 +272,7 @@ int rdma_client_connect(rdma_context_t *cctx)
     return 0;
 }
 
-/** COMMUNICATION */
+/** SETUP */
 
 int rdma_context_close(rdma_context_t *ctx)
 {
@@ -326,6 +329,8 @@ int rdma_setup_context(rdma_context_t *ctx)
 
     return 0;
 }
+
+/** NOTIFICATION */
 
 int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_offset, struct sock_id original_sk_id)
 {
@@ -544,6 +549,8 @@ int rdma_recv_notification(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_s
     return 0;
 }
 
+/** COMMUNICATION */
+
 int rdma_write_slice(rdma_context_t *ctx, rdma_context_slice_t *slice)
 {
     struct ibv_send_wr send_wr = {};
@@ -662,7 +669,7 @@ int rdma_poll_memory(transfer_buffer_t *buffer_to_read)
 
 /** UTILS */
 
-int rdma_new_slice(rdma_context_t *ctx, int proxy_fd, struct sock_id original_sk)
+int rdma_new_slice(rdma_context_t *ctx, int proxy_fd, u_int16_t client_port)
 {
     // get the first free slice
     int slice_offset = 0;
@@ -687,6 +694,7 @@ int rdma_new_slice(rdma_context_t *ctx, int proxy_fd, struct sock_id original_sk
                                                                     sizeof(transfer_buffer_t)); // skip the server buffer
 
     ctx->slices[slice_offset].proxy_sk_fd = proxy_fd;
+    ctx->slices[slice_offset].client_port = client_port;
 
     // set the flags
     ctx->slices[slice_offset].server_buffer->flags.data_ready = FALSE;
@@ -694,7 +702,8 @@ int rdma_new_slice(rdma_context_t *ctx, int proxy_fd, struct sock_id original_sk
     // TODO: set the other flags to FALSE
 
     // notify the other side about the new slice
-    if (rdma_send_notification(ctx, RDMA_NEW_SLICE, slice_offset, original_sk) != 0)
+    struct sock_id none = {0}; // no sk_id for this notification
+    if (rdma_send_notification(ctx, RDMA_NEW_SLICE, slice_offset, none) != 0)
         return rdma_ret_err(ctx, "Failed to send notification - rdma_new_slice");
 
     printf("Added slice %d, server buffer: %p, client buffer: %p\n",
@@ -741,4 +750,18 @@ int rdma_slice_offset_from_port(rdma_context_t *ctx, uint16_t client_port)
         }
     }
     return -1;
+}
+
+int rdma_send_data_ready(rdma_context_t *ctx, int slice_offset)
+{
+    if (slice_offset < 0 || slice_offset >= N_TCP_PER_CONNECTION || ctx->is_id_free[slice_offset] == TRUE)
+        return rdma_ret_err(ctx, "Slice not found - rdma_send_data_ready");
+
+    // notify the other side about the data ready
+    struct sock_id none = {0}; // no sk_id for this notification
+
+    if (rdma_send_notification(ctx, RDMA_DATA_READY, slice_offset, none) != 0)
+        return rdma_ret_err(ctx, "Failed to send notification - rdma_send_data_ready");
+
+    return 0;
 }

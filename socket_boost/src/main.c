@@ -25,6 +25,13 @@ void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_man
 
 rdma_context_t rdma_ctx[MAX_NUMBER_OF_RDMA_CONN] = {0};
 
+int fun(void *ctx, void *data, size_t len)
+{
+    struct sock_id *sock_id = (struct sock_id *)data;
+    printf("Received event: SK [%u:%u - %u:%u]\n", sock_id->sip, sock_id->sport, sock_id->dip, sock_id->dport);
+    return 0;
+}
+
 int main()
 {
     signal(SIGINT, handle_signal);
@@ -34,8 +41,12 @@ int main()
     rdma_context_manager_t rdma_ctxm = {0};
 
     int err;
+    EventHandler handler = {
+        .ctx = NULL,
+        .handle_event = fun};
 
-    err = setup_bpf(&bpf_ctx);
+    err = setup_bpf(&bpf_ctx, handler);
+
     check_error(err, "");
     printf("eBPF program setup complete\n");
 
@@ -174,7 +185,7 @@ void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_man
 
                     // Send the message using RDMA
 
-                    //rdma_manager_send(rdma_ctx, buffer, bytes_received, sk_assoc_v.app.dip, sk_assoc_v.app.sport, &sk_ctx->client_sk_fd[j]);
+                    // rdma_manager_send(rdma_ctx, buffer, bytes_received, sk_assoc_v.app.dip, sk_assoc_v.app.sport, &sk_ctx->client_sk_fd[j]);
 
                     // respond to the client with the same message
                     /*ssize_t sent_size = send(i, buffer, bytes_received, 0);

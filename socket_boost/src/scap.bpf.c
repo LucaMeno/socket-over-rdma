@@ -11,6 +11,12 @@
 #define AF_INET 2
 #define AF_INET6 10
 
+struct
+{
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 2048);
+} new_sk SEC(".maps");
+
 /**
  * list of all the socket from witch i want to intercept the data
  * the ones of user space are inserted from the proxy app
@@ -175,6 +181,24 @@ int sockops_prog(struct bpf_sock_ops *skops)
 			bpf_printk("Error on update socket association 2");
 			return 0;
 		}
+
+		// Notify the user space about the new socket
+		struct sock_id *sk_id_ptr = bpf_ringbuf_reserve(&new_sk, sizeof(struct sock_id), 0);
+
+		if (!sk_id_ptr)
+		{
+			bpf_printk("Error on reserve ring buffer");
+			return 0;
+		}
+
+		// copy the socket id to the ring buffer
+		sk_id_ptr->sip = sk_id.sip;
+		sk_id_ptr->dip = sk_id.dip;
+		sk_id_ptr->sport = sk_id.sport;
+		sk_id_ptr->dport = sk_id.dport;
+
+		// submit the ring buffer
+		bpf_ringbuf_submit(sk_id_ptr, 0);
 
 #ifdef EBPF_DEBUG_MODE
 		bpf_printk("ADD: APP [SRC: %u:%u, DST: %u:%u] <-> PROXY [SRC: %u:%u, DST: %u:%u]",

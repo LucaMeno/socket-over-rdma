@@ -4,6 +4,10 @@
 
 //#define REMOTE_IP "192.168.88.134"
 
+
+#define TRUE 1
+#define FALSE 0
+
 // RDMA
 
 #define RDMA_PORT 7471

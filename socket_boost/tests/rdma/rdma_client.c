@@ -5,7 +5,7 @@
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include "rdma_manager.h"
+//#include "rdma_manager.h"
 #include "config.h"
 
 #define UNUSED(x) (void)(x)

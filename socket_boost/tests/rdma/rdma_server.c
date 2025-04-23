@@ -1,7 +1,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include "rdma_manager.h"
+//#include "rdma_manager.h"
 #include "config.h"
 
 void check_error(int err, const char *msg)
@@ -17,7 +17,7 @@ void check_error(int err, const char *msg)
 int main()
 {
 
-    rdma_context_manager_t ctx_mng = {};
+    /*rdma_context_manager_t ctx_mng = {};
     int err = rdma_manager_run(&ctx_mng, RDMA_PORT);
     check_error(err, "Failed to run RDMA manager");
 
@@ -32,7 +32,7 @@ int main()
     }
 
     printf("STOPPING SERVER\n");
-    err = rdma_manager_destroy(&ctx_mng);
+    err = rdma_manager_destroy(&ctx_mng);*/
 
     return 0;
 }
