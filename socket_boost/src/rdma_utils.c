@@ -310,7 +310,7 @@ int rdma_setup_context(rdma_context_t *ctx)
         ctx->slices[i].client_buffer = NULL;
         ctx->is_id_free[i] = TRUE;
         ctx->slices[i].client_port = 0;
-        ctx->slices[i].socket_fd = -1;
+        ctx->slices[i].proxy_sk_fd = -1;
     }
     ctx->buffer = NULL;
     ctx->buffer_size = 0;
@@ -327,7 +327,7 @@ int rdma_setup_context(rdma_context_t *ctx)
     return 0;
 }
 
-int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_offset, u_int16_t client_port)
+int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_offset, struct sock_id original_sk_id)
 {
     notification_t *notification = (notification_t *)ctx->buffer;
 
@@ -335,13 +335,13 @@ int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, 
     {
         notification->from_server.code = code;
         notification->from_server.slice_offset = slice_offset;
-        notification->from_server.client_port = client_port;
+        notification->from_server.original_sk_id = original_sk_id;
     }
     else
     {
         notification->from_client.code = code;
         notification->from_client.slice_offset = slice_offset;
-        notification->from_client.client_port = client_port;
+        notification->from_client.original_sk_id = original_sk_id;
     }
 
     // Fill ibv_sge structure
@@ -371,41 +371,53 @@ int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, 
     printf("------------------------------------------------------------\n");
     if (ctx->is_server == TRUE)
     {
-        printf("S: send: %s (%d), slice_offset: %d, client_port: %u, ctx_id: %d\n",
-               get_op_name(notification->from_server.code), notification->from_server.code, notification->from_server.slice_offset, client_port, ctx->context_id);
+        printf("S: send: %s (%d), slice_offset: %d, SK: [%u:%u -> %u:%u], ctx_id: %d\n",
+               get_op_name(notification->from_server.code), notification->from_server.code, notification->from_server.slice_offset,
+               original_sk_id.sip, original_sk_id.sport,
+               original_sk_id.dip, original_sk_id.dport,
+               ctx->context_id);
     }
-    else
+    else // client
     {
-        printf("C: send: %s (%d), slice_offset: %d, client_port: %u, ctx_id: %d\n",
-               get_op_name(notification->from_client.code), notification->from_client.code, notification->from_client.slice_offset, client_port, ctx->context_id);
+        printf("C: send: %s (%d), slice_offset: %d, SK: [%u:%u -> %u:%u], ctx_id: %d\n",
+               get_op_name(notification->from_client.code), notification->from_client.code, notification->from_client.slice_offset,
+               original_sk_id.sip, original_sk_id.sport,
+               original_sk_id.dip, original_sk_id.dport,
+               ctx->context_id);
     }
 
     return 0;
 }
 
-int rdma_recv_notification(rdma_context_t *ctx)
+int rdma_recv_notification(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks)
 {
     notification_t *notification = (notification_t *)ctx->buffer;
     int code; // enum rdma_communication_code
-    u_int16_t client_port = 0;
+    struct sock_id original_sk_id;
     int slice_offset = 0;
 
     printf("------------------------------------------------------------\n");
     if (ctx->is_server == TRUE)
     {
         code = notification->from_client.code;
-        client_port = notification->from_client.client_port;
+        original_sk_id = notification->from_client.original_sk_id;
         slice_offset = notification->from_client.slice_offset;
-        printf("S: Received: %s (%d), slice_offset: %d, client_port: %u, ctx_id: %d\n",
-               get_op_name(code), code, slice_offset, client_port, ctx->context_id);
+        printf("S: Received: %s (%d), slice_offset: %d, SK: [%u:%u -> %u:%u], ctx_id: %d\n",
+               get_op_name(code), code, slice_offset,
+               original_sk_id.sip, original_sk_id.sport,
+               original_sk_id.dip, original_sk_id.dport,
+               ctx->context_id);
     }
     else // client
     {
         code = notification->from_server.code;
         slice_offset = notification->from_server.slice_offset;
-        client_port = notification->from_server.client_port;
-        printf("C: Received: %s (%d), slice_offset: %d, client_port: %u, ctx_id: %d\n",
-               get_op_name(code), code, slice_offset, client_port, ctx->context_id);
+        original_sk_id = notification->from_server.original_sk_id;
+        printf("C: Received: %s (%d), slice_offset: %d, SK: [%u:%u -> %u:%u], ctx_id: %d\n",
+               get_op_name(code), code, slice_offset,
+               original_sk_id.sip, original_sk_id.sport,
+               original_sk_id.dip, original_sk_id.dport,
+               ctx->context_id);
     }
 
     switch (code)
@@ -445,14 +457,12 @@ int rdma_recv_notification(rdma_context_t *ctx)
 
         buffer_to_read = (ctx->is_server == TRUE) ? slice->client_buffer : slice->server_buffer;
 
-        // printf("Buffer size: %d\n", buffer_to_read->buffer_size);
-        // printf("Buffer: %s\n", buffer_to_read->buffer);
+        printf("Buffer size: %d\n", buffer_to_read->buffer_size);
 
-        // send the data to the socket
-        int server_socket_fd = slice->socket_fd;
+        // print the data (not sure of terminator /0)
+        printf("Data: %s\n", buffer_to_read->buffer);
 
-        write(server_socket_fd, buffer_to_read->buffer, buffer_to_read->buffer_size);
-
+        // TODO: send the data to the client
         break;
 
     case RDMA_NEW_SLICE:
@@ -464,7 +474,36 @@ int rdma_recv_notification(rdma_context_t *ctx)
 
         // set the pointers to the buffers
         ctx->slices[slice_offset].slice_offset = slice_offset;
-        ctx->slices[slice_offset].client_port = client_port;
+
+        // starting from the original sk_id we need to retrieve the associated proxy sk_fd
+        // since we are in the "other side", before to lock up, we need to swap the IP and port
+        original_sk_id.sip ^= original_sk_id.dip;
+        original_sk_id.dip ^= original_sk_id.sip;
+        original_sk_id.sip ^= original_sk_id.dip;
+        original_sk_id.sport ^= original_sk_id.dport;
+        original_sk_id.dport ^= original_sk_id.sport;
+        original_sk_id.sport ^= original_sk_id.dport;
+
+        struct sock_id proxy_sk_id = get_proxy_sk_from_app_sk(bpf_ctx, original_sk_id);
+        if (proxy_sk_id.sport == 0 && proxy_sk_id.sip == 0)
+            return rdma_ret_err(ctx, "Failed to get proxy sk fd - rdma_listen_notification RDMA_NEW_SLICE");
+
+        // now, with the sk_id of the proxy, we can retrieve the associated fd
+        for (int i = 0; i < N_TCP_PER_CONNECTION; i++)
+        {
+            if (client_sks[i].sk_id.sport == proxy_sk_id.sport &&
+                client_sks[i].sk_id.sip == proxy_sk_id.sip &&
+                client_sks[i].sk_id.dport == original_sk_id.dport &&
+                client_sks[i].sk_id.dip == original_sk_id.dip)
+            {
+                ctx->slices[slice_offset].proxy_sk_fd = client_sks[i].fd;
+                break;
+            }
+        }
+
+        if (ctx->slices[slice_offset].proxy_sk_fd == -1)
+            return rdma_ret_err(ctx, "Failed to get proxy sk fd - rdma_listen_notification RDMA_NEW_SLICE");
+
         ctx->slices[slice_offset].server_buffer = (transfer_buffer_t *)(ctx->buffer + NOTIFICATION_OFFSET_SIZE +
                                                                         slice_offset * SLICE_BUFFER_SIZE);
 
@@ -472,8 +511,10 @@ int rdma_recv_notification(rdma_context_t *ctx)
                                                                         slice_offset * SLICE_BUFFER_SIZE +
                                                                         sizeof(transfer_buffer_t)); // skip the server buffer
 
-        printf("Added slice_off %d, server buffer: %p, client buffer: %p, client_port: %u\n",
-               slice_offset, ctx->slices[slice_offset].server_buffer, ctx->slices[slice_offset].client_buffer, client_port);
+        printf("Added slice_off %d, server buffer: %p, client buffer: %p, SK: [%u:%u -> %u:%u]\n",
+               slice_offset, ctx->slices[slice_offset].server_buffer, ctx->slices[slice_offset].client_buffer,
+               original_sk_id.sip, original_sk_id.sport,
+               original_sk_id.dip, original_sk_id.dport);
 
         break;
 
@@ -621,7 +662,7 @@ int rdma_poll_memory(transfer_buffer_t *buffer_to_read)
 
 /** UTILS */
 
-int rdma_new_slice(rdma_context_t *ctx, u_int16_t client_port, int fd)
+int rdma_new_slice(rdma_context_t *ctx, int proxy_fd, struct sock_id original_sk)
 {
     // get the first free slice
     int slice_offset = 0;
@@ -645,15 +686,15 @@ int rdma_new_slice(rdma_context_t *ctx, u_int16_t client_port, int fd)
                                                                     slice_offset * SLICE_BUFFER_SIZE +
                                                                     sizeof(transfer_buffer_t)); // skip the server buffer
 
-    ctx->slices[slice_offset].client_port = client_port;
-    ctx->slices[slice_offset].socket_fd = fd;
+    ctx->slices[slice_offset].proxy_sk_fd = proxy_fd;
 
     // set the flags
     ctx->slices[slice_offset].server_buffer->flags.data_ready = FALSE;
+
     // TODO: set the other flags to FALSE
 
     // notify the other side about the new slice
-    if (rdma_send_notification(ctx, RDMA_NEW_SLICE, slice_offset, client_port) != 0)
+    if (rdma_send_notification(ctx, RDMA_NEW_SLICE, slice_offset, original_sk) != 0)
         return rdma_ret_err(ctx, "Failed to send notification - rdma_new_slice");
 
     printf("Added slice %d, server buffer: %p, client buffer: %p\n",
@@ -680,7 +721,9 @@ int rdma_delete_slice_by_offset(rdma_context_t *ctx, int slice_offset)
     ctx->slices[slice_offset].server_buffer = NULL;
 
     // notify the other side about the deletion
-    if (rdma_send_notification(ctx, RDMA_DELETE_SLICE, slice_offset, 0) != 0)
+    struct sock_id none = {0}; // no sk_id for this notification
+
+    if (rdma_send_notification(ctx, RDMA_DELETE_SLICE, slice_offset, none) != 0)
         return rdma_ret_err(ctx, "Failed to send notification - rdma_delete_slice");
 
     printf("Deleted slice_offset %d\n", slice_offset);

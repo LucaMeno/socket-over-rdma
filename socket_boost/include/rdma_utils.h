@@ -14,7 +14,9 @@
 #include <errno.h>
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
+
 #include "sk_utils.h"
+#include "scap.h"
 
 #define UNUSED(x) (void)(x)
 
@@ -22,7 +24,7 @@
 #define SLICE_BUFFER_SIZE (2 * sizeof(transfer_buffer_t)) // size of the slice in memory. A slice is a double buffer used to exchange data
 
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t))
-#define N_TCP_PER_CONNECTION 5
+#define N_TCP_PER_CONNECTION 5 // number of slices per connection
 #define INITIAL_CONTEXT_NUMBER 10
 #define N_CONTEXT_REALLOC 5
 #define MR_SIZE ((SLICE_BUFFER_SIZE * N_TCP_PER_CONNECTION) + NOTIFICATION_OFFSET_SIZE)
@@ -30,7 +32,6 @@
 #define POLL_MEM_ATTEMPTS 10000
 
 #define N_POLL_PER_CQ 1000
-
 
 #define TRUE 1
 #define FALSE 0
@@ -40,6 +41,8 @@ typedef struct
     uintptr_t addr;
     uint32_t rkey;
 } rdma_meta_info_t;
+
+/** NOTIFICATION */
 
 /**
  * code that can be notified
@@ -61,7 +64,8 @@ typedef struct
 {
     rdma_communication_code_t code; // code of the notification
     int slice_offset;               // offset of the slice in the buffer
-    u_int16_t client_port;          // port of the client connected to this slice
+    // u_int16_t client_port;          // port of the client connected to this slice
+    struct sock_id original_sk_id; // id of the socket
 } notification_data_t;
 
 typedef struct
@@ -76,6 +80,8 @@ typedef struct
     volatile uint32_t data_received;
     volatile uint32_t data_written;
 } flags_t;
+
+/** COMMUNICATION */
 
 typedef struct
 {
@@ -93,9 +99,11 @@ typedef struct
 {
     transfer_buffer_t *server_buffer;
     transfer_buffer_t *client_buffer;
-    uint16_t client_port; // port of the client
-    int socket_fd;        // socket fd
-    int slice_offset;     // offset of the slice in the buffer
+    uint16_t client_port; // port of the client used for OUTGOING connections
+    // int proxy_sk_fd;      // socket fd of the proxy
+    //  struct sock_id original_sk_id; // id of the original socket, used to set the proxy socket fd
+    int proxy_sk_fd;  // socket fd of the proxy used for INCOMING connections
+    int slice_offset; // offset of the slice in the buffer
 } rdma_context_slice_t;
 
 /**
@@ -123,6 +131,7 @@ typedef struct
     rdma_context_slice_t slices[N_TCP_PER_CONNECTION]; // Slices for each TCP connection
     int is_id_free[N_TCP_PER_CONNECTION];              // Free IDs for slices: 0 = free, 1 = used // TODO: remove this and use client_port
     int is_server;                                     // TRUE if server, FALSE if client
+
 } rdma_context_t;
 
 /** SETUP CONTEXT */
@@ -141,8 +150,8 @@ int rdma_setup_context(rdma_context_t *ctx);
 /** COMMUNICATION */
 
 // send and receive
-int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_offset, u_int16_t client_port);
-int rdma_recv_notification(rdma_context_t *ctx);
+int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_offset, struct sock_id original_sk_id);
+int rdma_recv_notification(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks);
 
 // write and read
 int rdma_write_slice(rdma_context_t *ctx, rdma_context_slice_t *slice);
@@ -153,7 +162,7 @@ int rdma_poll_memory(transfer_buffer_t *buffer_to_read);
 
 /** UTILS */
 
-int rdma_new_slice(rdma_context_t *ctx, u_int16_t port, int socket_fd);
+int rdma_new_slice(rdma_context_t *ctx, int proxy_fd, struct sock_id original_sk);
 int rdma_delete_slice_by_port(rdma_context_t *ctx, u_int16_t client_port);
 int rdma_delete_slice_by_offset(rdma_context_t *ctx, int slice_offset);
 int rdma_slice_offset_from_port(rdma_context_t *ctx, uint16_t client_port);

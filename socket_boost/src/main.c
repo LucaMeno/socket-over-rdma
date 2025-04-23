@@ -60,7 +60,7 @@ int main()
     printf("Map updated\n");
 
     // RDMA
-    err = rdma_manager_run(&rdma_ctxm, RDMA_PORT);
+    err = rdma_manager_run(&rdma_ctxm, RDMA_PORT, &bpf_ctx, sk_ctx.client_sk_fd);
 
     printf("Waiting for messages, press Ctrl+C to exit...\n");
     wait_for_msg(&bpf_ctx, &sk_ctx, &rdma_ctxm);
@@ -174,7 +174,7 @@ void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_man
 
                     // Send the message using RDMA
 
-                    // sk_send(rdma_ctx, sk_assoc_v.app.dip, sk_assoc_v.app.dport, buffer, bytes_received, i);
+                    //rdma_manager_send(rdma_ctx, buffer, bytes_received, sk_assoc_v.app.dip, sk_assoc_v.app.sport, &sk_ctx->client_sk_fd[j]);
 
                     // respond to the client with the same message
                     /*ssize_t sent_size = send(i, buffer, bytes_received, 0);

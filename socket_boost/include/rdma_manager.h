@@ -17,6 +17,7 @@
 #include <pthread.h>
 
 #include "rdma_utils.h"
+#include "scap.h"
 
 #define N_POLL_PER_CQ 1000
 #define N_THREADS_POOL 2
@@ -48,6 +49,10 @@ struct rdma_context_manager
     int stop_threads;                     // flag to stop the threads
     struct rdma_cm_id *listener;          // Listener ID for incoming connections
     struct rdma_event_channel *server_ec; // Event channel
+
+    // TODO: add a list of client sockets and INIT it
+    client_sk_t *client_sks; // list of client sockets 
+    bpf_context_t *bpf_ctx; // BPF context
 };
 
 struct thread_pool_arg
@@ -67,9 +72,11 @@ struct task
     struct task *next;
 };
 
-int rdma_manager_run(rdma_context_manager_t *ctxm, uint16_t srv_port);
+int rdma_manager_run(rdma_context_manager_t *ctxm, uint16_t srv_port, bpf_context_t *bpf_ctx, client_sk_t *proxy_sks);
 int rdma_manager_destroy(rdma_context_manager_t *ctxm);
 
-int rdma_manager_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t client_port, char *tx_data, int tx_size, int fd);
+int rdma_manager_send(rdma_context_manager_t *ctxm, char *tx_data, int tx_size, uint32_t remote_ip, uint16_t client_port);
+
+
 
 #endif // RDMA_MANAGER_H

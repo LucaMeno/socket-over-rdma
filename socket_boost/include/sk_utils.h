@@ -18,6 +18,10 @@
 #include <bpf/bpf.h>
 #include "common.h"
 
+/**
+ * Structure to hold the socket information related to the proxy sockets
+ * It stores the file descriptor and the socket ID used for the socket map
+ */
 typedef struct
 {
     int fd;

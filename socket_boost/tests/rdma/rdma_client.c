@@ -22,7 +22,7 @@ void check_error(int err, const char *msg)
 
 int main()
 {
-    const char *remote_ip = getenv("REMOTE_IP");
+    /*const char *remote_ip = getenv("REMOTE_IP");
     if (remote_ip == NULL)
     {
         fprintf(stderr, "remote_ip environment variable not set.\n");
@@ -54,7 +54,7 @@ int main()
     sleep(7);
     printf("Disconnecting...\n");
     rdma_manager_destroy(&ctx_mng);
-    printf("Connection closed and resources cleaned up.\n");
+    printf("Connection closed and resources cleaned up.\n");*/
 
     return 0;
 }

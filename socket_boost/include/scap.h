@@ -34,4 +34,6 @@ int cleanup_bpf(bpf_context_t *ctx);
 int set_target_ports(bpf_context_t *ctx, __u16 target_p[], int n, __u16 server_port);
 int push_sock_to_map(bpf_context_t *ctx, client_sk_t client_sks[], int n);
 
+struct sock_id get_proxy_sk_from_app_sk(bpf_context_t *ctx, struct sock_id app_sk);
+
 #endif // SCAP_H

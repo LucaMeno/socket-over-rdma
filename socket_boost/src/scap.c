@@ -204,3 +204,15 @@ int push_sock_to_map(bpf_context_t *ctx, client_sk_t client_sks[], int n)
     }
     return 0;
 }
+
+struct sock_id get_proxy_sk_from_app_sk(bpf_context_t *ctx, struct sock_id app_sk)
+{
+    struct association_t app;
+    struct association_t proxy = {0};
+
+    app.app = app_sk;
+
+    int err = bpf_map_lookup_elem(ctx->socket_association_fd, &app, &proxy);
+
+    return proxy.proxy;
+}

@@ -3,7 +3,7 @@ CC = gcc
 CLANG_FLAGS = -g -O2 -target bpf
 BPFTOOL = bpftool
 LDLIBS = -lbpf -lrdmacm -libverbs
-PUSH = rsync -avz --delete /home/lucam/poli/socket-over-rdma/socket_boost/build/bin lucam@192.168.100.6:/home/lucam/poli/socket-over-rdma
+PUSH = rsync -avz --delete /home/lucam/poli/socket-over-rdma/socket_boost/build lucam@192.168.100.6:/home/lucam/poli/socket-over-rdma
 
 SRC = src
 INC = include
@@ -33,7 +33,7 @@ $(OBJ)/sk_utils.o: $(SRC)/sk_utils.c $(INC)/sk_utils.h
 $(OBJ)/rdma_utils.o: $(SRC)/rdma_utils.c $(INC)/rdma_utils.h
 	$(CC) $(CFLAGS) -I$(INC) -c -o $@ $<
 
-$(OBJ)/rdma_manager.o: $(SRC)/rdma_manager.c $(INC)/rdma_manager.h
+$(OBJ)/rdma_manager.o: $(SRC)/rdma_manager.c $(INC)/rdma_manager.h $(INC)/rdma_utils.h $(INC)/scap.h
 	$(CC) $(CFLAGS) -I$(INC) -c -o $@ $<
 
 $(OBJ)/scap.skel.h: $(OBJ)/scap.bpf.o

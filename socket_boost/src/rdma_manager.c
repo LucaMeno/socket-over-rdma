@@ -4,7 +4,7 @@
 
 // PRIVATE FUNCTIONS
 
-rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t client_port, int socket_fd);
+rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t client_port);
 
 void *rdma_manager_listen_thread(void *arg);
 void *rdma_manager_server_thread(void *arg);
@@ -57,7 +57,7 @@ void manager_ret_void(rdma_context_t *rdma_ctx, char *msg)
 
 /** WRAPPER */
 
-int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port)
+int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port, client_sk_t *proxy_sks, bpf_context_t *bpf_ctx)
 {
     ctxm->ctxs = malloc(INITIAL_CONTEXT_NUMBER * sizeof(rdma_context_t));
     for (int i = 0; i < INITIAL_CONTEXT_NUMBER; i++)
@@ -69,6 +69,9 @@ int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port)
     ctxm->rdma_port = rdma_port;
     ctxm->server_thread = 0;
     ctxm->notification_thread = 0;
+    ctxm->stop_threads = FALSE;
+    ctxm->client_sks = proxy_sks;
+    ctxm->bpf_ctx = bpf_ctx;
 
     // setup the pool
     ctxm->pool = thread_pool_create(N_THREADS_POOL);
@@ -87,6 +90,8 @@ int rdma_manager_destroy(rdma_context_manager_t *ctxm)
     ctxm->ctxs = NULL;
     ctxm->ctx_count = 0;
     ctxm->rdma_port = 0;
+    ctxm->client_sks = NULL;
+    ctxm->bpf_ctx = NULL;
 
     // destroy the thread pool
     thread_pool_destroy(ctxm->pool);
@@ -119,7 +124,6 @@ int rdma_manager_destroy(rdma_context_manager_t *ctxm)
         ctxm->server_thread = 0;
     }
 
-
     return 0;
 }
 
@@ -149,8 +153,10 @@ int rdma_manager_get_free_context_id(rdma_context_manager_t *ctxm)
         return manager_ret_err(NULL, "Failed to setup context - rdma_manager_get_free_context_id");
 }
 
-rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t client_port, int socket_fd)
+rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t client_port)
 {
+    // Since the context is initialized while the socket is created, for sure the context is already created and also the slice
+
     int ctx_id = -1;
 
     // search for the context using the ip address
@@ -162,6 +168,25 @@ rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint3
             break;
         }
     }
+
+    if (ctx_id < 0)
+        return manager_ret_null(NULL, "Context not found - rdma_get_slice");
+
+    int slice_offset = -1;
+    // search for the slice
+    for (int i = 0; i < N_TCP_PER_CONNECTION; i++)
+    {
+        if (ctxm->ctxs[ctx_id].slices[i].client_port == client_port)
+        {
+            slice_offset = i;
+            break;
+        }
+    }
+
+    if (slice_offset < 0)
+        return manager_ret_null(NULL, "Slice not found - rdma_get_slice");
+
+    /*
 
     if (ctx_id < 0) // context not found, create a new one
     {
@@ -186,7 +211,7 @@ rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint3
     int slice_offset = -1;
     for (int i = 0; i < N_TCP_PER_CONNECTION; i++)
     {
-        if (ctx->slices[i].client_port == client_port && ctx->slices[i].socket_fd == socket_fd)
+        if (ctx->slices[i].client_port == client_port && ctx->slices[i].proxy_sk_fd == proxy_sk_fd)
         {
             slice_offset = i;
             break;
@@ -197,20 +222,20 @@ rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, uint3
     {
         printf("Slice not found, creating a new one\n");
         // slice not found, create a new one
-        slice_offset = rdma_new_slice(&ctxm->ctxs[ctx_id], client_port, socket_fd);
+        slice_offset = rdma_new_slice(&ctxm->ctxs[ctx_id], client_port, proxy_sk_fd);
         if (slice_offset < 0)
             return manager_ret_null(NULL, "Failed to create new slice - rdma_get_slice");
 
         // init the slice
         rdma_context_slice_t *slice = &ctxm->ctxs[ctx_id].slices[slice_offset];
-        slice->socket_fd = socket_fd;
+        slice->proxy_sk_fd = proxy_sk_fd;
         // slice->is_polling = FALSE;
         slice->client_port = client_port;
         slice->slice_offset = slice_offset;
     }
 
     // return the slice
-    return &ctxm->ctxs[ctx_id].slices[slice_offset];
+    return &ctxm->ctxs[ctx_id].slices[slice_offset];*/
 }
 
 /** NOTIFICATION */
@@ -272,7 +297,7 @@ void *rdma_manager_listen_thread(void *arg)
                 return manager_ret_null(ctx, "Failed to post recv - rdma_recv");
 
             // start a new thread to handle the notification
-            int err = rdma_recv_notification(ctx);
+            int err = rdma_recv_notification(ctx, ctxm->bpf_ctx, ctxm->client_sks);
             if (err != 0)
                 return manager_ret_null(ctx, "Failed to receive notification - rdma_manager_liste_thread");
         }
@@ -374,9 +399,9 @@ void *rdma_manager_server_thread(void *arg)
     return NULL;
 }
 
-int rdma_manager_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t client_port, char *tx_data, int tx_size, int fd)
+// int rdma_manager_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t client_port, char *tx_data, int tx_size, int fd)
+int rdma_manager_send(rdma_context_manager_t *ctxm, char *tx_data, int tx_size, uint32_t remote_ip, uint16_t client_port)
 {
-
     // prepare the arguments for the thread
     thread_pool_arg_t *arg = malloc(sizeof(thread_pool_arg_t));
     if (arg == NULL)
@@ -387,7 +412,6 @@ int rdma_manager_send(rdma_context_manager_t *ctxm, uint32_t remote_ip, uint16_t
     arg->client_port = client_port;
     arg->tx_data = tx_data;
     arg->tx_size = tx_size;
-    arg->fd = fd;
 
     // add the task to the thread pool
     if (thread_pool_add(ctxm->pool, send_thread, arg) != 0)
@@ -409,7 +433,7 @@ void send_thread(void *arg)
         return;
     }
 
-    rdma_context_slice_t *slice = rdma_manager_get_slice(param->ctxm, param->remote_ip, param->client_port, param->fd);
+    rdma_context_slice_t *slice = rdma_manager_get_slice(param->ctxm, param->remote_ip, param->client_port);
 
     if (slice == NULL)
         return manager_ret_void(NULL, "Failed to get slice - send_thread");
@@ -457,7 +481,8 @@ void send_thread(void *arg)
         return manager_ret_void(NULL, "Failed to write slice - send_thread");
 
     // notify the other side that the data is ready
-    if (rdma_send_notification(ctx, RDMA_DATA_READY, slice->slice_offset, slice->client_port) != 0)
+    struct sock_id none = {0}; // no sk_id for this notification
+    if (rdma_send_notification(ctx, RDMA_DATA_READY, slice->slice_offset, none) != 0)
         return manager_ret_void(NULL, "Failed to send notification - send_thread");
 
     // poll the memory for the data to be ready
@@ -478,17 +503,17 @@ void send_thread(void *arg)
 
         // memcpy(param->rx_data, buffer_to_read->buffer, buffer_to_read->buffer_size);
 
-        int client_socket_fd = slice->socket_fd;
+        int client_socket_fd = slice->proxy_sk_fd;
         write(client_socket_fd, buffer_to_read->buffer, buffer_to_read->buffer_size);
     }
 
     return;
 }
 
-int rdma_manager_run(rdma_context_manager_t *ctxm, uint16_t srv_port)
+int rdma_manager_run(rdma_context_manager_t *ctxm, uint16_t srv_port, bpf_context_t *bpf_ctx, client_sk_t *proxy_sks)
 {
     // init the maanger
-    if (rdma_manager_init(ctxm, srv_port) != 0)
+    if (rdma_manager_init(ctxm, srv_port, proxy_sks, bpf_ctx) != 0)
         return manager_ret_err(NULL, "Failed to init rdma manager - rdma_manager_run");
 
     // start the server thread
