@@ -67,6 +67,7 @@ network:
           - 192.168.100.2
       routes:
         - to: 0.0.0.0/0
+          via: 192.168.100.2
 
 sudo netplan apply
 ```
