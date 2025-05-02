@@ -79,7 +79,7 @@ typedef struct
 {
     volatile uint32_t data_ready;
     volatile uint32_t data_received;
-    volatile uint32_t data_written;
+    volatile uint32_t is_polling;
 } flags_t;
 
 /** COMMUNICATION */

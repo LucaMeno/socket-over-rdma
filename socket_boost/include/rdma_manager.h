@@ -75,6 +75,6 @@ int rdma_manager_destroy(rdma_context_manager_t *ctxm);
 
 // int rdma_manager_send(rdma_context_manager_t *ctxm, char *tx_data, int tx_size, uint32_t remote_ip, uint16_t client_port);
 
-int rdma_manager_connect(rdma_context_manager_t *ctxm, uint32_t remote_ip, struct sock_id original_socket, int proxy_fd);
+//int rdma_manager_connect(rdma_context_manager_t *ctxm, uint32_t remote_ip, struct sock_id original_socket, int proxy_fd);
 
 #endif // RDMA_MANAGER_H
