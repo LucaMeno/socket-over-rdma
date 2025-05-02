@@ -19,4 +19,10 @@ struct association_t
 	struct sock_id app;
 };
 
+struct userspace_data_t
+{
+	struct association_t association;
+	int sockops_op;
+};
+
 #endif // COMMON_H

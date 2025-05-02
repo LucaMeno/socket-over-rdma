@@ -49,4 +49,6 @@ int set_socket_nonblocking(int sockfd);
 // int wait_for_msg(sk_context_t *sk_ctx, void *handler);
 int cleanup_socket(sk_context_t *sk_ctx);
 
+int get_proxy_fd_from_sockid(sk_context_t *ctx, struct sock_id sk_id);
+
 #endif // SOCKET_UTILS_H

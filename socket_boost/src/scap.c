@@ -89,7 +89,7 @@ int setup_bpf(bpf_context_t *ctx, EventHandler event_handler)
     if (err != 0)
         return scap_ret_err(ctx, "Failed to load BPF object");
 
-    struct bpf_map *intercepted_sockets, *socket_association, *target_ports, *server_port, *free_sk, *rb_map;
+    struct bpf_map *intercepted_sockets, *socket_association, *target_ports, *server_port, *free_sk, *rb_map, *target_ip;
 
     // find the maps in the object file
     intercepted_sockets = bpf_object__find_map_by_name(ctx->obj, "intercepted_sockets");
@@ -116,6 +116,10 @@ int setup_bpf(bpf_context_t *ctx, EventHandler event_handler)
     if (!rb_map)
         return scap_ret_err(ctx, "Failed to find the new_sk map");
 
+    target_ip = bpf_object__find_map_by_name(ctx->obj, "target_ip");
+    if (!target_ip)
+        return scap_ret_err(ctx, "Failed to find the target_ip map");
+
     // get the file descriptor for the map
     ctx->intercepted_sk_fd = bpf_map__fd(intercepted_sockets);
     if (ctx->intercepted_sk_fd < 0)
@@ -140,6 +144,10 @@ int setup_bpf(bpf_context_t *ctx, EventHandler event_handler)
     ctx->ring_buffer_fd = bpf_map__fd(rb_map);
     if (ctx->ring_buffer_fd < 0)
         return scap_ret_err(ctx, "Failed to get ring buffer fd");
+
+    ctx->target_ip_fd = bpf_map__fd(target_ip);
+    if (ctx->target_ip_fd < 0)
+        return scap_ret_err(ctx, "Failed to get target_ip fd");
 
     // find the programs in the object file
     struct bpf_program *prog_sockops, *prog_sk_msg;
@@ -279,7 +287,7 @@ int push_sock_to_map(bpf_context_t *ctx, client_sk_t client_sks[], int n)
 
 struct sock_id get_proxy_sk_from_app_sk(bpf_context_t *ctx, struct sock_id app_sk)
 {
-    struct association_t app;
+    struct association_t app = {0};
     struct association_t proxy = {0};
 
     app.app = app_sk;
@@ -287,4 +295,20 @@ struct sock_id get_proxy_sk_from_app_sk(bpf_context_t *ctx, struct sock_id app_s
     int err = bpf_map_lookup_elem(ctx->socket_association_fd, &app, &proxy);
 
     return proxy.proxy;
+}
+
+int set_target_ip(bpf_context_t *ctx, __u32 target_ip[], int n)
+{
+    int val = 1;
+    int err = 0;
+
+    // set the target IPs
+    for (int i = 0; i < n; i++)
+    {
+        err = bpf_map_update_elem(ctx->target_ip_fd, &target_ip[i], &val, BPF_ANY);
+        if (err != 0)
+            return scap_ret_err(ctx, "Failed to update target_ip map");
+    }
+
+    return 0;
 }

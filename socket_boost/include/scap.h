@@ -35,6 +35,7 @@ typedef struct
     int socket_association_fd;
     int server_port_fd;
     int ring_buffer_fd;
+    int target_ip_fd;
     struct bpf_program *prog_tcp_destroy_sock;
     struct bpf_link *tcp_destroy_link;
     int cgroup_fd;
@@ -48,6 +49,7 @@ int setup_bpf(bpf_context_t *ctx, EventHandler event_handler);
 int run_bpf(bpf_context_t *ctx);
 int cleanup_bpf(bpf_context_t *ctx);
 int set_target_ports(bpf_context_t *ctx, __u16 target_p[], int n, __u16 server_port);
+int set_target_ip(bpf_context_t *ctx, __u32 target_ip[], int n);
 int push_sock_to_map(bpf_context_t *ctx, client_sk_t client_sks[], int n);
 
 struct sock_id get_proxy_sk_from_app_sk(bpf_context_t *ctx, struct sock_id app_sk);

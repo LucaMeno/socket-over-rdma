@@ -15,6 +15,9 @@
 
 #define MAX_NUMBER_OF_RDMA_CONN NUMBER_OF_SOCKETS
 
+// #define BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB 5
+// #define BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB 4
+
 volatile sig_atomic_t STOP = false;
 
 void handle_signal(int signal);
@@ -23,22 +26,49 @@ void error_and_exit(const char *msg);
 
 void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_manager_t *rdma_ctx);
 
-rdma_context_t rdma_ctx[MAX_NUMBER_OF_RDMA_CONN] = {0};
+// rdma_context_t rdma_ctx[MAX_NUMBER_OF_RDMA_CONN] = {0};
+
+rdma_context_manager_t rdma_ctxm = {0};
+sk_context_t sk_ctx = {0};
+bpf_context_t bpf_ctx = {0};
 
 int fun(void *ctx, void *data, size_t len)
 {
-    struct sock_id *sock_id = (struct sock_id *)data;
-    printf("Received event: SK [%u:%u - %u:%u]\n", sock_id->sip, sock_id->sport, sock_id->dip, sock_id->dport);
+    struct userspace_data_t *user_data = (struct userspace_data_t *)data;
+    printf("New Association: APP [%u:%u -> %u:%u] <-> PROXY [%u:%u -> %u:%u] - OP: %d\n",
+           user_data->association.app.sip,
+           user_data->association.app.sport,
+           user_data->association.app.dip,
+           user_data->association.app.dport,
+           user_data->association.proxy.sip,
+           user_data->association.proxy.sport,
+           user_data->association.proxy.dip,
+           user_data->association.proxy.dport,
+           user_data->sockops_op);
+
+    // start the RDMA connection
+    // TODO: remote ip can be read from the socket_id
+    // only the client start the connection
+    if (user_data->sockops_op == BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB)
+    {
+        int ret;
+        int proxy_fd = get_proxy_fd_from_sockid(&sk_ctx, user_data->association.proxy);
+
+        if (proxy_fd < 0)
+        {
+            printf("Failed to get proxy fd from sockid\n");
+            return -1;
+        }
+
+        ret = rdma_manager_connect(&rdma_ctxm, user_data->association.app, proxy_fd);
+    }
+
     return 0;
 }
 
 int main()
 {
     signal(SIGINT, handle_signal);
-
-    sk_context_t sk_ctx = {0};
-    bpf_context_t bpf_ctx = {0};
-    rdma_context_manager_t rdma_ctxm = {0};
 
     int err;
     EventHandler handler = {
@@ -50,13 +80,28 @@ int main()
     check_error(err, "");
     printf("eBPF program setup complete\n");
 
-    // TODO: scale this to multiple ports
+    // TODO: scale this
     __u16 ports_to_set[1] = {TARGET_PORT};
-    int n = sizeof(ports_to_set) / sizeof(ports_to_set[0]);
+    int nport = sizeof(ports_to_set) / sizeof(ports_to_set[0]);
 
-    err = set_target_ports(&bpf_ctx, ports_to_set, n, PROXY_PORT);
+    //const char *ip_env = getenv("REMOTE_IP");
+    const char *ip1 = "192.168.100.6";
+    const char *ip2 = "192.168.100.5";
+    __u32 ips_to_set[2];
+
+    ips_to_set[0] = inet_addr(ip1);
+    ips_to_set[1] = inet_addr(ip2);
+
+    int nip = sizeof(ips_to_set) / sizeof(ips_to_set[0]);
+
+
+    err = set_target_ports(&bpf_ctx, ports_to_set, nport, PROXY_PORT);
     check_error(err, "");
     printf("Target ports set\n");
+
+    err = set_target_ip(&bpf_ctx, ips_to_set, nip);
+    check_error(err, "");
+    printf("Target IPs set\n");
 
     err = run_bpf(&bpf_ctx);
     check_error(err, "");
@@ -184,19 +229,7 @@ void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_man
                     printf("Original sk:\t[SRC: %s:%u, DST: %s:%u]\n", src_ip_app, sk_assoc_v.app.sport, dst_ip_app, sk_assoc_v.app.dport);
 
                     // Send the message using RDMA
-
-                    // rdma_manager_send(rdma_ctx, buffer, bytes_received, sk_assoc_v.app.dip, sk_assoc_v.app.sport, &sk_ctx->client_sk_fd[j]);
-
-                    // respond to the client with the same message
-                    /*ssize_t sent_size = send(i, buffer, bytes_received, 0);
-                    if (sent_size < 0)
-                    {
-                        perror("send");
-                    }
-                    else
-                    {
-                        printf("Response:\tsent\n");
-                    }*/
+                    rdma_manager_send(rdma_ctx, buffer, bytes_received, sk_assoc_v.app);
                 }
             }
         }

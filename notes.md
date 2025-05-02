@@ -204,3 +204,10 @@ ib_write_bw -d rxe0
 ib_write_bw <first_VM_IP> -d rxe0
 ```
 
+
+
+---
+
+### 02/05/2025
+
+in the RDMA manager i cannot use the app fd since i cannot write to them

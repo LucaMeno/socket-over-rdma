@@ -15,6 +15,7 @@ int sk_ret_err(sk_context_t *sk_ctx, const char *msg)
         cleanup_socket(sk_ctx);
     return -1;
 }
+
 int setup_sockets(sk_context_t *sk_ctx, __u16 server_port, __u32 server_ip)
 {
     sk_ctx->server_port = server_port;
@@ -153,4 +154,20 @@ int cleanup_socket(sk_context_t *sk_ctx)
     pthread_cond_destroy(&cond_var);
 
     return 0;
+}
+
+int get_proxy_fd_from_sockid(sk_context_t *ctx, struct sock_id sk_id)
+{
+    for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
+    {
+        if (ctx->client_sk_fd[i].sk_id.sport == sk_id.sport &&
+            ctx->client_sk_fd[i].sk_id.sip == sk_id.sip &&
+            ctx->client_sk_fd[i].sk_id.dport == sk_id.dport &&
+            ctx->client_sk_fd[i].sk_id.dip == sk_id.dip)
+        {
+            return ctx->client_sk_fd[i].fd;
+        }
+    }
+
+    return -1; // Not found
 }

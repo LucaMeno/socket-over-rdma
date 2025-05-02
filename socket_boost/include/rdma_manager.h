@@ -55,12 +55,10 @@ struct rdma_context_manager
 struct thread_pool_arg
 {
     rdma_context_manager_t *ctxm;
-    uint32_t remote_ip;
-    uint16_t client_port;
+    struct sock_id original_socket; // id of the socket
     char *tx_data;
     int tx_size;
     int fd;
-    struct sock_id original_socket; // id of the socket
 };
 
 struct task
@@ -71,10 +69,11 @@ struct task
 };
 
 int rdma_manager_run(rdma_context_manager_t *ctxm, uint16_t srv_port, bpf_context_t *bpf_ctx, client_sk_t *proxy_sks);
+
 int rdma_manager_destroy(rdma_context_manager_t *ctxm);
 
-// int rdma_manager_send(rdma_context_manager_t *ctxm, char *tx_data, int tx_size, uint32_t remote_ip, uint16_t client_port);
+int rdma_manager_send(rdma_context_manager_t *ctxm, char *tx_data, int tx_size, struct sock_id original_socket);
 
-//int rdma_manager_connect(rdma_context_manager_t *ctxm, uint32_t remote_ip, struct sock_id original_socket, int proxy_fd);
+int rdma_manager_connect(rdma_context_manager_t *ctxm, struct sock_id original_socket, int proxy_sk_fd);
 
 #endif // RDMA_MANAGER_H

@@ -268,7 +268,7 @@ int rdma_client_connect(rdma_context_t *cctx)
     if (rdma_poll_cq(cctx))
         return rdma_ret_err(cctx, "rdma_poll_cq");
 
-    sleep(2);
+    sleep(1);
     return 0;
 }
 
@@ -312,7 +312,10 @@ int rdma_setup_context(rdma_context_t *ctx)
         ctx->slices[i].server_buffer = NULL;
         ctx->slices[i].client_buffer = NULL;
         ctx->is_id_free[i] = TRUE;
-        ctx->slices[i].client_port = 0;
+        ctx->slices[i].original_sk_id.sip = 0;
+        ctx->slices[i].original_sk_id.sport = 0;
+        ctx->slices[i].original_sk_id.dip = 0;
+        ctx->slices[i].original_sk_id.dport = 0;
         ctx->slices[i].proxy_sk_fd = -1;
     }
     ctx->buffer = NULL;
@@ -458,16 +461,36 @@ int rdma_recv_notification(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_s
 
         rdma_context_slice_t *slice = &ctx->slices[slice_offset];
 
-        transfer_buffer_t *buffer_to_read;
+        transfer_buffer_t *buffer_to_read, *buffer_to_write;
 
-        buffer_to_read = (ctx->is_server == TRUE) ? slice->client_buffer : slice->server_buffer;
+        if (ctx->is_server == TRUE)
+        {
+            buffer_to_read = slice->client_buffer;
+            buffer_to_write = slice->server_buffer;
+        }
+        else
+        {
+            buffer_to_read = slice->server_buffer;
+            buffer_to_write = slice->client_buffer;
+        }
 
         printf("Buffer size: %d\n", buffer_to_read->buffer_size);
 
         // print the data (not sure of terminator /0)
         printf("Data: %s\n", buffer_to_read->buffer);
 
-        // TODO: send the data to the client
+        // set the received flag
+        buffer_to_write->flags.data_received = TRUE;
+        buffer_to_write->flags.is_polling = FALSE;
+        buffer_to_write->flags.data_ready = FALSE;
+        buffer_to_write->buffer_size = 0;
+
+        if (rdma_write_slice(ctx, slice) != 0)
+            return rdma_ret_err(ctx, "Failed to write slice - rdma_listen_notification RDMA_DATA_READY");
+
+        // forward the data to the proxy socket
+        write(slice->proxy_sk_fd, buffer_to_read->buffer, buffer_to_read->buffer_size);
+
         break;
 
     case RDMA_NEW_SLICE:
@@ -477,7 +500,6 @@ int rdma_recv_notification(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_s
 
         ctx->is_id_free[slice_offset] = FALSE; // Mark the slice as used
 
-        // set the pointers to the buffers
         ctx->slices[slice_offset].slice_offset = slice_offset;
 
         // starting from the original sk_id we need to retrieve the associated proxy sk_fd
@@ -489,17 +511,27 @@ int rdma_recv_notification(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_s
         original_sk_id.dport ^= original_sk_id.sport;
         original_sk_id.sport ^= original_sk_id.dport;
 
+        printf("Original SK: [%u:%u -> %u:%u]\n",
+               original_sk_id.sip, original_sk_id.sport,
+               original_sk_id.dip, original_sk_id.dport);
+
+        ctx->slices[slice_offset].original_sk_id = original_sk_id;
+
         struct sock_id proxy_sk_id = get_proxy_sk_from_app_sk(bpf_ctx, original_sk_id);
         if (proxy_sk_id.sport == 0 && proxy_sk_id.sip == 0)
-            return rdma_ret_err(ctx, "Failed to get proxy sk fd - rdma_listen_notification RDMA_NEW_SLICE");
+            return rdma_ret_err(ctx, "Failed to get proxy sk - rdma_listen_notification RDMA_NEW_SLICE");
+
+        printf("Proxy SK: [%u:%u -> %u:%u]\n",
+               proxy_sk_id.sip, proxy_sk_id.sport,
+               proxy_sk_id.dip, proxy_sk_id.dport);
 
         // now, with the sk_id of the proxy, we can retrieve the associated fd
         for (int i = 0; i < N_TCP_PER_CONNECTION; i++)
         {
             if (client_sks[i].sk_id.sport == proxy_sk_id.sport &&
                 client_sks[i].sk_id.sip == proxy_sk_id.sip &&
-                client_sks[i].sk_id.dport == original_sk_id.dport &&
-                client_sks[i].sk_id.dip == original_sk_id.dip)
+                client_sks[i].sk_id.dport == proxy_sk_id.dport &&
+                client_sks[i].sk_id.dip == proxy_sk_id.dip)
             {
                 ctx->slices[slice_offset].proxy_sk_fd = client_sks[i].fd;
                 break;
@@ -586,7 +618,7 @@ int rdma_write_slice(rdma_context_t *ctx, rdma_context_slice_t *slice)
     // else: notthing to do, the server buffer is already in the right place
 
     // set the flags
-    buffer_to_write->flags.data_ready = TRUE;
+    // buffer_to_write->flags.data_ready = TRUE;
 
     // Fill ibv_sge with local buffer
     sge.addr = (uintptr_t)buffer_to_write; // Local address of the buffer
@@ -645,14 +677,10 @@ int rdma_poll_cq(rdma_context_t *ctx)
     return 0;
 }
 
-int rdma_poll_memory(transfer_buffer_t *buffer_to_read)
+int rdma_poll_memory(volatile uint32_t *flag_to_poll)
 {
-    flags_t *flag_to_poll = &buffer_to_read->flags;
-
-    volatile uint32_t *data_ready = (uint32_t *)&flag_to_poll->data_ready;
-
     int i = 1;
-    while (*data_ready == FALSE)
+    while (*flag_to_poll == FALSE)
     {
         // TODO: add a timeout in some way
         if (i % 1000 == 0)
@@ -661,15 +689,15 @@ int rdma_poll_memory(transfer_buffer_t *buffer_to_read)
         }
     }
 
-    // clear the flag
-    *data_ready = FALSE;
+    // consume the flag
+    *flag_to_poll = FALSE;
 
     return 0;
 }
 
 /** UTILS */
 
-int rdma_new_slice(rdma_context_t *ctx, int proxy_fd, u_int16_t client_port)
+int rdma_new_slice(rdma_context_t *ctx, int proxy_fd, struct sock_id original_socket)
 {
     // get the first free slice
     int slice_offset = 0;
@@ -694,7 +722,8 @@ int rdma_new_slice(rdma_context_t *ctx, int proxy_fd, u_int16_t client_port)
                                                                     sizeof(transfer_buffer_t)); // skip the server buffer
 
     ctx->slices[slice_offset].proxy_sk_fd = proxy_fd;
-    ctx->slices[slice_offset].client_port = client_port;
+    // ctx->slices[slice_offset].client_port = (ctx->is_server == TRUE) ? original_socket.sport : original_socket.dport;
+    ctx->slices[slice_offset].original_sk_id = original_socket;
 
     // set the flags
     ctx->slices[slice_offset].server_buffer->flags.data_ready = FALSE;
@@ -702,20 +731,13 @@ int rdma_new_slice(rdma_context_t *ctx, int proxy_fd, u_int16_t client_port)
     // TODO: set the other flags to FALSE
 
     // notify the other side about the new slice
-    struct sock_id none = {0}; // no sk_id for this notification
-    if (rdma_send_notification(ctx, RDMA_NEW_SLICE, slice_offset, none) != 0)
+    if (rdma_send_notification(ctx, RDMA_NEW_SLICE, slice_offset, original_socket) != 0)
         return rdma_ret_err(ctx, "Failed to send notification - rdma_new_slice");
 
     printf("Added slice %d, server buffer: %p, client buffer: %p\n",
            slice_offset, ctx->slices[slice_offset].server_buffer, ctx->slices[slice_offset].client_buffer);
 
     return slice_offset;
-}
-
-int rdma_delete_slice_by_port(rdma_context_t *ctx, u_int16_t client_port)
-{
-    int slice_offset = rdma_slice_offset_from_port(ctx, client_port);
-    return rdma_delete_slice_by_offset(ctx, slice_offset);
 }
 
 int rdma_delete_slice_by_offset(rdma_context_t *ctx, int slice_offset)
@@ -738,18 +760,6 @@ int rdma_delete_slice_by_offset(rdma_context_t *ctx, int slice_offset)
     printf("Deleted slice_offset %d\n", slice_offset);
 
     return 0;
-}
-
-int rdma_slice_offset_from_port(rdma_context_t *ctx, uint16_t client_port)
-{
-    for (int i = 0; i < N_TCP_PER_CONNECTION; i++)
-    {
-        if (ctx->slices[i].client_port == client_port)
-        {
-            return i;
-        }
-    }
-    return -1;
 }
 
 int rdma_send_data_ready(rdma_context_t *ctx, int slice_offset)

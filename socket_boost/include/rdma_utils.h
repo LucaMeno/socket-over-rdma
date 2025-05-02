@@ -15,12 +15,11 @@
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 
-
 #include "scap.h"
 #include "sk_utils.h"
 #include "config.h"
 
-//typedef struct bpf_context bpf_context_t;
+// typedef struct bpf_context bpf_context_t;
 
 #define UNUSED(x) (void)(x)
 
@@ -100,9 +99,10 @@ typedef struct
 {
     transfer_buffer_t *server_buffer;
     transfer_buffer_t *client_buffer;
-    uint16_t client_port; // port of the client used for OUTGOING connections
-    int proxy_sk_fd;      // socket fd of the proxy used for INCOMING connections
-    int slice_offset;     // offset of the slice in the buffer
+    // uint16_t client_port; // port of the client used for OUTGOING connections
+    struct sock_id original_sk_id; // id of the socket
+    int proxy_sk_fd;               // socket fd of the proxy used for INCOMING connections
+    int slice_offset;              // offset of the slice in the buffer
 } rdma_context_slice_t;
 
 /**
@@ -139,7 +139,7 @@ typedef struct
 int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel *server_ec);
 
 // Client-side functions
-int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, u_int16_t port);
+int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port);
 int rdma_client_connect(rdma_context_t *cctx);
 
 int rdma_context_close(rdma_context_t *ctx);
@@ -155,14 +155,13 @@ int rdma_write_slice(rdma_context_t *ctx, rdma_context_slice_t *slice);
 
 // polling
 int rdma_poll_cq(rdma_context_t *ctx);
-int rdma_poll_memory(transfer_buffer_t *buffer_to_read);
+int rdma_poll_memory(volatile uint32_t *flag_to_poll);
 
 /** UTILS */
 
-int rdma_new_slice(rdma_context_t *ctx, int proxy_fd, u_int16_t client_port);
-int rdma_delete_slice_by_port(rdma_context_t *ctx, u_int16_t client_port);
+int rdma_new_slice(rdma_context_t *ctx, int proxy_fd, struct sock_id original_socket);
 int rdma_delete_slice_by_offset(rdma_context_t *ctx, int slice_offset);
-int rdma_slice_offset_from_port(rdma_context_t *ctx, uint16_t client_port);
+
 int rdma_send_data_ready(rdma_context_t *ctx, int slice_offset);
 
 #endif // RDMA_UTILS_H

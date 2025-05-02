@@ -65,10 +65,23 @@ struct
 struct
 {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 64);
+	__uint(max_entries, 4096);
 	__type(key, __u16);
 	__type(value, int);
 } target_ports SEC(".maps");
+
+/**
+ * list of all the target IPs
+ * the key is the IP address
+ * used to check if the socket is one of the one that i want to intercept
+ */
+struct
+{
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u32);
+	__type(value, int);
+} target_ip SEC(".maps");
 
 /**
  * port used by the server to send the data
@@ -94,15 +107,15 @@ int sockops_prog(struct bpf_sock_ops *skops)
 	struct bpf_sock *sk = skops->sk;
 	long ret;
 
-	if (skops->family != AF_INET)
+	/*if (skops->family != AF_INET)
 	{
-		// bpf_printk("Not IPv4 family");
+		bpf_printk("Not IPv4 family");
 		return 0;
-	}
+	}*/
 
 	if (sk == NULL)
 	{
-		// bpf_printk("Socket is NULL, op: %d", op);
+		bpf_printk("Socket is NULL, op: %d", op);
 		return 0;
 	}
 
@@ -117,20 +130,31 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		sk_id.sport = sk->src_port;
 		sk_id.dport = bpf_ntohs(sk->dst_port);
 
+		goto is_target;
+
 		// check if SRC or DST port is the one of the target ports
 		int key = sk_id.dport;
-		int *is_port_target_1 = bpf_map_lookup_elem(&target_ports, &key);
-
+		/*int *is_port_target_1 = bpf_map_lookup_elem(&target_ports, &key);
 		if (is_port_target_1 != NULL)
 			goto is_target;
 
 		key = sk_id.sport;
 		int *is_port_target_2 = bpf_map_lookup_elem(&target_ports, &key);
-
 		if (is_port_target_2 != NULL)
+			goto is_target;*/
+
+		// check if SRC or DST IP is the one of the target IPs
+		key = sk_id.dip;
+		int *is_ip_target_1 = bpf_map_lookup_elem(&target_ip, &key);
+		if (is_ip_target_1 != NULL)
 			goto is_target;
 
-		// bpf_printk("SKIP [SRC: %u:%u, DST: %u:%u] - not target port", sk_id.sip, sk_id.sport, sk_id.dip, sk_id.dport);
+		key = sk_id.sip;
+		int *is_ip_target_2 = bpf_map_lookup_elem(&target_ip, &key);
+		if (is_ip_target_2 != NULL)
+			goto is_target;
+
+		bpf_printk("SKIP [SRC: %u:%u, DST: %u:%u] - not target port", sk_id.sip, sk_id.sport, sk_id.dip, sk_id.dport);
 		return 0;
 
 	is_target:
@@ -183,22 +207,21 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		}
 
 		// Notify the user space about the new socket
-		struct sock_id *sk_id_ptr = bpf_ringbuf_reserve(&new_sk, sizeof(struct sock_id), 0);
+		struct userspace_data_t *userdata_ptr = bpf_ringbuf_reserve(&new_sk, sizeof(struct userspace_data_t), 0);
 
-		if (!sk_id_ptr)
+		if (!userdata_ptr)
 		{
 			bpf_printk("Error on reserve ring buffer");
 			return 0;
 		}
 
 		// copy the socket id to the ring buffer
-		sk_id_ptr->sip = sk_id.sip;
-		sk_id_ptr->dip = sk_id.dip;
-		sk_id_ptr->sport = sk_id.sport;
-		sk_id_ptr->dport = sk_id.dport;
+		userdata_ptr->association.app = sk_association_app.app;
+		userdata_ptr->association.proxy = sk_association_proxy.proxy;
+		userdata_ptr->sockops_op = op;
 
 		// submit the ring buffer
-		bpf_ringbuf_submit(sk_id_ptr, 0);
+		bpf_ringbuf_submit(userdata_ptr, 0);
 
 #ifdef EBPF_DEBUG_MODE
 		bpf_printk("ADD: APP [SRC: %u:%u, DST: %u:%u] <-> PROXY [SRC: %u:%u, DST: %u:%u]",
@@ -212,7 +235,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		bpf_printk("===========================================BPF_SOCK_OPS_STATE_CB===========================================");
 		break;
 	default:
-		// bpf_printk("Unknown socket operation: %d\n", op);
+		bpf_printk("Unknown socket operation: %d\n", op);
 		break;
 	}
 
