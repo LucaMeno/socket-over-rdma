@@ -18,7 +18,7 @@ mkdir -p /home/lucam/poli/socket-over-rdma
 nano ~/.bashrc
 alias push='rsync -avz --delete /home/lucam/poli/socket-over-rdma/socket_boost/build lucam@192.168.100.6:/home/lucam/poli/socket-over-rdma'
 
-ssh lucam@192.168.88.131
+ssh lucam@$REMOTE_IP
 
 source ~/.bashrc
 

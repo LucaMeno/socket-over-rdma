@@ -1,6 +1,6 @@
 <mxfile host="65bd71144e">
     <diagram id="10QQq_u2sqwSFCWnShCV" name="setup">
-        <mxGraphModel dx="1346" dy="506" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="1626" dy="779" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -390,7 +390,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="m7QW05hXfTj--BtU4VSX" name="Communication">
-        <mxGraphModel dx="2196" dy="506" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="3173" dy="1113" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -587,7 +587,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="1_bGnpZJGNbi0u350XXe" name="Polling">
-        <mxGraphModel dx="1122" dy="422" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="1626" dy="779" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -724,7 +724,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="VjNa2Dwn2yAOReUTHqhw" name="Memory layout">
-        <mxGraphModel dx="1346" dy="1606" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="1626" dy="1879" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -775,6 +775,47 @@
                 </mxCell>
                 <mxCell id="yHJKGlJHgNeE4cxFXmkN-24" value="dport" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;" parent="yHJKGlJHgNeE4cxFXmkN-20" vertex="1">
                     <mxGeometry y="120" width="140" height="30" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="DhbFe9LmN04DlciJBppb" name="V2">
+        <mxGraphModel dx="1084" dy="519" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="nToM1pHVnYRBkvIHYSXb-1" value="RDMA" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;movable=0;resizable=0;rotatable=0;deletable=0;editable=0;locked=1;connectable=0;" vertex="1" parent="1">
+                    <mxGeometry x="90" y="70" width="180" height="1170" as="geometry"/>
+                </mxCell>
+                <mxCell id="nToM1pHVnYRBkvIHYSXb-2" value="RDMA" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;movable=0;resizable=0;rotatable=0;deletable=0;editable=0;locked=1;connectable=0;" vertex="1" parent="1">
+                    <mxGeometry x="529" y="75" width="180" height="1165" as="geometry"/>
+                </mxCell>
+                <mxCell id="nToM1pHVnYRBkvIHYSXb-4" value="" style="shape=table;startSize=0;container=1;collapsible=0;childLayout=tableLayout;" vertex="1" parent="1">
+                    <mxGeometry x="120" y="110" width="110" height="87" as="geometry"/>
+                </mxCell>
+                <mxCell id="nToM1pHVnYRBkvIHYSXb-5" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;" vertex="1" parent="nToM1pHVnYRBkvIHYSXb-4">
+                    <mxGeometry width="110" height="27" as="geometry"/>
+                </mxCell>
+                <mxCell id="nToM1pHVnYRBkvIHYSXb-6" value="receive a new msg" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;" vertex="1" parent="nToM1pHVnYRBkvIHYSXb-5">
+                    <mxGeometry width="110" height="27" as="geometry">
+                        <mxRectangle width="110" height="27" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="nToM1pHVnYRBkvIHYSXb-7" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;" vertex="1" parent="nToM1pHVnYRBkvIHYSXb-4">
+                    <mxGeometry y="27" width="110" height="33" as="geometry"/>
+                </mxCell>
+                <mxCell id="nToM1pHVnYRBkvIHYSXb-8" value="write it in the remote memory" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;" vertex="1" parent="nToM1pHVnYRBkvIHYSXb-7">
+                    <mxGeometry width="110" height="33" as="geometry">
+                        <mxRectangle width="110" height="33" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="nToM1pHVnYRBkvIHYSXb-9" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;" vertex="1" parent="nToM1pHVnYRBkvIHYSXb-4">
+                    <mxGeometry y="60" width="110" height="27" as="geometry"/>
+                </mxCell>
+                <mxCell id="nToM1pHVnYRBkvIHYSXb-10" value="write + notify to update the remote" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;" vertex="1" parent="nToM1pHVnYRBkvIHYSXb-9">
+                    <mxGeometry width="110" height="27" as="geometry">
+                        <mxRectangle width="110" height="27" as="alternateBounds"/>
+                    </mxGeometry>
                 </mxCell>
             </root>
         </mxGraphModel>

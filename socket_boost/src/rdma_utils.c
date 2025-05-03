@@ -3,7 +3,7 @@
 #include "rdma_utils.h"
 
 // PRIVATE FUNCTIONS
-int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_offset, struct sock_id original_sk_id);
+int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code);
 
 /** MISC */
 
@@ -35,10 +35,6 @@ const char *get_op_name(rdma_communication_code_t code)
     {
     case RDMA_DATA_READY:
         return "RDMA_DATA_READY";
-    case RDMA_NEW_SLICE:
-        return "RDMA_NEW_SLICE";
-    case RDMA_DELETE_SLICE:
-        return "RDMA_DELETE_SLICE";
     case TEST:
         return "TEST";
     case EXCHANGE_REMOTE_INFO:
@@ -60,6 +56,16 @@ int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel
 
     ctx->buffer = malloc(MR_SIZE);
     ctx->buffer_size = MR_SIZE;
+
+    ctx->ringbuffer_server = (rdma_ringbuffer_t *)(ctx->buffer + NOTIFICATION_OFFSET_SIZE);
+    ctx->ringbuffer_server->write_index = 1;
+    ctx->ringbuffer_server->read_index = 0;
+    ctx->ringbuffer_server->flags.is_polling = FALSE;
+
+    ctx->ringbuffer_client = (rdma_ringbuffer_t *)(ctx->buffer + NOTIFICATION_OFFSET_SIZE + RING_BUFFER_SIZE); // skip the notification header and the server buffer
+    ctx->ringbuffer_client->write_index = 1;
+    ctx->ringbuffer_client->read_index = 0;
+    ctx->ringbuffer_client->flags.is_polling = FALSE;
 
     ctx->mr = ibv_reg_mr(ctx->pd, ctx->buffer, MR_SIZE,
                          IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
@@ -187,6 +193,16 @@ int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port)
 
     cctx->buffer_size = MR_SIZE;
 
+    cctx->ringbuffer_server = (rdma_ringbuffer_t *)(cctx->buffer + NOTIFICATION_OFFSET_SIZE);
+    cctx->ringbuffer_server->write_index = 1;
+    cctx->ringbuffer_server->read_index = 0;
+    cctx->ringbuffer_server->flags.is_polling = FALSE;
+
+    cctx->ringbuffer_client = (rdma_ringbuffer_t *)(cctx->buffer + NOTIFICATION_OFFSET_SIZE + RING_BUFFER_SIZE); // skip the notification header and the server buffer
+    cctx->ringbuffer_client->write_index = 1;
+    cctx->ringbuffer_client->read_index = 0;
+    cctx->ringbuffer_client->flags.is_polling = FALSE;
+
     cctx->mr = ibv_reg_mr(cctx->pd, cctx->buffer, MR_SIZE,
                           IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
 
@@ -300,24 +316,14 @@ int rdma_context_close(rdma_context_t *ctx)
     ctx->buffer = NULL;
     ctx->buffer_size = 0;
 
+    pthread_mutex_destroy(&ctx->mtx);
+
     return 0;
 }
 
 int rdma_setup_context(rdma_context_t *ctx)
 {
     // Initialize the slices
-    for (int i = 0; i < N_TCP_PER_CONNECTION; i++)
-    {
-        ctx->slices[i].slice_offset = -1;
-        ctx->slices[i].server_buffer = NULL;
-        ctx->slices[i].client_buffer = NULL;
-        ctx->is_id_free[i] = TRUE;
-        ctx->slices[i].original_sk_id.sip = 0;
-        ctx->slices[i].original_sk_id.sport = 0;
-        ctx->slices[i].original_sk_id.dip = 0;
-        ctx->slices[i].original_sk_id.dport = 0;
-        ctx->slices[i].proxy_sk_fd = -1;
-    }
     ctx->buffer = NULL;
     ctx->buffer_size = 0;
     ctx->conn = NULL;
@@ -326,30 +332,28 @@ int rdma_setup_context(rdma_context_t *ctx)
     ctx->cq = NULL;
     ctx->remote_ip = 0;
     ctx->remote_rkey = 0;
-    // ctx->context_id = -1;
-
+    pthread_mutex_init(&ctx->mtx, NULL);
     ctx->remote_addr = 0;
+
+    ctx->ringbuffer_client = NULL;
+    ctx->ringbuffer_server = NULL;
 
     return 0;
 }
 
 /** NOTIFICATION */
 
-int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, int slice_offset, struct sock_id original_sk_id)
+int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code)
 {
     notification_t *notification = (notification_t *)ctx->buffer;
 
     if (ctx->is_server == TRUE)
     {
         notification->from_server.code = code;
-        notification->from_server.slice_offset = slice_offset;
-        notification->from_server.original_sk_id = original_sk_id;
     }
     else
     {
         notification->from_client.code = code;
-        notification->from_client.slice_offset = slice_offset;
-        notification->from_client.original_sk_id = original_sk_id;
     }
 
     // Fill ibv_sge structure
@@ -379,203 +383,13 @@ int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code, 
     printf("------------------------------------------------------------\n");
     if (ctx->is_server == TRUE)
     {
-        printf("S: send: %s (%d), slice_offset: %d, SK: [%u:%u -> %u:%u], ctx_id: %d\n",
-               get_op_name(notification->from_server.code), notification->from_server.code, notification->from_server.slice_offset,
-               original_sk_id.sip, original_sk_id.sport,
-               original_sk_id.dip, original_sk_id.dport,
-               ctx->context_id);
+        printf("S: send: %s (%d)\n",
+               get_op_name(notification->from_server.code), notification->from_server.code);
     }
     else // client
     {
-        printf("C: send: %s (%d), slice_offset: %d, SK: [%u:%u -> %u:%u], ctx_id: %d\n",
-               get_op_name(notification->from_client.code), notification->from_client.code, notification->from_client.slice_offset,
-               original_sk_id.sip, original_sk_id.sport,
-               original_sk_id.dip, original_sk_id.dport,
-               ctx->context_id);
-    }
-
-    return 0;
-}
-
-int rdma_recv_notification(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks)
-{
-    notification_t *notification = (notification_t *)ctx->buffer;
-    int code; // enum rdma_communication_code
-    struct sock_id original_sk_id;
-    int slice_offset = 0;
-
-    printf("------------------------------------------------------------\n");
-    if (ctx->is_server == TRUE)
-    {
-        code = notification->from_client.code;
-        original_sk_id = notification->from_client.original_sk_id;
-        slice_offset = notification->from_client.slice_offset;
-        printf("S: Received: %s (%d), slice_offset: %d, SK: [%u:%u -> %u:%u], ctx_id: %d\n",
-               get_op_name(code), code, slice_offset,
-               original_sk_id.sip, original_sk_id.sport,
-               original_sk_id.dip, original_sk_id.dport,
-               ctx->context_id);
-    }
-    else // client
-    {
-        code = notification->from_server.code;
-        slice_offset = notification->from_server.slice_offset;
-        original_sk_id = notification->from_server.original_sk_id;
-        printf("C: Received: %s (%d), slice_offset: %d, SK: [%u:%u -> %u:%u], ctx_id: %d\n",
-               get_op_name(code), code, slice_offset,
-               original_sk_id.sip, original_sk_id.sport,
-               original_sk_id.dip, original_sk_id.dport,
-               ctx->context_id);
-    }
-
-    switch (code)
-    {
-    case EXCHANGE_REMOTE_INFO:
-        if (ctx->remote_addr != 0)
-        {
-            printf("Remote address already set......\n");
-            return 0;
-        }
-
-        rdma_meta_info_t *remote_info = (rdma_meta_info_t *)(ctx->buffer + sizeof(notification_t));
-
-        // save the remote address and rkey
-        ctx->remote_addr = remote_info->addr;
-        ctx->remote_rkey = remote_info->rkey;
-
-        // server
-        printf("S: My address: %p, my rkey: %u\n", (void *)ctx->buffer, ctx->mr->rkey);
-        printf("S: Remote address: %p, Remote rkey: %u\n", (void *)ctx->remote_addr, ctx->remote_rkey);
-
-        break;
-
-    case TEST:
-        printf("TEST\n");
-        break;
-
-    case RDMA_DATA_READY:
-        if (slice_offset < 0 || slice_offset >= N_TCP_PER_CONNECTION || ctx->is_id_free[slice_offset] == TRUE)
-            return rdma_ret_err(ctx, "Invalid slice ID - rdma_listen_notification RDMA_DATA_READY");
-
-        printf("Data ready in slice %d\n", slice_offset);
-
-        rdma_context_slice_t *slice = &ctx->slices[slice_offset];
-
-        transfer_buffer_t *buffer_to_read, *buffer_to_write;
-
-        if (ctx->is_server == TRUE)
-        {
-            buffer_to_read = slice->client_buffer;
-            buffer_to_write = slice->server_buffer;
-        }
-        else
-        {
-            buffer_to_read = slice->server_buffer;
-            buffer_to_write = slice->client_buffer;
-        }
-
-        printf("Buffer size: %d\n", buffer_to_read->buffer_size);
-
-        // print the data (not sure of terminator /0)
-        printf("Data: %s\n", buffer_to_read->buffer);
-
-        // set the received flag
-        buffer_to_write->flags.data_received = TRUE;
-        buffer_to_write->flags.is_polling = FALSE;
-        buffer_to_write->flags.data_ready = FALSE;
-        buffer_to_write->buffer_size = 0;
-
-        if (rdma_write_slice(ctx, slice) != 0)
-            return rdma_ret_err(ctx, "Failed to write slice - rdma_listen_notification RDMA_DATA_READY");
-
-        // forward the data to the proxy socket
-        write(slice->proxy_sk_fd, buffer_to_read->buffer, buffer_to_read->buffer_size);
-
-        break;
-
-    case RDMA_NEW_SLICE:
-
-        if (slice_offset < 0 || slice_offset >= N_TCP_PER_CONNECTION || ctx->is_id_free[slice_offset] == FALSE)
-            return rdma_ret_err(ctx, "Invalid slice ID - rdma_listen_notification RDMA_NEW_SLICE");
-
-        ctx->is_id_free[slice_offset] = FALSE; // Mark the slice as used
-
-        ctx->slices[slice_offset].slice_offset = slice_offset;
-
-        // starting from the original sk_id we need to retrieve the associated proxy sk_fd
-        // since we are in the "other side", before to lock up, we need to swap the IP and port
-        original_sk_id.sip ^= original_sk_id.dip;
-        original_sk_id.dip ^= original_sk_id.sip;
-        original_sk_id.sip ^= original_sk_id.dip;
-        original_sk_id.sport ^= original_sk_id.dport;
-        original_sk_id.dport ^= original_sk_id.sport;
-        original_sk_id.sport ^= original_sk_id.dport;
-
-        printf("Original SK: [%u:%u -> %u:%u]\n",
-               original_sk_id.sip, original_sk_id.sport,
-               original_sk_id.dip, original_sk_id.dport);
-
-        ctx->slices[slice_offset].original_sk_id = original_sk_id;
-
-        struct sock_id proxy_sk_id = get_proxy_sk_from_app_sk(bpf_ctx, original_sk_id);
-        if (proxy_sk_id.sport == 0 && proxy_sk_id.sip == 0)
-            return rdma_ret_err(ctx, "Failed to get proxy sk - rdma_listen_notification RDMA_NEW_SLICE");
-
-        printf("Proxy SK: [%u:%u -> %u:%u]\n",
-               proxy_sk_id.sip, proxy_sk_id.sport,
-               proxy_sk_id.dip, proxy_sk_id.dport);
-
-        // now, with the sk_id of the proxy, we can retrieve the associated fd
-        for (int i = 0; i < N_TCP_PER_CONNECTION; i++)
-        {
-            if (client_sks[i].sk_id.sport == proxy_sk_id.sport &&
-                client_sks[i].sk_id.sip == proxy_sk_id.sip &&
-                client_sks[i].sk_id.dport == proxy_sk_id.dport &&
-                client_sks[i].sk_id.dip == proxy_sk_id.dip)
-            {
-                ctx->slices[slice_offset].proxy_sk_fd = client_sks[i].fd;
-                break;
-            }
-        }
-
-        if (ctx->slices[slice_offset].proxy_sk_fd == -1)
-            return rdma_ret_err(ctx, "Failed to get proxy sk fd - rdma_listen_notification RDMA_NEW_SLICE");
-
-        ctx->slices[slice_offset].server_buffer = (transfer_buffer_t *)(ctx->buffer + NOTIFICATION_OFFSET_SIZE +
-                                                                        slice_offset * SLICE_BUFFER_SIZE);
-
-        ctx->slices[slice_offset].client_buffer = (transfer_buffer_t *)(ctx->buffer + NOTIFICATION_OFFSET_SIZE +
-                                                                        slice_offset * SLICE_BUFFER_SIZE +
-                                                                        sizeof(transfer_buffer_t)); // skip the server buffer
-
-        printf("Added slice_off %d, server buffer: %p, client buffer: %p, SK: [%u:%u -> %u:%u]\n",
-               slice_offset, ctx->slices[slice_offset].server_buffer, ctx->slices[slice_offset].client_buffer,
-               original_sk_id.sip, original_sk_id.sport,
-               original_sk_id.dip, original_sk_id.dport);
-
-        break;
-
-    case RDMA_DELETE_SLICE:
-
-        if (slice_offset < 0 || slice_offset >= N_TCP_PER_CONNECTION || ctx->is_id_free[slice_offset] == TRUE)
-            return rdma_ret_err(ctx, "Invalid slice ID - rdma_listen_notification RDMA_DELETE_SLICE");
-
-        ctx->is_id_free[slice_offset] = TRUE; // Mark the slice as free
-
-        // free the buffer
-        ctx->slices[slice_offset].client_buffer = NULL;
-        ctx->slices[slice_offset].server_buffer = NULL;
-
-        break;
-
-    case RDMA_CLOSE_CONTEXT:
-        // TODO
-
-        break;
-
-    default:
-        printf("Unknown notification code\n");
-        break;
+        printf("C: send: %s (%d)\n",
+               get_op_name(notification->from_client.code), notification->from_client.code);
     }
 
     return 0;
@@ -583,6 +397,121 @@ int rdma_recv_notification(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_s
 
 /** COMMUNICATION */
 
+int rdma_write_msg(rdma_context_t *ctx, rdma_msg_t *msg)
+{
+    // check if the context is valid
+    if (ctx == NULL)
+        return rdma_ret_err(ctx, "Context is NULL - rdma_write_msg");
+
+    rdma_ringbuffer_t *ringbuffer = NULL;
+    if (ctx->is_server == TRUE)
+        ringbuffer = ctx->ringbuffer_server;
+    else
+        ringbuffer = ctx->ringbuffer_client;
+
+    // calculate the size to write
+    uint32_t size_to_write = sizeof(rdma_msg_t) + msg->msg_size;
+    rdma_msg_t *local_pos_data = NULL;
+    uint32_t *local_write_index = NULL;
+
+    printf("Size to write: %u\n", size_to_write);
+
+    pthread_mutex_lock(&ctx->mtx);
+
+    // check if the receiver has enough space
+    size_t space_available = (ringbuffer->read_index + RING_BUFFER_SIZE - ringbuffer->write_index) % RING_BUFFER_SIZE;
+    printf("Space available: %zu\n", space_available);
+
+    if (size_to_write >= space_available)
+        return rdma_ret_err(ctx, "Not enough space in the ring buffer - rdma_write_msg");
+
+    if (ringbuffer->write_index + size_to_write >= RING_BUFFER_SIZE)
+    {
+        // wrap around
+        ringbuffer->write_index = 0;
+    }
+
+    // calculate the remote address
+    uintptr_t remote_addr_write_index;
+    uintptr_t remote_addr = (uintptr_t)ctx->remote_addr;
+    remote_addr += NOTIFICATION_OFFSET_SIZE;                     // skip the notification header
+    remote_addr_write_index = remote_addr + sizeof(rdma_flag_t); // skip the flags
+    remote_addr += ringbuffer->write_index;                      // reach the corresponding slot
+
+    if (ctx->is_server == FALSE)
+    {
+        // TODO: sono stanco per capire se questa cosa è giusta
+        // non è giornata per capire se l'aritmetica dei puntatori è giusta
+        // Tante care cose, a domani
+        // (O forse stasera se mi riprendo)
+        remote_addr += sizeof(rdma_ringbuffer_t); // skip the space dedicated to the server buffer
+        remote_addr_write_index += sizeof(rdma_ringbuffer_t);
+    }
+
+    local_pos_data = (rdma_msg_t *)(ringbuffer->data + ringbuffer->write_index);
+    local_write_index = &ringbuffer->write_index;
+
+    // update the write index
+    ringbuffer->write_index += size_to_write;
+
+    pthread_mutex_unlock(&ctx->mtx);
+
+    // write the data to the local buffer
+    memcpy(local_pos_data, msg, sizeof(rdma_msg_t));
+
+    struct ibv_send_wr send_wr_data = {};
+    struct ibv_send_wr send_wr_write_index = {};
+    struct ibv_sge sge_data;
+    struct ibv_sge sge_write_index;
+
+    // Fill ibv_sge with local buffer
+    sge_data.addr = (uintptr_t)local_pos_data; // Local address of the buffer
+    sge_data.length = size_to_write;           // Length of the buffer
+    sge_data.lkey = ctx->mr->lkey;
+
+    // Fill ibv_sge with local write index
+    sge_write_index.addr = (uintptr_t)local_write_index; // Local address of the write index
+    sge_write_index.length = sizeof(uint32_t);           // Length of the write index
+    sge_write_index.lkey = ctx->mr->lkey;
+
+    // Prepare ibv_send_wr with IBV_WR_RDMA_WRITE
+    send_wr_data.opcode = IBV_WR_RDMA_WRITE;
+    send_wr_data.wr.rdma.remote_addr = remote_addr;
+    send_wr_data.wr.rdma.rkey = ctx->remote_rkey;
+    send_wr_data.sg_list = &sge_data;
+    send_wr_data.num_sge = 1;
+
+    // Prepare ibv_send_wr with IBV_WR_RDMA_WRITE for the write index
+    send_wr_write_index.opcode = IBV_WR_RDMA_WRITE;
+    send_wr_write_index.wr.rdma.remote_addr = remote_addr_write_index;
+    send_wr_write_index.wr.rdma.rkey = ctx->remote_rkey;
+    send_wr_write_index.sg_list = &sge_write_index;
+    send_wr_write_index.num_sge = 1;
+
+    // Post send in SQ with ibv_post_send
+    struct ibv_send_wr *bad_send_wr_data;
+    if (ibv_post_send(ctx->conn->qp, &send_wr_data, &bad_send_wr_data) != 0) // Post the send work request
+        return rdma_ret_err(ctx, "Failed to post send - rdma_write");
+
+    struct ibv_send_wr *bad_send_wr_write_index;
+    if (ibv_post_send(ctx->conn->qp, &send_wr_write_index, &bad_send_wr_write_index) != 0) // Post the send work request
+        return rdma_ret_err(ctx, "Failed to post send - rdma_write");
+
+    if (ctx->is_server)
+    {
+        printf("S: RDMA_W: local=0x%lx len=%u remote=0x%lx rkey=%u\n",
+               sge_data.addr, sge_data.length, send_wr_data.wr.rdma.remote_addr, send_wr_data.wr.rdma.rkey);
+    }
+    else
+    {
+        printf("C: RDMA_W: local=0x%lx len=%u remote=0x%lx rkey=%u\n",
+               sge_data.addr, sge_data.length, send_wr_data.wr.rdma.remote_addr, send_wr_data.wr.rdma.rkey);
+    }
+
+    return 0;
+}
+
+/*
 int rdma_write_slice(rdma_context_t *ctx, rdma_context_slice_t *slice)
 {
     struct ibv_send_wr send_wr = {};
@@ -654,6 +583,8 @@ int rdma_write_slice(rdma_context_t *ctx, rdma_context_slice_t *slice)
     return 0;
 }
 
+*/
+
 int rdma_poll_cq(rdma_context_t *ctx)
 {
     if (ctx->cq == NULL)
@@ -695,8 +626,21 @@ int rdma_poll_memory(volatile uint32_t *flag_to_poll)
     return 0;
 }
 
-/** UTILS */
+int rdma_send_data_ready(rdma_context_t *ctx)
+{
+    pthread_mutex_lock(&ctx->mtx);
 
+    // TODO: count the number of notification sent to notice the disconnection
+    printf("Sending data ready notification\n");
+    if (rdma_send_notification(ctx, RDMA_DATA_READY) != 0)
+        return rdma_ret_err(ctx, "Failed to send notification - rdma_send_data_ready");
+
+    pthread_mutex_unlock(&ctx->mtx);
+    return 0;
+}
+
+/** UTILS */
+/*
 int rdma_new_slice(rdma_context_t *ctx, int proxy_fd, struct sock_id original_socket)
 {
     // get the first free slice
@@ -760,18 +704,4 @@ int rdma_delete_slice_by_offset(rdma_context_t *ctx, int slice_offset)
     printf("Deleted slice_offset %d\n", slice_offset);
 
     return 0;
-}
-
-int rdma_send_data_ready(rdma_context_t *ctx, int slice_offset)
-{
-    if (slice_offset < 0 || slice_offset >= N_TCP_PER_CONNECTION || ctx->is_id_free[slice_offset] == TRUE)
-        return rdma_ret_err(ctx, "Slice not found - rdma_send_data_ready");
-
-    // notify the other side about the data ready
-    struct sock_id none = {0}; // no sk_id for this notification
-
-    if (rdma_send_notification(ctx, RDMA_DATA_READY, slice_offset, none) != 0)
-        return rdma_ret_err(ctx, "Failed to send notification - rdma_send_data_ready");
-
-    return 0;
-}
+}*/

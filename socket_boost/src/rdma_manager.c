@@ -4,7 +4,6 @@
 
 // PRIVATE FUNCTIONS
 int rdma_manager_get_context_id(rdma_context_manager_t *ctxm, uint32_t remote_ip);
-rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, struct sock_id key_sock);
 
 void *rdma_manager_listen_thread(void *arg);
 void *rdma_manager_server_thread(void *arg);
@@ -93,7 +92,6 @@ int rdma_manager_connect(rdma_context_manager_t *ctxm, struct sock_id original_s
 
     arg->ctxm = ctxm;
     arg->original_socket = original_socket;
-    arg->original_socket = original_socket;
     arg->fd = proxy_sk_fd;
 
     // add the task to the thread pool
@@ -133,21 +131,6 @@ void rdma_manager_connect_thread(void *arg)
         if (rdma_client_connect(&ctxm->ctxs[ctx_id]) != 0)
             return manager_ret_void(NULL, "Failed to connect client - rdma_get_slice");
     }
-
-    rdma_context_t *ctx = &ctxm->ctxs[ctx_id];
-
-    // TODO: it should be useless to search for the slice here, since we are creating a new connection (new socket)
-    // slice not found, create a new one
-    int slice_offset = rdma_new_slice(&ctxm->ctxs[ctx_id], proxy_sk_fd, original_socket);
-    if (slice_offset < 0)
-        return manager_ret_void(NULL, "Failed to create new slice - rdma_get_slice");
-
-    // init the slice
-    rdma_context_slice_t *slice = &ctxm->ctxs[ctx_id].slices[slice_offset];
-    slice->proxy_sk_fd = proxy_sk_fd;
-    // slice->is_polling = FALSE;
-    slice->original_sk_id = original_socket;
-    slice->slice_offset = slice_offset;
 }
 
 int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port, client_sk_t *proxy_sks, bpf_context_t *bpf_ctx)
@@ -248,48 +231,6 @@ int rdma_manager_get_free_context_id(rdma_context_manager_t *ctxm)
         return manager_ret_err(NULL, "Failed to setup context - rdma_manager_get_free_context_id");
 }
 
-rdma_context_slice_t *rdma_manager_get_slice(rdma_context_manager_t *ctxm, struct sock_id key_sock)
-{
-    // Since the context is initialized while the socket is created, for sure the context is already created and also the slice
-
-    int ctx_id = -1;
-
-    // search for the context using the ip address
-    for (int i = 0; i < ctxm->ctx_count; i++)
-    {
-        // printf("Context %d: %u\n", i, ctxm->ctxs[i].remote_ip);
-        if (ctxm->ctxs[i].remote_ip == key_sock.dip)
-        {
-            ctx_id = i;
-            break;
-        }
-    }
-
-    if (ctx_id < 0)
-        return manager_ret_null(NULL, "Context not found - rdma_get_slice");
-
-    int slice_offset = -1;
-
-    // search for the slice
-    for (int i = 0; i < N_TCP_PER_CONNECTION; i++)
-    {
-        if (ctxm->ctxs[ctx_id].slices[i].original_sk_id.sport == key_sock.sport &&
-            ctxm->ctxs[ctx_id].slices[i].original_sk_id.sip == key_sock.sip &&
-            ctxm->ctxs[ctx_id].slices[i].original_sk_id.dport == key_sock.dport &&
-            ctxm->ctxs[ctx_id].slices[i].original_sk_id.dip == key_sock.dip)
-        {
-            slice_offset = i;
-            break;
-        }
-    }
-
-    if (slice_offset < 0)
-        return manager_ret_null(NULL, "Slice not found - rdma_get_slice");
-
-    // return the slice
-    return &ctxm->ctxs[ctx_id].slices[slice_offset];
-}
-
 int rdma_manager_get_context_id(rdma_context_manager_t *ctxm, uint32_t remote_ip)
 {
     for (int i = 0; i < ctxm->ctx_count; i++)
@@ -301,6 +242,99 @@ int rdma_manager_get_context_id(rdma_context_manager_t *ctxm, uint32_t remote_ip
 }
 
 /** NOTIFICATION */
+
+int rdma_recv_notification(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks)
+{
+    notification_t *notification = (notification_t *)ctx->buffer;
+    int code; // enum rdma_communication_code
+    printf("------------------------------------------------------------\n");
+    if (ctx->is_server == TRUE)
+    {
+        code = notification->from_client.code;
+        printf("S: Received: %s (%d)\n",
+               get_op_name(code), code);
+    }
+    else // client
+    {
+        code = notification->from_server.code;
+        printf("C: Received: %s (%d)\n",
+               get_op_name(code), code);
+    }
+
+    switch (code)
+    {
+    case EXCHANGE_REMOTE_INFO:
+        if (ctx->remote_addr != 0)
+        {
+            printf("Remote address already set......\n");
+            return 0;
+        }
+
+        rdma_meta_info_t *remote_info = (rdma_meta_info_t *)(ctx->buffer + sizeof(notification_t));
+
+        // save the remote address and rkey
+        ctx->remote_addr = remote_info->addr;
+        ctx->remote_rkey = remote_info->rkey;
+
+        // server
+        printf("S: My address: %p, my rkey: %u\n", (void *)ctx->buffer, ctx->mr->rkey);
+        printf("S: Remote address: %p, Remote rkey: %u\n", (void *)ctx->remote_addr, ctx->remote_rkey);
+
+        break;
+
+    case RDMA_DATA_READY:
+
+        // find the data
+        rdma_ringbuffer_t *ringbuffer = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
+
+        // get the rdma_msg
+        rdma_msg_t *msg = (rdma_msg_t *)(ringbuffer->data + ringbuffer->read_index);
+
+        // update the read index
+        ringbuffer->read_index += msg->msg_size;
+
+        struct sock_id original_sk_id = msg->original_sk_id;
+        printf("Original socket: %u:%u -> %u:%u\n", original_sk_id.sip, original_sk_id.sport, original_sk_id.dip, original_sk_id.dport);
+
+        // loockup the original socket
+        // swap the ip and port
+        msg->original_sk_id.dip ^= msg->original_sk_id.sip;
+        msg->original_sk_id.sip ^= msg->original_sk_id.dip;
+        msg->original_sk_id.dip ^= msg->original_sk_id.sip;
+        msg->original_sk_id.dport ^= msg->original_sk_id.sport;
+        msg->original_sk_id.sport ^= msg->original_sk_id.dport;
+        msg->original_sk_id.dport ^= msg->original_sk_id.sport;
+
+        // find the original socket in the list
+        int i = 0;
+        for (; i < NUMBER_OF_SOCKETS; i++)
+        {
+            if (client_sks[i].sk_id.dip == msg->original_sk_id.dip &&
+                client_sks[i].sk_id.sport == msg->original_sk_id.sport &&
+                client_sks[i].sk_id.sip == msg->original_sk_id.sip &&
+                client_sks[i].sk_id.dport == msg->original_sk_id.dport)
+            {
+                // found the socket
+                write(client_sks[i].fd, msg->msg, msg->msg_size);
+                break;
+            }
+        }
+
+        // TODO: is the buffer full?
+
+        if (i == NUMBER_OF_SOCKETS)
+        {
+            printf("Socket not found in the list\n");
+            return 0;
+        }
+
+    default:
+        printf("Unknown notification code\n");
+        break;
+    }
+
+    return 0;
+}
 
 void *rdma_manager_listen_thread(void *arg)
 {
@@ -362,6 +396,8 @@ void *rdma_manager_listen_thread(void *arg)
             int err = rdma_recv_notification(ctx, ctxm->bpf_ctx, ctxm->client_sks);
             if (err != 0)
                 return manager_ret_null(ctx, "Failed to receive notification - rdma_manager_liste_thread");
+            
+            printf("Posted recv\n");
         }
     }
 
@@ -491,9 +527,6 @@ void send_thread(void *arg)
 {
     thread_pool_arg_t *param = (thread_pool_arg_t *)arg;
 
-    if (param->tx_size > (int)SLICE_BUFFER_SIZE)
-        return manager_ret_void(NULL, "Data size is too big - send_thread");
-
     if (param->ctxm->ctx_count == 0)
     {
         printf("No context available\n");
@@ -502,14 +535,8 @@ void send_thread(void *arg)
 
     printf("Sending data to %u:%u\n", param->original_socket.dip, param->original_socket.dport);
 
-    rdma_context_slice_t *slice = rdma_manager_get_slice(param->ctxm, param->original_socket);
-
-    if (slice == NULL)
-        return manager_ret_void(NULL, "Failed to get slice - send_thread");
-
-    // TODO: make this better (inside get slice??)
-    rdma_context_t *ctx = NULL;
     // get the context
+    rdma_context_t *ctx = NULL;
     for (int i = 0; i < param->ctxm->ctx_count; i++)
     {
         if (param->ctxm->ctxs[i].remote_ip == param->original_socket.dip)
@@ -519,70 +546,32 @@ void send_thread(void *arg)
         }
     }
 
-    // ctx cannot be NULL here, since we are already have the slice (hopefully)
-
-    // copy the data to the buffer
-    transfer_buffer_t *buffer_to_write = NULL;
-    transfer_buffer_t *buffer_to_read = NULL;
-
-    if (ctx->is_server == TRUE)
+    if (ctx == NULL)
     {
-        buffer_to_write = slice->server_buffer;
-        buffer_to_read = slice->client_buffer;
-    }
-    else
-    {
-        buffer_to_write = slice->client_buffer;
-        buffer_to_read = slice->server_buffer;
+        printf("Context not found\n");
+        return;
     }
 
-    // set the flags
-    buffer_to_write->flags.data_ready = TRUE;
-    buffer_to_write->flags.is_polling = TRUE;
+    rdma_msg_t msg;
+    msg.msg_size = param->tx_size;
+    msg.msg = param->tx_data;
+    msg.original_sk_id = param->original_socket;
 
-    // write the data to the local buffer
-    memcpy(buffer_to_write->buffer, param->tx_data, param->tx_size);
-    buffer_to_write->buffer_size = param->tx_size;
+    printf("Message size: %u\n", msg.msg_size);
 
     // write the data to the remote buffer
-    if (rdma_write_slice(ctx, slice) != 0)
+    if (rdma_write_msg(ctx, &msg) != 0)
         return manager_ret_void(NULL, "Failed to write slice - send_thread");
+
+    rdma_ringbuffer_t *buffer_to_read = NULL;
+    buffer_to_read = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
 
     // check if the other side is polling
     if (buffer_to_read->flags.is_polling == FALSE)
     {
         printf("Other side is not polling\n");
-        // notify the other side that the data is ready
-        struct sock_id none = {0}; // no sk_id for this notification
-        if (rdma_send_data_ready(ctx, slice->slice_offset) != 0)
-            return manager_ret_void(NULL, "Failed to send notification - send_thread");
+        rdma_send_data_ready(ctx);
     }
-
-    // wait for the answer
-    flags_t *flag_to_poll = &buffer_to_read->flags;
-    volatile uint32_t *data_recv = (uint32_t *)&flag_to_poll->data_received;
-
-    printf("Waiting for the other side to receive the data...\n");
-    rdma_poll_memory(data_recv);
-
-    printf("The other side received the data (ACK)\n");
-
-    // now poll the memory for the data to be ready
-    volatile uint32_t *data_ready = (uint32_t *)&flag_to_poll->data_ready;
-
-    rdma_poll_memory(data_ready);
-
-    // notify stop polling
-    buffer_to_write->flags.is_polling = FALSE;
-    buffer_to_write->flags.data_ready = FALSE;
-    buffer_to_write->flags.data_received = TRUE;
-    buffer_to_write->buffer_size = 0;
-
-    if (rdma_write_slice(ctx, slice) != 0)
-        return manager_ret_void(NULL, "Failed to write slice - send_thread");
-
-    // send the data to the client
-    write(slice->proxy_sk_fd, buffer_to_read->buffer, buffer_to_read->buffer_size);
 
     return;
 }
