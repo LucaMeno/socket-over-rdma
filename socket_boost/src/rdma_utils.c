@@ -467,15 +467,14 @@ int rdma_post_write_(rdma_context_t *ctx, uintptr_t remote_addr, uintptr_t local
 
 int rdma_write_msg(rdma_context_t *ctx, rdma_msg_t *msg)
 {
-
-    printf("===");
+    /*printf("===\n");
     printf("srv read index: %u\n", ctx->ringbuffer_server->read_index);
     printf("srv write index: %u\n", ctx->ringbuffer_server->write_index);
     printf("serv polling: %u\n", ctx->ringbuffer_server->flags.is_polling);
     printf("clt read index: %u\n", ctx->ringbuffer_client->read_index);
     printf("clt write index: %u\n", ctx->ringbuffer_client->write_index);
     printf("clt polling: %u\n", ctx->ringbuffer_client->flags.is_polling);
-    printf("===");
+    printf("===\n");*/
 
     char tmp[100];
     strncpy(tmp, msg->msg, msg->msg_size);
@@ -512,7 +511,6 @@ int rdma_write_msg(rdma_context_t *ctx, rdma_msg_t *msg)
         return rdma_ret_err(ctx, "Write would exceed buffer limit");
 
     // calculate the remote address
-
     size_t data_offset = (size_t)((char *)ringbuffer - (char *)ctx->buffer) + RING_BUFFER_HEADER_SIZE + ringbuffer->write_index;
     uintptr_t remote_addr_data = ctx->remote_addr + data_offset;
 
@@ -643,6 +641,23 @@ int rdma_poll_memory(volatile uint32_t *flag_to_poll)
 
     // consume the flag
     *flag_to_poll = FALSE;
+
+    return 0;
+}
+
+int rdma_set_polling_status(rdma_context_t *ctx, int is_polling)
+{
+    rdma_ringbuffer_t *ringbuffer = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
+    if (ringbuffer->flags.is_polling == is_polling)
+        return 0;
+    ringbuffer->flags.is_polling = is_polling;
+
+    // update the polling status on the remote side
+    size_t offset = (size_t)((char *)ringbuffer - (char *)ctx->buffer);
+    uintptr_t remote_addr = ctx->remote_addr + offset;
+
+    if (rdma_post_write_(ctx, remote_addr, (uintptr_t)(ctx->buffer + offset), sizeof(ringbuffer->flags.is_polling)) != 0)
+        return rdma_ret_err(ctx, "Failed to post write - rdma_set_polling_status");
 
     return 0;
 }

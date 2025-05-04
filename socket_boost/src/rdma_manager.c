@@ -4,11 +4,13 @@
 
 // PRIVATE FUNCTIONS
 int rdma_manager_get_context_id(rdma_context_manager_t *ctxm, uint32_t remote_ip);
+int start_polling(rdma_context_manager_t *ctxm, rdma_context_t *ctx);
 
 void *rdma_manager_listen_thread(void *arg);
 void *rdma_manager_server_thread(void *arg);
 void send_thread(void *arg);
 void rdma_manager_connect_thread(void *arg);
+void *polling_thread(void *arg);
 
 int rdma_manager_server_setup(rdma_context_manager_t *ctxm);
 int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port, client_sk_t *proxy_sks, bpf_context_t *bpf_ctx);
@@ -253,7 +255,7 @@ int rdma_manager_get_context_id(rdma_context_manager_t *ctxm, uint32_t remote_ip
 
 /** NOTIFICATION */
 
-int rdma_recv_notification(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks)
+int rdma_recv_notification(rdma_context_manager_t*ctxm, rdma_context_t *ctx)
 {
     notification_t *notification = (notification_t *)ctx->buffer;
     int code; // enum rdma_communication_code
@@ -304,14 +306,45 @@ int rdma_recv_notification(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_s
 
     case RDMA_DATA_READY:
 
-        if (rdma_read_msg(ctx, bpf_ctx, client_sks) != 0)
-            return manager_ret_err(ctx, "Failed to read message - rdma_recv_notification");
+        if (start_polling(ctxm, ctx) != 0)
+            return manager_ret_err(ctx, "Failed to send data ready notification - rdma_recv_notification");
+
+        /*if (rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks) != 0)
+            return manager_ret_err(ctx, "Failed to read message - rdma_recv_notification");*/
         break;
 
     default:
         printf("Unknown notification code\n");
         break;
     }
+
+    return 0;
+}
+
+int start_polling(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
+{
+    rdma_ringbuffer_t *ringbuffer = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
+
+    // check if the buffer is already polling
+    if (ringbuffer->flags.is_polling == TRUE)
+        return 0;
+
+    // set the polling status
+    if (rdma_set_polling_status(ctx, TRUE) != 0)
+        return manager_ret_err(ctx, "Failed to send data ready notification - start_polling");
+
+    // launch the polling thread
+    thread_pool_arg_t *arg = malloc(sizeof(thread_pool_arg_t));
+    if (arg == NULL)
+        return manager_ret_err(ctx, "Failed to allocate memory for thread pool arg - start_polling");
+
+    arg->ctxm = ctxm;
+    arg->ctx = ctx;
+
+    if (pthread_create(&ctxm->polling_thread, NULL, polling_thread, arg) != 0)
+        return manager_ret_err(ctx, "Failed to create thread - start_polling");
+
+    printf("Polling thread created\n");
 
     return 0;
 }
@@ -373,7 +406,7 @@ void *rdma_manager_listen_thread(void *arg)
                 return manager_ret_null(ctx, "Failed to post recv - rdma_recv");
 
             // process the notification
-            int err = rdma_recv_notification(ctx, ctxm->bpf_ctx, ctxm->client_sks);
+            int err = rdma_recv_notification(ctxm, ctx);
             if (err != 0)
                 return manager_ret_null(ctx, "Failed to receive notification - rdma_manager_listen_thread");
 
@@ -545,20 +578,43 @@ void send_thread(void *arg)
     if (rdma_write_msg(ctx, &msg) != 0)
         return manager_ret_void(NULL, "Failed to write slice - send_thread");
 
-    /* rdma_ringbuffer_t *buffer_to_read = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
+    rdma_ringbuffer_t *buffer_to_read = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
 
-     // check if the other side is polling
-     if (buffer_to_read->flags.is_polling == FALSE)
-     {
-         printf("Other side is not polling\n");
-
-     } else {
-         printf("Other side is polling\n");
-     }*/
-
-    rdma_send_data_ready(ctx);
+    // check if the other side is polling
+    if (buffer_to_read->flags.is_polling == FALSE)
+    {
+        printf("Other side is not polling\n");
+        rdma_send_data_ready(ctx);
+    }
+    else
+    {
+        printf("Other side is polling\n");
+    }
 
     return;
+}
+
+void *polling_thread(void *arg)
+{
+    thread_pool_arg_t *param = (thread_pool_arg_t *)arg;
+    printf("Polling thread running\n");
+
+    rdma_ringbuffer_t *ringbuffer_local = (param->ctx->is_server == TRUE) ? param->ctx->ringbuffer_server : param->ctx->ringbuffer_client;
+    rdma_ringbuffer_t *ringbuffer = (param->ctx->is_server == TRUE) ? param->ctx->ringbuffer_client : param->ctx->ringbuffer_server;
+
+    while (ringbuffer_local->flags.is_polling == TRUE)
+    {
+        // poll the ring buffer
+        if (ringbuffer->write_index != ringbuffer->read_index)
+        {
+            rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks);
+        }
+    }
+
+    printf("Polling thread exiting\n");
+    free(param);
+
+    return NULL;
 }
 
 /** POOL */

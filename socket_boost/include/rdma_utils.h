@@ -147,6 +147,7 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
 // polling
 int rdma_poll_cq_send(rdma_context_t *ctx);
 int rdma_poll_memory(volatile uint32_t *flag_to_poll);
+int rdma_set_polling_status(rdma_context_t *ctx, int is_polling);
 
 int rdma_send_data_ready(rdma_context_t *ctx);
 const char *get_op_name(rdma_communication_code_t code);

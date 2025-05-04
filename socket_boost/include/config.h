@@ -25,6 +25,7 @@
 #define TARGET_PORT TEST_SERVER_PORT
 
 // EBPF
-#define EBPF_DEBUG_MODE
+//#define EBPF_DEBUG_MODE
+#define INTERCEPT_EVERYTHING
 
 #endif
