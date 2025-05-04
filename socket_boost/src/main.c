@@ -47,7 +47,6 @@ int fun(void *ctx, void *data, size_t len)
            user_data->sockops_op);
 
     // start the RDMA connection
-    // TODO: remote ip can be read from the socket_id
     // only the client start the connection
     if (user_data->sockops_op == BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB)
     {
@@ -84,7 +83,7 @@ int main()
     __u16 ports_to_set[1] = {TARGET_PORT};
     int nport = sizeof(ports_to_set) / sizeof(ports_to_set[0]);
 
-    //const char *ip_env = getenv("REMOTE_IP");
+    // const char *ip_env = getenv("REMOTE_IP");
     const char *ip1 = "192.168.100.6";
     const char *ip2 = "192.168.100.5";
     __u32 ips_to_set[2];
@@ -93,7 +92,6 @@ int main()
     ips_to_set[1] = inet_addr(ip2);
 
     int nip = sizeof(ips_to_set) / sizeof(ips_to_set[0]);
-
 
     err = set_target_ports(&bpf_ctx, ports_to_set, nport, PROXY_PORT);
     check_error(err, "");
@@ -120,6 +118,10 @@ int main()
 
     printf("Waiting for messages, press Ctrl+C to exit...\n");
     wait_for_msg(&bpf_ctx, &sk_ctx, &rdma_ctxm);
+
+    err = rdma_manager_destroy(&rdma_ctxm);
+    check_error(err, "");
+    printf("RDMA manager destroyed\n");
 
     err = cleanup_socket(&sk_ctx);
     check_error(err, "");

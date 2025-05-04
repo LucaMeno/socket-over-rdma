@@ -130,6 +130,16 @@ void rdma_manager_connect_thread(void *arg)
 
         if (rdma_client_connect(&ctxm->ctxs[ctx_id]) != 0)
             return manager_ret_void(NULL, "Failed to connect client - rdma_get_slice");
+
+        // if the notification thread is not running, start it
+        if (ctxm->notification_thread == 0)
+        {
+            // create a thread to listen for notifications
+            pthread_t thread;
+            if (pthread_create(&thread, NULL, rdma_manager_listen_thread, ctxm) != 0)
+                return manager_ret_void(NULL, "Failed to create thread - rdma_maanger_listen_notification");
+            ctxm->notification_thread = thread;
+        }
     }
 }
 
@@ -251,14 +261,14 @@ int rdma_recv_notification(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_s
     if (ctx->is_server == TRUE)
     {
         code = notification->from_client.code;
-        printf("S: Received: %s (%d)\n",
-               get_op_name(code), code);
+        notification->from_client.code = NONE; // reset the code
+        printf("S: Received: %s (%d)\n", get_op_name(code), code);
     }
     else // client
     {
         code = notification->from_server.code;
-        printf("C: Received: %s (%d)\n",
-               get_op_name(code), code);
+        notification->from_server.code = NONE; // reset the code
+        printf("C: Received: %s (%d)\n", get_op_name(code), code);
     }
 
     switch (code)
@@ -280,53 +290,23 @@ int rdma_recv_notification(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_s
         printf("S: My address: %p, my rkey: %u\n", (void *)ctx->buffer, ctx->mr->rkey);
         printf("S: Remote address: %p, Remote rkey: %u\n", (void *)ctx->remote_addr, ctx->remote_rkey);
 
+        ctx->ringbuffer_server = (rdma_ringbuffer_t *)(ctx->buffer + NOTIFICATION_OFFSET_SIZE);
+        ctx->ringbuffer_server->write_index = 0;
+        ctx->ringbuffer_server->read_index = 0;
+        ctx->ringbuffer_server->flags.is_polling = FALSE;
+
+        ctx->ringbuffer_client = (rdma_ringbuffer_t *)(ctx->buffer + NOTIFICATION_OFFSET_SIZE + RING_BUFFER_OFFSET_SIZE); // skip the notification header and the server buffer
+        ctx->ringbuffer_client->write_index = 0;
+        ctx->ringbuffer_client->read_index = 0;
+        ctx->ringbuffer_client->flags.is_polling = FALSE;
+
         break;
 
     case RDMA_DATA_READY:
 
-        // find the data
-        rdma_ringbuffer_t *ringbuffer = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
-
-        // get the rdma_msg
-        rdma_msg_t *msg = (rdma_msg_t *)(ringbuffer->data + ringbuffer->read_index);
-
-        // update the read index
-        ringbuffer->read_index += msg->msg_size;
-
-        struct sock_id original_sk_id = msg->original_sk_id;
-        printf("Original socket: %u:%u -> %u:%u\n", original_sk_id.sip, original_sk_id.sport, original_sk_id.dip, original_sk_id.dport);
-
-        // loockup the original socket
-        // swap the ip and port
-        msg->original_sk_id.dip ^= msg->original_sk_id.sip;
-        msg->original_sk_id.sip ^= msg->original_sk_id.dip;
-        msg->original_sk_id.dip ^= msg->original_sk_id.sip;
-        msg->original_sk_id.dport ^= msg->original_sk_id.sport;
-        msg->original_sk_id.sport ^= msg->original_sk_id.dport;
-        msg->original_sk_id.dport ^= msg->original_sk_id.sport;
-
-        // find the original socket in the list
-        int i = 0;
-        for (; i < NUMBER_OF_SOCKETS; i++)
-        {
-            if (client_sks[i].sk_id.dip == msg->original_sk_id.dip &&
-                client_sks[i].sk_id.sport == msg->original_sk_id.sport &&
-                client_sks[i].sk_id.sip == msg->original_sk_id.sip &&
-                client_sks[i].sk_id.dport == msg->original_sk_id.dport)
-            {
-                // found the socket
-                write(client_sks[i].fd, msg->msg, msg->msg_size);
-                break;
-            }
-        }
-
-        // TODO: is the buffer full?
-
-        if (i == NUMBER_OF_SOCKETS)
-        {
-            printf("Socket not found in the list\n");
-            return 0;
-        }
+        if (rdma_read_msg(ctx, bpf_ctx, client_sks) != 0)
+            return manager_ret_err(ctx, "Failed to read message - rdma_recv_notification");
+        break;
 
     default:
         printf("Unknown notification code\n");
@@ -349,7 +329,7 @@ void *rdma_manager_listen_thread(void *arg)
         for (int i = 0; i < ctxm->ctx_count; i++)
         {
             ctx = &ctxm->ctxs[i];
-            if (ctx->remote_ip == 0 || ctx->conn == NULL || ctx->cq == NULL)
+            if (ctx->remote_ip == 0 || ctx->conn == NULL || ctx->recv_cq == NULL)
             {
                 continue; // context not connected
             }
@@ -361,7 +341,7 @@ void *rdma_manager_listen_thread(void *arg)
             while (j != N_POLL_PER_CQ)
             {
                 j++;
-                num_completions = ibv_poll_cq(ctx->cq, 1, &wc);
+                num_completions = ibv_poll_cq(ctx->recv_cq, 1, &wc);
                 if (num_completions != 0) // we have something to process
                     break;
             };
@@ -370,12 +350,12 @@ void *rdma_manager_listen_thread(void *arg)
                 continue; // no completion, go to the next context
 
             if (num_completions < 0)
-                return manager_ret_null(ctx, "Failed to poll CQ (num_completions<0) - rdma_manager_liste_thread");
+                return manager_ret_null(ctx, "Failed to poll CQ (num_completions<0) - rdma_manager_listen_thread");
 
             if (wc.status != IBV_WC_SUCCESS)
             {
                 fprintf(stderr, "CQ error: %s (%d)\n", ibv_wc_status_str(wc.status), wc.status);
-                return manager_ret_null(ctx, "Failed to poll CQ - rdma_manager_liste_thread");
+                return manager_ret_null(ctx, "Failed to poll CQ - rdma_manager_listen_thread");
             }
 
             // post another receive work request
@@ -386,22 +366,22 @@ void *rdma_manager_listen_thread(void *arg)
 
             // Prepare ibv_recv_wr with IBV_WR_RECV
             struct ibv_recv_wr recv_wr = {.wr_id = 0, .sg_list = &sge, .num_sge = 1};
-            struct ibv_recv_wr *bad_wr;
+            struct ibv_recv_wr *bad_wr = NULL;
 
             // Post receive with ibv_post_recv
             if (ibv_post_recv(ctx->conn->qp, &recv_wr, &bad_wr) != 0 || bad_wr)
                 return manager_ret_null(ctx, "Failed to post recv - rdma_recv");
 
-            // start a new thread to handle the notification
+            // process the notification
             int err = rdma_recv_notification(ctx, ctxm->bpf_ctx, ctxm->client_sks);
             if (err != 0)
-                return manager_ret_null(ctx, "Failed to receive notification - rdma_manager_liste_thread");
-            
+                return manager_ret_null(ctx, "Failed to receive notification - rdma_manager_listen_thread");
+
             printf("Posted recv\n");
         }
     }
 
-    return NULL;
+    pthread_exit(NULL);
 }
 
 /** CLIENT - SERVER */
@@ -553,25 +533,30 @@ void send_thread(void *arg)
     }
 
     rdma_msg_t msg;
-    msg.msg_size = param->tx_size;
-    msg.msg = param->tx_data;
+    /*const char *tmp = "CIAOO";
+    strcpy(msg.msg, tmp);
+    msg.msg_size = sizeof(tmp);*/
     msg.original_sk_id = param->original_socket;
-
-    printf("Message size: %u\n", msg.msg_size);
+    msg.msg_size = param->tx_size;
+    // TODO: avoid this copy
+    memcpy(msg.msg, param->tx_data, msg.msg_size);
 
     // write the data to the remote buffer
     if (rdma_write_msg(ctx, &msg) != 0)
         return manager_ret_void(NULL, "Failed to write slice - send_thread");
 
-    rdma_ringbuffer_t *buffer_to_read = NULL;
-    buffer_to_read = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
+    /* rdma_ringbuffer_t *buffer_to_read = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
 
-    // check if the other side is polling
-    if (buffer_to_read->flags.is_polling == FALSE)
-    {
-        printf("Other side is not polling\n");
-        rdma_send_data_ready(ctx);
-    }
+     // check if the other side is polling
+     if (buffer_to_read->flags.is_polling == FALSE)
+     {
+         printf("Other side is not polling\n");
+
+     } else {
+         printf("Other side is polling\n");
+     }*/
+
+    rdma_send_data_ready(ctx);
 
     return;
 }

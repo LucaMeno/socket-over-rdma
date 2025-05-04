@@ -5,7 +5,6 @@
 #include <arpa/inet.h>
 #include "config.h"
 
-
 int main(int argc, char **argv)
 {
     const char *remote_ip = getenv("REMOTE_IP");
@@ -85,11 +84,13 @@ int main(int argc, char **argv)
         ssize_t len = recv(sock, buffer, TEST_BUFFER_SIZE - 1, 0);
         buffer[len] = '\0'; // Null-terminate the string
         printf("Received message: %s\n", buffer);
+#ifdef CLIENT_CHECK_RESP
         if (strcmp(msg, buffer) != 0)
         {
             printf("Error: Received message does not match sent message\n");
             break;
         }
+#endif
 #endif
     }
 

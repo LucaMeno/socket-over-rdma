@@ -19,21 +19,18 @@
 #include "sk_utils.h"
 #include "config.h"
 
-// typedef struct bpf_context bpf_context_t;
-
 #define UNUSED(x) (void)(x)
 
-// #define MAX_PAYLOAD_SIZE 512
-// #define SLICE_BUFFER_SIZE (2 * sizeof(transfer_buffer_t)) // size of the slice in memory. A slice is a double buffer used to exchange data
+#define MAX_PAYLOAD_SIZE 512
 
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t))
-// #define N_TCP_PER_CONNECTION 5 // number of slices per connection
+#define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
+#define RING_BUFFER_HEADER_SIZE (sizeof(rdma_flag_t) + sizeof(uint32_t) + sizeof(uint32_t)) // size of the header of the ring buffer
+
 #define INITIAL_CONTEXT_NUMBER 10
 #define N_CONTEXT_REALLOC 5
 
 #define MR_SIZE ((sizeof(rdma_ringbuffer_t) * 2) + NOTIFICATION_OFFSET_SIZE)
-
-#define POLL_MEM_ATTEMPTS 10000
 
 #define N_POLL_PER_CQ 1000
 
@@ -57,11 +54,9 @@ struct rdma_meta_info
 typedef enum
 {
     RDMA_DATA_READY = 10,
-    // RDMA_NEW_SLICE = 1,
-    // RDMA_DELETE_SLICE = 2,
-    TEST = 3,
     EXCHANGE_REMOTE_INFO = 4,
-    RDMA_CLOSE_CONTEXT = 5
+    RDMA_CLOSE_CONTEXT = 5,
+    NONE = -1
 } rdma_communication_code_t;
 
 /**
@@ -80,7 +75,6 @@ typedef struct
     notification_data_t from_server; // notification from server
     notification_data_t from_client; // notification from client
 } notification_t;
-
 
 struct rdma_flag
 {
@@ -102,8 +96,9 @@ struct rdma_context
     struct rdma_cm_id *conn;              // Connection ID
     struct ibv_pd *pd;                    // Protection Domain
     struct ibv_mr *mr;                    // Memory Region
-    struct ibv_cq *cq;                    // Completion Queue
     struct ibv_qp *qp;                    // Queue Pair
+    struct ibv_cq *send_cq;               // send completion queue
+    struct ibv_cq *recv_cq;               // recv completion queue
     char *buffer;                         // Buffer to send
     size_t buffer_size;                   // Size of the buffer
     uintptr_t remote_addr;                // Remote address
@@ -113,8 +108,8 @@ struct rdma_context
     int context_id;  // ID of the context
     __u32 remote_ip; // Remote IP
 
-    rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
     rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server
+    rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
 
     int is_server;       // TRUE if server, FALSE if client
     pthread_mutex_t mtx; // for accssing the ring buffer
@@ -125,8 +120,8 @@ struct rdma_context
 struct rdma_msg
 {
     struct sock_id original_sk_id; // id of the socket
-    uint32_t msg_size;
-    char *msg;
+    uint32_t msg_size;             // size of the message
+    char msg[MAX_PAYLOAD_SIZE];    // message
 };
 
 /** SETUP CONTEXT */
@@ -147,8 +142,10 @@ int rdma_setup_context(rdma_context_t *ctx);
 
 int rdma_write_msg(rdma_context_t *ctx, rdma_msg_t *msg);
 
+int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks);
+
 // polling
-int rdma_poll_cq(rdma_context_t *ctx);
+int rdma_poll_cq_send(rdma_context_t *ctx);
 int rdma_poll_memory(volatile uint32_t *flag_to_poll);
 
 int rdma_send_data_ready(rdma_context_t *ctx);

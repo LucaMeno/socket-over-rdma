@@ -70,6 +70,7 @@ int main()
 
 #ifdef SERVER_SEND_RESP
         send(new_socket, buffer, strlen(buffer), 0);
+        printf("Response sent: %s\n", buffer);
 #endif
     }
 
