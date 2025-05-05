@@ -23,22 +23,28 @@
 
 #define MAX_PAYLOAD_SIZE 512
 
+#define RING_BUFFER_SIZE ((RMA_MSG_SIZE * MAX_N_MSG_PER_BUFFER) + 1)
+
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t))
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
-#define RING_BUFFER_HEADER_SIZE (sizeof(rdma_flag_t) + sizeof(uint32_t) + sizeof(uint32_t)) // size of the header of the ring buffer
+#define RING_BUFFER_HEADER_SIZE (sizeof(rdma_ringbuffer_t) - (sizeof(char) * RING_BUFFER_SIZE)) // size of the header of the ring buffer
 
 #define INITIAL_CONTEXT_NUMBER 10
 #define N_CONTEXT_REALLOC 5
 
 #define MR_SIZE ((sizeof(rdma_ringbuffer_t) * 2) + NOTIFICATION_OFFSET_SIZE)
 
+#define RMA_MSG_SIZE (sizeof(rdma_msg_t))
+#define MAX_N_MSG_PER_BUFFER 10
+
+#define MAX_W_R_INDEX MAX_N_MSG_PER_BUFFER
+
 #define N_POLL_PER_CQ 1000
 
-#define RING_BUFFER_SIZE 1024 * 1024 // 1MB
-
+typedef enum rdma_communication_code rdma_communication_code_t;
+typedef struct rdma_msg rdma_msg_t;
 typedef struct rdma_ringbuffer rdma_ringbuffer_t;
 typedef struct rdma_flag rdma_flag_t;
-typedef struct rdma_msg rdma_msg_t;
 typedef struct rdma_context rdma_context_t;
 typedef struct rdma_meta_info rdma_meta_info_t;
 
@@ -51,13 +57,13 @@ struct rdma_meta_info
 /**
  * code that can be notified
  */
-typedef enum
+enum rdma_communication_code
 {
     RDMA_DATA_READY = 10,
     EXCHANGE_REMOTE_INFO = 4,
     RDMA_CLOSE_CONTEXT = 5,
     NONE = -1
-} rdma_communication_code_t;
+};
 
 /**
  * notification structure
@@ -66,8 +72,7 @@ typedef struct
 {
     rdma_communication_code_t code; // code of the notification
     int slice_offset;               // offset of the slice in the buffer
-    // u_int16_t client_port;          // port of the client connected to this slice NOT NEEDED because is inside original_sk_id
-    struct sock_id original_sk_id; // id of the socket
+    struct sock_id original_sk_id;  // id of the socket
 } notification_data_t;
 
 typedef struct
@@ -78,7 +83,27 @@ typedef struct
 
 struct rdma_flag
 {
-    volatile uint32_t is_polling;
+    volatile uint32_t flags;
+};
+
+enum ring_buffer_flags
+{
+    RING_BUFFER_FULL = 0x01,
+    RING_BUFFER_EMPTY = 0x02,
+    RING_BUFFER_POLLING = 0x04,
+};
+
+enum msg_flags
+{
+    DATA_CONT = 0x02,
+};
+
+struct rdma_msg
+{
+    uint32_t msg_flags;            // flags
+    struct sock_id original_sk_id; // id of the socket
+    uint32_t msg_size;             // size of the message
+    char msg[MAX_PAYLOAD_SIZE];    // message
 };
 
 struct rdma_ringbuffer
@@ -86,7 +111,8 @@ struct rdma_ringbuffer
     rdma_flag_t flags;
     uint32_t write_index;
     uint32_t read_index;
-    char data[RING_BUFFER_SIZE];
+    // char data[RING_BUFFER_SIZE];
+    rdma_msg_t data[MAX_N_MSG_PER_BUFFER];
 };
 
 struct rdma_context
@@ -99,7 +125,7 @@ struct rdma_context
     struct ibv_qp *qp;                    // Queue Pair
     struct ibv_cq *send_cq;               // send completion queue
     struct ibv_cq *recv_cq;               // recv completion queue
-    char *buffer;                         // Buffer to send
+    void *buffer;                         // Buffer to send
     size_t buffer_size;                   // Size of the buffer
     uintptr_t remote_addr;                // Remote address
     uint32_t remote_rkey;                 // Remote RKey
@@ -115,13 +141,8 @@ struct rdma_context
     pthread_mutex_t mtx; // for accssing the ring buffer
 
     pthread_t polling_thread; // thread for polling the circular buffer
-};
 
-struct rdma_msg
-{
-    struct sock_id original_sk_id; // id of the socket
-    uint32_t msg_size;             // size of the message
-    char msg[MAX_PAYLOAD_SIZE];    // message
+    int is_ready;
 };
 
 /** SETUP CONTEXT */
@@ -140,14 +161,14 @@ int rdma_setup_context(rdma_context_t *ctx);
 
 // send and receive
 
-int rdma_write_msg(rdma_context_t *ctx, rdma_msg_t *msg);
+int rdma_write_msg(rdma_context_t *ctx, char *data, int data_size, struct sock_id original_socket);
 
 int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks);
 
 // polling
 int rdma_poll_cq_send(rdma_context_t *ctx);
 int rdma_poll_memory(volatile uint32_t *flag_to_poll);
-int rdma_set_polling_status(rdma_context_t *ctx, int is_polling);
+int rdma_set_polling_status(rdma_context_t *ctx, uint32_t is_polling);
 
 int rdma_send_data_ready(rdma_context_t *ctx);
 const char *get_op_name(rdma_communication_code_t code);

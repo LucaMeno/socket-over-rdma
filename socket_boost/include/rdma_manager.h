@@ -52,6 +52,10 @@ struct rdma_context_manager
     pthread_t notification_thread; // thread for the notification
     pthread_t server_thread;       // thread for the server
     pthread_t polling_thread;      // thread for polling the circular buffer
+
+    pthread_cond_t polling_cond;  // condition variable for the threads
+    pthread_mutex_t polling_lock; // mutex for the condition variable
+    int can_polling;              // flag to indicate if the polling is allowed
 };
 
 struct thread_pool_arg

@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include "config.h"
+#include <time.h>
+#include <sys/time.h>
 
 int main(int argc, char **argv)
 {
@@ -51,12 +53,25 @@ int main(int argc, char **argv)
 
     printf("Connected to server\n");
 
+#ifdef CLIENT_SLOW_1
+    // Simulate a delay
+    sleep(2); // 1 second delay
+#endif
+
     int i = N;
-    int gap = 1000000;
     char msg[TEST_BUFFER_SIZE] = {0};
+
+#ifdef CLIENT_CHRONO
+    struct timeval start, end;
+    long seconds, useconds;
+    double total_time;
+
+    gettimeofday(&start, NULL);
+#endif // CLIENT_CHRONO
+
     while (1)
     {
-        if (i == N + gap)
+        if (i == N + CLIENT_GAP)
         {
             break;
         }
@@ -75,6 +90,12 @@ int main(int argc, char **argv)
             printf("Press Enter to continue...\n");
             getchar();
         }
+#ifdef CLIENT_SLOW_2
+        else
+        {
+            sleep(SEC_TO_WAIT); // 1 second delay
+        }
+#endif
         send(sock, msg, strlen(msg), 0);
         printf("Sent message: %s\n", msg);
 
@@ -102,6 +123,14 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
     }
     printf("Socket closed\n");
+
+#ifdef CLIENT_CHRONO
+    gettimeofday(&end, NULL);
+    seconds = end.tv_sec - start.tv_sec;
+    useconds = end.tv_usec - start.tv_usec;
+    total_time = seconds + useconds / 1e6;
+    printf("Total time: %f seconds\n", total_time);
+#endif // CLIENT_CHRONO
 
     return 0;
 }

@@ -312,3 +312,51 @@ int set_target_ip(bpf_context_t *ctx, __u32 target_ip[], int n)
 
     return 0;
 }
+
+struct sock_id get_app_sk_from_proxy_fd(bpf_context_t *ctx, client_sk_t client_sks[], int target_fd)
+{
+    struct sock_id app_sk = {0};
+
+    // get the socket info
+    int j = 0;
+    for (; j < NUMBER_OF_SOCKETS; j++)
+        if (client_sks[j].fd == target_fd)
+            break;
+
+    if (j == NUMBER_OF_SOCKETS)
+    {
+        perror("Failed to find socket in client_sks");
+        return app_sk;
+    }
+
+    struct sock_id proxy_sk = client_sks[j].sk_id;
+
+    struct association_t sk_assoc_k = {0};
+    struct association_t sk_assoc_v = {0};
+
+    sk_assoc_k.proxy = proxy_sk;
+
+    int ret = bpf_map_lookup_elem(ctx->socket_association_fd, &sk_assoc_k, &sk_assoc_v);
+    if (ret != 0)
+    {
+        perror("Failed to lookup socket association");
+        return app_sk;
+    }
+
+#ifdef PROXY_DEBUG
+    char src_ip_proxy[INET_ADDRSTRLEN],
+        dst_ip_proxy[INET_ADDRSTRLEN],
+        src_ip_app[INET_ADDRSTRLEN],
+        dst_ip_app[INET_ADDRSTRLEN];
+
+    inet_ntop(AF_INET, &sk_assoc_k.proxy.sip, src_ip_proxy, INET_ADDRSTRLEN);
+    inet_ntop(AF_INET, &sk_assoc_k.proxy.dip, dst_ip_proxy, INET_ADDRSTRLEN);
+    inet_ntop(AF_INET, &sk_assoc_v.app.sip, src_ip_app, INET_ADDRSTRLEN);
+    inet_ntop(AF_INET, &sk_assoc_v.app.dip, dst_ip_app, INET_ADDRSTRLEN);
+
+    printf("Rx Sk info:\t[SRC: %s:%u, DST: %s:%u]\n", src_ip_proxy, sk_assoc_k.proxy.sport, dst_ip_proxy, sk_assoc_k.proxy.dport);
+    printf("Original sk:\t[SRC: %s:%u, DST: %s:%u]\n", src_ip_app, sk_assoc_v.app.sport, dst_ip_app, sk_assoc_v.app.dport);
+#endif // PROXY_DEBUG
+
+    return sk_assoc_v.app;
+}

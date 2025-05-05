@@ -189,49 +189,16 @@ void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_man
                 }
                 else
                 {
+#ifdef PROXY_DEBUG
                     buffer[bytes_received] = '\0';
                     printf("-----------------------------------------------------------------------(%d)\n", k);
                     k++;
                     printf("Rx from fd:\t%d\n", i);
                     printf("Msg text: \t%s\n", buffer);
-
-                    // get the socket info
-                    int j = 0;
-                    for (; j < NUMBER_OF_SOCKETS; j++)
-                        if (sk_ctx->client_sk_fd[j].fd == i)
-                            break;
-
-                    if (j == NUMBER_OF_SOCKETS)
-                    {
-                        error_and_exit("Socket not found in client_sk_fd");
-                    }
-
-                    struct sock_id sk_id_key = sk_ctx->client_sk_fd[j].sk_id;
-
-                    struct association_t sk_assoc_k = {0};
-                    struct association_t sk_assoc_v = {0};
-
-                    sk_assoc_k.proxy = sk_id_key;
-
-                    int ret = bpf_map_lookup_elem(bpf_ctx->socket_association_fd, &sk_assoc_k, &sk_assoc_v);
-                    check_error(ret, "Failed to lookup socket in socket_association_fd");
-
-                    char src_ip_proxy[INET_ADDRSTRLEN],
-                        dst_ip_proxy[INET_ADDRSTRLEN],
-                        src_ip_app[INET_ADDRSTRLEN],
-                        dst_ip_app[INET_ADDRSTRLEN];
-
-                    inet_ntop(AF_INET, &sk_assoc_k.proxy.sip, src_ip_proxy, INET_ADDRSTRLEN);
-                    inet_ntop(AF_INET, &sk_assoc_k.proxy.dip, dst_ip_proxy, INET_ADDRSTRLEN);
-                    inet_ntop(AF_INET, &sk_assoc_v.app.sip, src_ip_app, INET_ADDRSTRLEN);
-                    inet_ntop(AF_INET, &sk_assoc_v.app.dip, dst_ip_app, INET_ADDRSTRLEN);
-
-                    printf("Rx Sk info:\t[SRC: %s:%u, DST: %s:%u]\n", src_ip_proxy, sk_assoc_k.proxy.sport, dst_ip_proxy, sk_assoc_k.proxy.dport);
-
-                    printf("Original sk:\t[SRC: %s:%u, DST: %s:%u]\n", src_ip_app, sk_assoc_v.app.sport, dst_ip_app, sk_assoc_v.app.dport);
-
+#endif // PROXY_DEBUG
+                    struct sock_id app = get_app_sk_from_proxy_fd(bpf_ctx, sk_ctx->client_sk_fd, i);
                     // Send the message using RDMA
-                    rdma_manager_send(rdma_ctx, buffer, bytes_received, sk_assoc_v.app);
+                    rdma_manager_send(rdma_ctx, buffer, bytes_received, app);
                 }
             }
         }
