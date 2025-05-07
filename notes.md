@@ -1,4 +1,31 @@
 
+```sh
+cd socket-over-rdma/socket_boost
+
+ssh lucam@$REMOTE_IP
+
+cd poli/socket-over-rdma/
+
+make clean && make && make test
+
+sudo ./build/bin/scap
+
+./buil/bin/server
+./buil/bin/client
+
+nc -l 5544
+
+nc $REMOTE_IP 5544
+
+
+iperf3 -s
+iperf3 -c $REMOTE_IP
+
+```
+
+
+
+
 ### RDMA
 ```sh
 ibv_rc_pingpong -g 0 -d rxe0
@@ -205,9 +232,29 @@ ib_write_bw <first_VM_IP> -d rxe0
 ```
 
 
+## Install docker
 
----
+```sh
+# Add Docker's official GPG key:
+sudo apt-get update
+sudo apt-get install ca-certificates curl -y
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
 
-### 02/05/2025
+# Add the repository to Apt sources:
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-in the RDMA manager i cannot use the app fd since i cannot write to them
+sudo apt-get update
+
+sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
+
+# Add your user to the docker group
+sudo usermod -aG docker $USER
+newgrp docker
+
+```
+
+

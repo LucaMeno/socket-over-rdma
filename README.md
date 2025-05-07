@@ -12,7 +12,18 @@ It allows for high-performance communication between processes using RDMA techno
 Install pre-requirements:
 ```sh
 sudo apt update
-sudo apt install -y make clang gcc libbpf-dev librdmacm-dev rdma-core libibverbs-dev
+sudo apt install -y make clang gcc libbpf-dev librdmacm-dev rdma-core libibverbs-dev git llvm -y
+```
+
+Install bpftool:
+```sh
+cd bpftool
+git clone https://github.com/libbpf/bpftool.git
+cd bpftool
+git submodule update --init --recursive
+cd src
+make
+make install
 ```
 
 Enable RDMA (SoftRoce)
@@ -75,32 +86,6 @@ ib_write_bw -d rxe0
 
 # VM 2 (TX)
 ib_write_bw <first_VM_IP> -d rxe0
-```
-
-
-## Install docker
-
-```sh
-# Add Docker's official GPG key:
-sudo apt-get update
-sudo apt-get install ca-certificates curl -y
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-sudo chmod a+r /etc/apt/keyrings/docker.asc
-
-# Add the repository to Apt sources:
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-sudo apt-get update
-
-sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
-
-# Add your user to the docker group
-sudo usermod -aG docker $USER
-newgrp docker
-
 ```
 
 

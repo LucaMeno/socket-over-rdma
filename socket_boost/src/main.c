@@ -68,6 +68,7 @@ int fun(void *ctx, void *data, size_t len)
 int main()
 {
     signal(SIGINT, handle_signal);
+    signal(SIGTSTP, handle_signal);
 
     int err;
     EventHandler handler = {
@@ -136,7 +137,7 @@ int main()
 
 void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_manager_t *rdma_ctx)
 {
-    char buffer[BUFFER_SIZE];
+    char buffer[MAX_PAYLOAD_SIZE];
     fd_set read_fds, temp_fds;
     ssize_t bytes_received;
 
@@ -189,12 +190,17 @@ void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_man
                 }
                 else
                 {
+                    if (bytes_received > MAX_PAYLOAD_SIZE)
+                    {
+                        printf("Message too big: %zu\n", bytes_received);
+                        continue;
+                    }
 #ifdef PROXY_DEBUG
                     buffer[bytes_received] = '\0';
                     printf("-----------------------------------------------------------------------(%d)\n", k);
                     k++;
                     printf("Rx from fd:\t%d\n", i);
-                    printf("Msg text: \t%s\n", buffer);
+                    //printf("Msg text: \t%s\n", buffer);
 #endif // PROXY_DEBUG
                     struct sock_id app = get_app_sk_from_proxy_fd(bpf_ctx, sk_ctx->client_sk_fd, i);
                     // Send the message using RDMA

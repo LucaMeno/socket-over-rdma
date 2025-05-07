@@ -3,134 +3,129 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
-#include "config.h"
 #include <time.h>
 #include <sys/time.h>
+#include "config.h"
 
 int main(int argc, char **argv)
 {
+
     const char *remote_ip = getenv("REMOTE_IP");
     if (remote_ip == NULL)
     {
-        fprintf(stderr, "remote_ip environment variable not set.\n");
-        return -1;
+        fprintf(stderr, "REMOTE_IP environment variable not set.\n");
+        return EXIT_FAILURE;
     }
 
-    int N;
-    if (argc != 2)
-        N = 0;
-    else
-        N = atoi(argv[1]);
+    int N = (argc == 2) ? atoi(argv[1]) : 0;
 
-    int sock = 0;
-    struct sockaddr_in server_addr;
-
-    // Create socket
-    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0)
     {
         perror("Socket creation failed");
-        exit(EXIT_FAILURE);
+        return EXIT_FAILURE;
     }
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(TEST_SERVER_PORT);
+    struct sockaddr_in server_addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(TEST_SERVER_PORT)};
 
-    // Convert IP address from text to binary form
     if (inet_pton(AF_INET, remote_ip, &server_addr.sin_addr) <= 0)
     {
-        perror("Invalid address or Address not supported");
-        exit(EXIT_FAILURE);
+        perror("Invalid address or address not supported");
+        close(sock);
+        return EXIT_FAILURE;
     }
 
     printf("Connecting to server %s:%d...\n", remote_ip, TEST_SERVER_PORT);
-
-    // Connect to the server
     if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
     {
         perror("Connection failed");
-        exit(EXIT_FAILURE);
+        close(sock);
+        return EXIT_FAILURE;
     }
 
     printf("Connected to server\n");
 
-#ifdef CLIENT_SLOW_1
-    // Simulate a delay
-    sleep(2); // 1 second delay
-#endif
+    char msg_out[TEST_BUFFER_SIZE];
+    char msg_in[TEST_BUFFER_SIZE];
 
-    int i = N;
-    char msg[TEST_BUFFER_SIZE] = {0};
+    for (int j = 0; j < TEST_BUFFER_SIZE; j++)
+        msg_out[j] = 'A';
+
+    printf("MSG_SIZE: %d\n", TEST_BUFFER_SIZE);
+    printf("# of messages: %d\n", CLIENT_GAP);
+
+#ifdef WAIT_FOR_RDMA_CONN
+    printf("Waiting for RDMA connection...\n");
+    sleep(3);
+#endif // WAIT_FOR_RDMA_CONN
 
 #ifdef CLIENT_CHRONO
     struct timeval start, end;
-    long seconds, useconds;
-    double total_time;
-
     gettimeofday(&start, NULL);
 #endif // CLIENT_CHRONO
 
+    int i = 0;
     while (1)
     {
-        if (i == N + CLIENT_GAP)
-        {
+        if (i == CLIENT_GAP)
             break;
-        }
-        else if (i == 10)
-        {
-            break;
-        }
-        else
-        {
-            sprintf(msg, "%d", i);
-        }
+
         i++;
+
         if (argc != 2)
         {
-            // wait user input
+            if (i == 10)
+                break;
             printf("Press Enter to continue...\n");
             getchar();
         }
-#ifdef CLIENT_SLOW_2
-        else
-        {
-            sleep(SEC_TO_WAIT); // 1 second delay
-        }
-#endif
-        send(sock, msg, strlen(msg), 0);
-        printf("Sent message: %s\n", msg);
+
+        send(sock, msg_out, TEST_BUFFER_SIZE, 0);
+
+        if (i % 1000 == 0)
+            printf("i: %d\n", i);
 
 #ifdef CLIENT_WAIT_RESP
-        //  Receive response from server
-        char buffer[TEST_BUFFER_SIZE];
-        ssize_t len = recv(sock, buffer, TEST_BUFFER_SIZE - 1, 0);
-        buffer[len] = '\0'; // Null-terminate the string
-        printf("Received message: %s\n", buffer);
-#ifdef CLIENT_CHECK_RESP
-        if (strcmp(msg, buffer) != 0)
+        ssize_t len_rcv = recv(sock, msg_in, TEST_BUFFER_SIZE, 0);
+        if (len_rcv < 0)
         {
-            printf("Error: Received message does not match sent message\n");
+            perror("Receive failed");
             break;
         }
-#endif
-#endif
+
+#ifdef CLIENT_CHECK_RESP
+        if (len_rcv > 0)
+        {
+            if (memcmp(msg_out, msg_in, TEST_BUFFER_SIZE) != 0)
+            {
+                printf("Received message does not match sent message\n");
+                break;
+            }
+        }
+#endif // CLIENT_CHECK_RESP
+#endif // CLIENT_WAIT_RESP
     }
 
-    // Close the socket
+    printf("FINISHED\n");
+
     printf("Disconnected from server\n");
     if (close(sock) < 0)
     {
         perror("Socket close failed");
-        exit(EXIT_FAILURE);
+        return EXIT_FAILURE;
     }
+
     printf("Socket closed\n");
 
 #ifdef CLIENT_CHRONO
     gettimeofday(&end, NULL);
-    seconds = end.tv_sec - start.tv_sec;
-    useconds = end.tv_usec - start.tv_usec;
-    total_time = seconds + useconds / 1e6;
+    long seconds = end.tv_sec - start.tv_sec;
+    long useconds = end.tv_usec - start.tv_usec;
+    double total_time = seconds + useconds / 1e6;
     printf("Total time: %f seconds\n", total_time);
 #endif // CLIENT_CHRONO
 
-    return 0;
+    return EXIT_SUCCESS;
 }

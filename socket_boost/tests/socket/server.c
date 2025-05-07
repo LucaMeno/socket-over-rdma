@@ -11,7 +11,7 @@ int main()
     int server_fd, new_socket;
     struct sockaddr_in address;
     int addrlen = sizeof(address);
-    char buffer[TEST_BUFFER_SIZE] = {0};
+    char buffer[TEST_BUFFER_SIZE];
 
     // Create socket
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0)
@@ -56,6 +56,7 @@ int main()
 
     printf("Client connected.\n");
 
+    int i = 0;
     ssize_t bytes_received;
     while (1)
     {
@@ -66,13 +67,18 @@ int main()
             break;
         }
 
-        printf("Received message: %s\n", buffer);
+        if (i % 1000 == 0)
+        {
+            printf("i: %d\n", i);
+        }
+        i++;
 
 #ifdef SERVER_SEND_RESP
-        send(new_socket, buffer, strlen(buffer), 0);
-        printf("Response sent: %s\n", buffer);
+        send(new_socket, buffer, TEST_BUFFER_SIZE, 0);
 #endif
     }
+
+    printf("Receved %d msg\n", i);
 
     // Close the socket
     printf("Stopping server...\n");

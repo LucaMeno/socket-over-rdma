@@ -148,6 +148,9 @@ void rdma_manager_connect_thread(void *arg)
 int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port, client_sk_t *proxy_sks, bpf_context_t *bpf_ctx)
 {
     ctxm->ctxs = malloc(INITIAL_CONTEXT_NUMBER * sizeof(rdma_context_t));
+    if (ctxm->ctxs == NULL)
+        return manager_ret_err(NULL, "Failed to allocate memory for contexts - rdma_manager_init");
+
     for (int i = 0; i < INITIAL_CONTEXT_NUMBER; i++)
     {
         ctxm->ctxs[i].context_id = i;
@@ -579,20 +582,22 @@ void send_thread(void *arg)
     while (ctx->is_ready == FALSE)
     {
         ++i;
-        if (i % 1000 == 0)
+        if (i % 10000 == 0) {
             printf("Waiting for context to be ready...\n");
+            return;
+        }
     }
 
     // write the data to the remote buffer
     if (rdma_write_msg(ctx, param->tx_data, param->tx_size, param->original_socket) != 0)
-        return manager_ret_void(NULL, "Failed to write slice - send_thread");
+        return manager_ret_void(NULL, "Failed to write msg - send_thread");
 
     rdma_ringbuffer_t *buffer_to_read = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
 
     // check if the other side is polling
     if (!(buffer_to_read->flags.flags & RING_BUFFER_POLLING))
     {
-        printf("Other side is not polling\n");
+        printf("Other side is NOT polling\n");
         rdma_send_data_ready(ctx);
     }
 

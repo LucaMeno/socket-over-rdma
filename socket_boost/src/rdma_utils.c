@@ -55,6 +55,9 @@ int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel
         return rdma_ret_err(ctx, "ibv_alloc_pd");
 
     ctx->buffer = malloc(MR_SIZE);
+    if (!ctx->buffer)
+        return rdma_ret_err(ctx, "malloc buffer");
+
     ctx->buffer_size = MR_SIZE;
 
     ctx->mr = ibv_reg_mr(ctx->pd, ctx->buffer, MR_SIZE,
@@ -313,7 +316,7 @@ int rdma_client_connect(rdma_context_t *cctx)
     cctx->ringbuffer_client->read_index = 0;
     cctx->ringbuffer_client->flags.flags = 0;
 
-    // sleep(1);
+    //sleep(1);
     cctx->is_ready = TRUE;
     return 0;
 }
@@ -468,10 +471,6 @@ int rdma_post_write_(rdma_context_t *ctx, uintptr_t remote_addr, uintptr_t local
 int rdma_write_msg(rdma_context_t *ctx, char *data, int data_size, struct sock_id original_socket)
 {
 #ifdef RDMA_DEBUG_WR
-    char tmp[100];
-    strncpy(tmp, data, data_size);
-    tmp[data_size] = '\0';
-    printf("Msg to write: %s\n", tmp);
     printf("Msg size: %u\n", data_size);
     printf("Msg original sk: %u:%u -> %u:%u\n",
            original_socket.sip, original_socket.sport,
@@ -590,6 +589,10 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
 
     // find the corresponding proxy socket
     struct sock_id proxy_sk_id = get_proxy_sk_from_app_sk(bpf_ctx, msg->original_sk_id);
+
+    /*printf("AA_sk_id: [%u:%u -> %u:%u]\n",
+           proxy_sk_id.sip, proxy_sk_id.sport,
+           proxy_sk_id.dip, proxy_sk_id.dport);*/
 
     // find the original socket in the list
     int i = 0;
