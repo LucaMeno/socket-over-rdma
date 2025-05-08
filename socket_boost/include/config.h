@@ -14,13 +14,13 @@
 
 // CS TEST
 #define TEST_SERVER_PORT 7777
-#define TEST_BUFFER_SIZE 256 // size of the msg sent
+#define TEST_BUFFER_SIZE 500 // size of the msg sent
 
 #define SERVER_SEND_RESP // server sends a response to the client
 #define CLIENT_WAIT_RESP // client waits for a response from the server
 
-//#define CLIENT_CHECK_RESP
-#define CLIENT_GAP 100000
+// #define CLIENT_CHECK_RESP
+#define N_OF_MSG_CS 100000
 #define CLIENT_CHRONO // client measures the time taken to send CLIENT_GAP messages
 
 #define WAIT_FOR_RDMA_CONN
@@ -29,7 +29,7 @@
 #define PROXY_PORT 5556
 #define SERVER_IP "127.0.0.1"
 #define TARGET_PORT TEST_SERVER_PORT
-//#define PROXY_DEBUG
+// #define PROXY_DEBUG
 
 // SOCKET
 

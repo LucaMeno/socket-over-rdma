@@ -2,29 +2,32 @@
 
 #include "rdma_manager.h"
 
-// PRIVATE FUNCTIONS
-int rdma_manager_get_context_id(rdma_context_manager_t *ctxm, uint32_t remote_ip);
-int start_polling(rdma_context_manager_t *ctxm, rdma_context_t *ctx);
+/** PRIVATE FUNCTION */
 
+// BACKGROUND THREADS
 void *rdma_manager_listen_thread(void *arg);
 void *rdma_manager_server_thread(void *arg);
+void *polling_thread(void *arg);
+
+// WORKER THREADS
 void send_thread(void *arg);
 void read_thread(void *arg);
 void rdma_manager_connect_thread(void *arg);
-void *polling_thread(void *arg);
 
+// CLIENT - SERVER
 int rdma_manager_server_setup(rdma_context_manager_t *ctxm);
 int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port, client_sk_t *proxy_sks, bpf_context_t *bpf_ctx);
 int rdma_manager_get_free_context_id(rdma_context_manager_t *ctxm);
 
-/** THREAD POOL */
-
+// THREAD POOL
 void *worker(void *arg);
 thread_pool_t *thread_pool_create(int num_threads);
 int thread_pool_add(thread_pool_t *pool, void (*function)(void *), void *arg);
 void thread_pool_destroy(thread_pool_t *pool);
 
-/** MISC */
+// MISC
+int rdma_manager_get_context_id(rdma_context_manager_t *ctxm, uint32_t remote_ip);
+int start_polling(rdma_context_manager_t *ctxm, rdma_context_t *ctx);
 
 int manager_ret_err(rdma_context_t *rdma_ctx, char *msg)
 {
@@ -120,7 +123,7 @@ void rdma_manager_connect_thread(void *arg)
     {
         ctx_id = rdma_manager_get_free_context_id(ctxm);
         if (ctx_id < 0)
-            return manager_ret_void(NULL, "Failed to get free context - rdma_manager_connect");
+            return manager_ret_void(NULL, "Failed to get free context - rdma_manager_connect_thread");
 
         // init the new context
         rdma_setup_context(&ctxm->ctxs[ctx_id]);
@@ -128,10 +131,10 @@ void rdma_manager_connect_thread(void *arg)
 
         // since the context is new, we need to connect to the corresponding server
         if (rdma_client_setup(&ctxm->ctxs[ctx_id], original_socket.dip, ctxm->rdma_port) != 0)
-            return manager_ret_void(NULL, "Failed to setup client - rdma_get_slice");
+            return manager_ret_void(NULL, "Failed to setup client - rdma_manager_connect_thread");
 
         if (rdma_client_connect(&ctxm->ctxs[ctx_id]) != 0)
-            return manager_ret_void(NULL, "Failed to connect client - rdma_get_slice");
+            return manager_ret_void(NULL, "Failed to connect client - rdma_manager_connect_thread");
 
         // if the notification thread is not running, start it
         if (ctxm->notification_thread == 0)
@@ -153,7 +156,6 @@ int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port, client_s
 
     for (int i = 0; i < INITIAL_CONTEXT_NUMBER; i++)
     {
-        ctxm->ctxs[i].context_id = i;
         rdma_setup_context(&ctxm->ctxs[i]);
     }
     ctxm->ctx_count = INITIAL_CONTEXT_NUMBER;
@@ -163,10 +165,6 @@ int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port, client_s
     ctxm->stop_threads = FALSE;
     ctxm->client_sks = proxy_sks;
     ctxm->bpf_ctx = bpf_ctx;
-
-    pthread_cond_init(&ctxm->polling_cond, NULL);
-    pthread_mutex_init(&ctxm->polling_lock, NULL);
-    ctxm->can_polling = TRUE;
 
     // setup the pool
     ctxm->pool = thread_pool_create(N_THREADS_POOL);
@@ -178,19 +176,52 @@ int rdma_manager_destroy(rdma_context_manager_t *ctxm)
 {
     // stop the threads
     ctxm->stop_threads = TRUE;
+    printf("Stopping threads...\n");
+
+    // destroy the threads
+    if (ctxm->notification_thread)
+    {
+        pthread_join(ctxm->notification_thread, NULL);
+        ctxm->notification_thread = 0;
+    }
+
+    printf("Notification thread stopped\n");
+
+    if (ctxm->polling_thread)
+    {
+        pthread_join(ctxm->polling_thread, NULL);
+        ctxm->polling_thread = 0;
+    }
+
+    printf("Polling thread stopped\n");
+
+    /*if (ctxm->server_thread)
+    {
+        pthread_join(ctxm->server_thread, NULL);
+        ctxm->server_thread = 0;
+    }
+
+    printf("Server thread stopped\n");*/
+
+    // destroy the thread pool
+    thread_pool_destroy(ctxm->pool);
+    ctxm->pool = NULL;
+
+    printf("Destroying RDMA manager...\n");
 
     for (int i = 0; i < ctxm->ctx_count; i++)
-        rdma_context_close(&ctxm->ctxs[i]);
+    {
+        rdma_context_t *ctx = &ctxm->ctxs[i];
+        if (ctx->buffer != NULL || ctx->is_ready == TRUE)
+            rdma_context_close(ctx);
+    }
     free(ctxm->ctxs);
+
     ctxm->ctxs = NULL;
     ctxm->ctx_count = 0;
     ctxm->rdma_port = 0;
     ctxm->client_sks = NULL;
     ctxm->bpf_ctx = NULL;
-
-    // destroy the thread pool
-    thread_pool_destroy(ctxm->pool);
-    ctxm->pool = NULL;
 
     // destroy the listener
     if (ctxm->listener)
@@ -205,30 +236,6 @@ int rdma_manager_destroy(rdma_context_manager_t *ctxm)
         rdma_destroy_event_channel(ctxm->server_ec);
         ctxm->server_ec = NULL;
     }
-
-    if (ctxm->notification_thread)
-    {
-        pthread_join(ctxm->notification_thread, NULL);
-        ctxm->notification_thread = 0;
-    }
-
-    if (ctxm->server_thread)
-    {
-        // TODO: stop the server thread
-        pthread_join(ctxm->server_thread, NULL);
-        ctxm->server_thread = 0;
-    }
-
-    if (ctxm->polling_thread)
-    {
-        ctxm->can_polling = FALSE;
-        // TODO: stop the polling thread
-        pthread_join(ctxm->polling_thread, NULL);
-        ctxm->polling_thread = 0;
-    }
-
-    pthread_cond_destroy(&ctxm->polling_cond);
-    pthread_mutex_destroy(&ctxm->polling_lock);
 
     return 0;
 }
@@ -319,7 +326,10 @@ int rdma_recv_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
         ctx->ringbuffer_client->read_index = 0;
         ctx->ringbuffer_client->flags.flags = 0;
 
+        pthread_mutex_lock(&ctx->mtx_tx);
         ctx->is_ready = TRUE;
+        pthread_cond_signal(&ctx->cond_tx);
+        pthread_mutex_unlock(&ctx->mtx_tx);
 
         break;
 
@@ -354,13 +364,15 @@ int start_polling(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
     if (rdma_set_polling_status(ctx, RING_BUFFER_POLLING) != 0)
         return manager_ret_err(ctx, "Failed to send data ready notification - start_polling");
 
+    if (ctxm->polling_thread != 0)
+        return 0; // polling thread already running
+
     // launch the polling thread
     thread_pool_arg_t *arg = malloc(sizeof(thread_pool_arg_t));
     if (arg == NULL)
         return manager_ret_err(ctx, "Failed to allocate memory for thread pool arg - start_polling");
 
     arg->ctxm = ctxm;
-    arg->ctx = ctx;
 
     if (pthread_create(&ctxm->polling_thread, NULL, polling_thread, arg) != 0)
         return manager_ret_err(ctx, "Failed to create thread - start_polling");
@@ -397,6 +409,9 @@ void *rdma_manager_listen_thread(void *arg)
                 if (num_completions != 0) // we have something to process
                     break;
             };
+
+            if (ctxm->stop_threads == TRUE)
+                break;
 
             if (num_completions == 0)
                 continue; // no completion, go to the next context
@@ -476,9 +491,28 @@ void *rdma_manager_server_thread(void *arg)
     rdma_context_manager_t *manager = (rdma_context_manager_t *)arg;
     printf("Server thread running\n");
 
-    while (!manager->stop_threads)
+    int fd = manager->server_ec->fd;
+
+    struct pollfd pfd = {
+        .fd = fd,
+        .events = POLLIN};
+
+    while (manager->stop_threads == FALSE)
     {
-        printf("Waiting for new connection...\n");
+        int ret = poll(&pfd, 1, 1000);
+
+        if (ret < 0)
+        {
+            perror("poll");
+            continue;
+        }
+        else if (ret == 0)
+        {
+            if (manager->stop_threads == TRUE)
+                break;
+            continue; // timeout, no new connection
+        }
+
         struct rdma_cm_event *event;
         if (rdma_get_cm_event(manager->server_ec, &event))
         {
@@ -579,14 +613,18 @@ void send_thread(void *arg)
     }
 
     int i = 1;
-    while (ctx->is_ready == FALSE)
+    pthread_mutex_lock(&ctx->mtx_tx);
+    while (ctx->is_ready == FALSE || ctx->thread_busy_tx == TRUE)
     {
-        ++i;
-        if (i % 10000 == 0) {
-            printf("Waiting for context to be ready...\n");
-            return;
-        }
+        if (ctx->is_ready == FALSE)
+            printf("TX: Context is NOT ready\n");
+        else if (ctx->thread_busy_tx == TRUE)
+            printf("TX: Context is BUSY\n");
+
+        pthread_cond_wait(&ctx->cond_tx, &ctx->mtx_tx);
     }
+    ctx->thread_busy_tx = TRUE;
+    pthread_mutex_unlock(&ctx->mtx_tx);
 
     // write the data to the remote buffer
     if (rdma_write_msg(ctx, param->tx_data, param->tx_size, param->original_socket) != 0)
@@ -601,6 +639,11 @@ void send_thread(void *arg)
         rdma_send_data_ready(ctx);
     }
 
+    pthread_mutex_lock(&ctx->mtx_tx);
+    ctx->thread_busy_tx = FALSE;
+    pthread_cond_signal(&ctx->cond_tx); // wake up the other threads waiting for this context
+    pthread_mutex_unlock(&ctx->mtx_tx);
+
     return;
 }
 
@@ -611,54 +654,106 @@ void read_thread(void *arg)
     if (!param->ctxm || !param->ctx)
         return manager_ret_void(NULL, "Context or context manager is NULL - read_thread");
 
-    printf("Read thread running\n");
+    // thread sync
+    pthread_mutex_lock(&param->ctx->mtx_rx);
+    while (param->ctx->is_ready == FALSE || param->ctx->thread_busy_rx == TRUE)
+    {
+        if (param->ctx->is_ready == FALSE)
+            printf("RX: Context is NOT ready\n");
+        else if (param->ctx->thread_busy_rx == TRUE)
+            printf("RX: Context is BUSY\n");
+
+        pthread_cond_wait(&param->ctx->cond_rx, &param->ctx->mtx_rx);
+    }
+    param->ctx->thread_busy_rx = TRUE;
+    pthread_mutex_unlock(&param->ctx->mtx_rx);
+
     // read the data from the remote buffer
     if (rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks) != 0)
         return manager_ret_void(NULL, "Failed to read slice - read_thread");
 
+    pthread_mutex_lock(&param->ctx->mtx_rx);
+    param->ctx->thread_busy_rx = FALSE;
+    pthread_cond_signal(&param->ctx->cond_rx); // wake up the other threads waiting for this context
+    pthread_mutex_unlock(&param->ctx->mtx_rx);
+
     return;
 }
 
+/**
+ * Arguments:
+ * - ctxm: context manager
+ */
 void *polling_thread(void *arg)
 {
     thread_pool_arg_t *param = (thread_pool_arg_t *)arg;
     printf("Polling thread running\n");
 
-    rdma_ringbuffer_t *ringbuffer_local = (param->ctx->is_server == TRUE) ? param->ctx->ringbuffer_server : param->ctx->ringbuffer_client;
-    rdma_ringbuffer_t *ringbuffer = (param->ctx->is_server == TRUE) ? param->ctx->ringbuffer_client : param->ctx->ringbuffer_server;
+    rdma_context_manager_t *ctxm = param->ctxm;
+    if (ctxm == NULL)
+        return manager_ret_null(NULL, "Context manager is NULL - polling_thread");
 
-    while (ringbuffer_local->flags.flags & RING_BUFFER_POLLING)
+    int i;
+    int non_polling = 0;
+    int ctx_active = 0;
+    rdma_ringbuffer_t *rb_local = NULL;
+    rdma_ringbuffer_t *rb_remote = NULL;
+    rdma_context_t *ctx = NULL;
+    while (ctxm->stop_threads == FALSE)
     {
-        // poll the ring buffer
-        if (ringbuffer->write_index != ringbuffer->read_index)
+        for (i = 0; i < ctxm->ctx_count; i++)
         {
-            // launch a thread
-            /*thread_pool_arg_t *arg2 = malloc(sizeof(thread_pool_arg_t));
-            if (arg2 == NULL)
-                return manager_ret_null(NULL, "Failed to allocate memory for thread pool arg - polling_thread");
-            arg2->ctxm = param->ctxm;
-            arg2->ctx = param->ctx;
+            ctx = &ctxm->ctxs[i];
+            if (ctx->is_ready == FALSE)
+                continue;
 
-            // add the task to the thread pool
-            if (thread_pool_add(param->ctxm->pool, read_thread, arg) != 0)
+            ctx_active++;
+            rb_local = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
+            rb_remote = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
+
+            // count the number of non-polling buffers
+            if (!(rb_local->flags.flags & RING_BUFFER_POLLING))
+                non_polling++;
+
+            // anyway, since we are polling, check if there are any messages to read
+            // check if we can poll the buffer
+            if (!(rb_local->flags.flags & RING_BUFFER_CAN_POLLING))
+                continue;
+
+            // check if there are any messages to read
+            if (rb_remote->write_index != rb_remote->read_index)
             {
-                free(arg);
-                free(arg2);
-                arg = NULL;
-                arg2 = NULL;
-                return manager_ret_null(NULL, "Failed to add task to thread pool - sk_send");
+                // set the flag in CAN NOT polling
+                rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks);
+                /*rb_local->flags.flags &= ~RING_BUFFER_CAN_POLLING;
+
+                // launch a thread
+                thread_pool_arg_t *arg2 = malloc(sizeof(thread_pool_arg_t));
+                if (arg2 == NULL)
+                    return manager_ret_null(NULL, "Failed to allocate memory for thread pool arg - polling_thread");
+                arg2->ctxm = param->ctxm;
+                arg2->ctx = ctx;
+
+                // add the task to the thread pool
+                if (thread_pool_add(param->ctxm->pool, read_thread, arg2) != 0)
+                {
+                    free(arg);
+                    free(arg2);
+                    arg = NULL;
+                    arg2 = NULL;
+                    return manager_ret_null(NULL, "Failed to add task to thread pool - sk_send");
+                }*/
             }
-
-            // wait
-            param->ctxm->can_polling = FALSE;
-            while (param->ctxm->can_polling == FALSE)
-            {
-                pthread_cond_wait(&param->ctxm->polling_cond, &param->ctxm->polling_lock);
-            }*/
-
-            // read
-            rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks);
         }
+
+        if (non_polling == ctx_active)
+        {
+            // all buffers are non-polling, stop the thread
+            printf("All buffers are non-polling, stopping polling thread\n");
+            break;
+        }
+        non_polling = 0;
+        ctx_active = 0;
     }
 
     printf("Polling thread exiting\n");

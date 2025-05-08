@@ -54,7 +54,7 @@ int main(int argc, char **argv)
         msg_out[j] = 'A';
 
     printf("MSG_SIZE: %d\n", TEST_BUFFER_SIZE);
-    printf("# of messages: %d\n", CLIENT_GAP);
+    printf("# of messages: %d\n", N_OF_MSG_CS);
 
 #ifdef WAIT_FOR_RDMA_CONN
     printf("Waiting for RDMA connection...\n");
@@ -69,7 +69,7 @@ int main(int argc, char **argv)
     int i = 0;
     while (1)
     {
-        if (i == CLIENT_GAP)
+        if (i == N_OF_MSG_CS)
             break;
 
         i++;
@@ -84,8 +84,10 @@ int main(int argc, char **argv)
 
         send(sock, msg_out, TEST_BUFFER_SIZE, 0);
 
-        if (i % 1000 == 0)
-            printf("i: %d\n", i);
+        if (i % (N_OF_MSG_CS / 10) == 0)
+        {
+            printf("%d %%\n", (i * 100) / N_OF_MSG_CS);
+        }
 
 #ifdef CLIENT_WAIT_RESP
         ssize_t len_rcv = recv(sock, msg_in, TEST_BUFFER_SIZE, 0);

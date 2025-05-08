@@ -120,10 +120,6 @@ int main()
     printf("Waiting for messages, press Ctrl+C to exit...\n");
     wait_for_msg(&bpf_ctx, &sk_ctx, &rdma_ctxm);
 
-    err = rdma_manager_destroy(&rdma_ctxm);
-    check_error(err, "");
-    printf("RDMA manager destroyed\n");
-
     err = cleanup_socket(&sk_ctx);
     check_error(err, "");
     printf("Socket closed\n");
@@ -131,6 +127,10 @@ int main()
     err = cleanup_bpf(&bpf_ctx);
     check_error(err, "");
     printf("Successfully detached eBPF program\n");
+
+    err = rdma_manager_destroy(&rdma_ctxm);
+    check_error(err, "");
+    printf("RDMA manager destroyed\n");
 
     return 0;
 }
@@ -200,7 +200,7 @@ void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_man
                     printf("-----------------------------------------------------------------------(%d)\n", k);
                     k++;
                     printf("Rx from fd:\t%d\n", i);
-                    //printf("Msg text: \t%s\n", buffer);
+                    // printf("Msg text: \t%s\n", buffer);
 #endif // PROXY_DEBUG
                     struct sock_id app = get_app_sk_from_proxy_fd(bpf_ctx, sk_ctx->client_sk_fd, i);
                     // Send the message using RDMA

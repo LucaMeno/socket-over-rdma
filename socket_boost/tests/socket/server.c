@@ -67,9 +67,9 @@ int main()
             break;
         }
 
-        if (i % 1000 == 0)
+        if (i % (N_OF_MSG_CS / 10) == 0)
         {
-            printf("i: %d\n", i);
+            printf("%d %%\n", (i * 100) / N_OF_MSG_CS);
         }
         i++;
 

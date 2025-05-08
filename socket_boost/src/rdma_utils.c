@@ -316,8 +316,11 @@ int rdma_client_connect(rdma_context_t *cctx)
     cctx->ringbuffer_client->read_index = 0;
     cctx->ringbuffer_client->flags.flags = 0;
 
-    //sleep(1);
+    // sleep(1);
+    pthread_mutex_lock(&cctx->mtx_tx);
     cctx->is_ready = TRUE;
+    pthread_cond_signal(&cctx->cond_tx);
+    pthread_mutex_unlock(&cctx->mtx_tx);
     return 0;
 }
 
@@ -351,7 +354,11 @@ int rdma_context_close(rdma_context_t *ctx)
     ctx->buffer = NULL;
     ctx->buffer_size = 0;
 
-    pthread_mutex_destroy(&ctx->mtx);
+    pthread_mutex_destroy(&ctx->mtx_tx);
+    pthread_cond_destroy(&ctx->cond_tx);
+
+    pthread_mutex_destroy(&ctx->mtx_rx);
+    pthread_cond_destroy(&ctx->cond_rx);
 
     return 0;
 }
@@ -369,8 +376,15 @@ int rdma_setup_context(rdma_context_t *ctx)
     ctx->send_cq = NULL;
     ctx->remote_ip = 0;
     ctx->remote_rkey = 0;
-    pthread_mutex_init(&ctx->mtx, NULL);
     ctx->remote_addr = 0;
+
+    pthread_mutex_init(&ctx->mtx_tx, NULL);
+    pthread_cond_init(&ctx->cond_tx, NULL);
+    ctx->thread_busy_tx = FALSE;
+
+    pthread_mutex_init(&ctx->mtx_rx, NULL);
+    pthread_cond_init(&ctx->cond_rx, NULL);
+    ctx->thread_busy_rx = FALSE;
 
     ctx->ringbuffer_client = NULL;
     ctx->ringbuffer_server = NULL;
@@ -496,6 +510,11 @@ int rdma_write_msg(rdma_context_t *ctx, char *data, int data_size, struct sock_i
     if (data_size % MAX_PAYLOAD_SIZE != 0)
         number_of_msg++;
 
+    if (number_of_msg != 1)
+    {
+        printf("Not yet :)\n");
+    }
+
     if (number_of_msg > MAX_N_MSG_PER_BUFFER)
     {
         printf("Message too big: %u\n", number_of_msg);
@@ -551,7 +570,15 @@ int rdma_write_msg(rdma_context_t *ctx, char *data, int data_size, struct sock_i
 int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks)
 {
     // find the data
+    rdma_ringbuffer_t *rb_local = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
     rdma_ringbuffer_t *ringbuffer = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
+
+    if (ringbuffer == NULL || ringbuffer->read_index == ringbuffer->write_index)
+    {
+        // no data to read
+        printf("No data to read\n");
+        return 0;
+    }
 
     // get the rdma_msg
     rdma_msg_t *msg = &ringbuffer->data[ringbuffer->read_index];
@@ -574,9 +601,8 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
     if (rdma_post_write_(ctx, remote_addr_read_index, (uintptr_t)(ctx->buffer + read_index_offset), sizeof(ringbuffer->read_index)) != 0) // sizeof(uint32_t)
         return rdma_ret_err(ctx, "Failed to post write - rdma_write_msg");
 
-    /*printf("rx SK: %u:%u -> %u:%u\n",
-           msg->original_sk_id.sip, msg->original_sk_id.sport,
-           msg->original_sk_id.dip, msg->original_sk_id.dport);*/
+    // allow the polling thread to poll again
+    rb_local->flags.flags |= RING_BUFFER_CAN_POLLING;
 
     // loockup the original socket
     // swap the ip and port
@@ -590,7 +616,9 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
     // find the corresponding proxy socket
     struct sock_id proxy_sk_id = get_proxy_sk_from_app_sk(bpf_ctx, msg->original_sk_id);
 
-    /*printf("AA_sk_id: [%u:%u -> %u:%u]\n",
+    /*printf("O [%u:%u -> %u:%u] <-> P [%u:%u -> %u:%u]\n",
+           msg->original_sk_id.sip, msg->original_sk_id.sport,
+           msg->original_sk_id.dip, msg->original_sk_id.dport,
            proxy_sk_id.sip, proxy_sk_id.sport,
            proxy_sk_id.dip, proxy_sk_id.dport);*/
 
@@ -610,9 +638,7 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
     }
 
     if (i == NUMBER_OF_SOCKETS)
-    {
         printf("Socket not found in the list\n");
-    }
 
     return 0;
 }
@@ -669,6 +695,7 @@ int rdma_set_polling_status(rdma_context_t *ctx, uint32_t is_polling)
 
     // toggle the polling status
     ringbuffer->flags.flags ^= RING_BUFFER_POLLING;
+    ringbuffer->flags.flags |= RING_BUFFER_CAN_POLLING;
 
     // update the polling status on the remote side
     size_t offset = (size_t)((char *)ringbuffer - (char *)ctx->buffer);
@@ -682,13 +709,10 @@ int rdma_set_polling_status(rdma_context_t *ctx, uint32_t is_polling)
 
 int rdma_send_data_ready(rdma_context_t *ctx)
 {
-    pthread_mutex_lock(&ctx->mtx);
-
     // TODO: count the number of notification sent to notice the disconnection
     printf("Sending data ready notification\n");
     if (rdma_send_notification(ctx, RDMA_DATA_READY) != 0)
         return rdma_ret_err(ctx, "Failed to send notification - rdma_send_data_ready");
 
-    pthread_mutex_unlock(&ctx->mtx);
     return 0;
 }

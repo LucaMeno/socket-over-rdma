@@ -91,6 +91,7 @@ enum ring_buffer_flags
     RING_BUFFER_FULL = 0x01,
     RING_BUFFER_EMPTY = 0x02,
     RING_BUFFER_POLLING = 0x04,
+    RING_BUFFER_CAN_POLLING = 0x08,
 };
 
 enum msg_flags
@@ -131,18 +132,21 @@ struct rdma_context
     uint32_t remote_rkey;                 // Remote RKey
 
     // Context id
-    int context_id;  // ID of the context
     __u32 remote_ip; // Remote IP
+
+    int is_server; // TRUE if server, FALSE if client
+    int is_ready;  // TRUE if the context is ready
+
+    pthread_mutex_t mtx_tx; // to be sure only one thread is using the context at a time
+    pthread_cond_t cond_tx; // condition variable for the threads
+    int thread_busy_tx;     // flag to indicate if the context is busy
+
+    pthread_mutex_t mtx_rx; // to be sure only one thread is using the context at a time
+    pthread_cond_t cond_rx; // condition variable for the threads
+    int thread_busy_rx;     // flag to indicate if the context is busy
 
     rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server
     rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
-
-    int is_server;       // TRUE if server, FALSE if client
-    pthread_mutex_t mtx; // for accssing the ring buffer
-
-    pthread_t polling_thread; // thread for polling the circular buffer
-
-    int is_ready;
 };
 
 /** SETUP CONTEXT */

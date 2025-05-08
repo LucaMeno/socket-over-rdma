@@ -15,11 +15,12 @@
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 #include <pthread.h>
+#include <poll.h>
 
 #include "rdma_utils.h"
 
 #define N_POLL_PER_CQ 1000
-#define N_THREADS_POOL 1
+#define N_THREADS_POOL 10
 
 typedef struct task task_t;
 typedef struct thread_pool thread_pool_t;
@@ -51,11 +52,7 @@ struct rdma_context_manager
 
     pthread_t notification_thread; // thread for the notification
     pthread_t server_thread;       // thread for the server
-    pthread_t polling_thread;      // thread for polling the circular buffer
-
-    pthread_cond_t polling_cond;  // condition variable for the threads
-    pthread_mutex_t polling_lock; // mutex for the condition variable
-    int can_polling;              // flag to indicate if the polling is allowed
+    pthread_t polling_thread;      // thread for polling the circular buffer    
 };
 
 struct thread_pool_arg
