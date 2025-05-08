@@ -73,6 +73,9 @@ int main()
         }
         i++;
 
+        if (i == N_OF_MSG_CS)
+            break;
+
 #ifdef SERVER_SEND_RESP
         send(new_socket, buffer, TEST_BUFFER_SIZE, 0);
 #endif

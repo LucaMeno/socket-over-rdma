@@ -21,23 +21,23 @@
 
 #define UNUSED(x) (void)(x)
 
-#define MAX_PAYLOAD_SIZE 512
+#define MAX_PAYLOAD_SIZE (1024 * 4) // 8KB
+#define MAX_N_MSG_PER_BUFFER 10
 
+#define RMA_MSG_SIZE (sizeof(rdma_msg_t))
 #define RING_BUFFER_SIZE ((RMA_MSG_SIZE * MAX_N_MSG_PER_BUFFER) + 1)
+
+#define FLUSH_THREASHOLD_N 1
+#define FLUSH_THREASHOLD_TIME 5 // milliseconds
 
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t))
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
-#define RING_BUFFER_HEADER_SIZE (sizeof(rdma_ringbuffer_t) - (sizeof(char) * RING_BUFFER_SIZE)) // size of the header of the ring buffer
+#define RING_BUFFER_HEADER_SIZE (sizeof(rdma_ringbuffer_t) - (sizeof(rdma_msg_t) * MAX_N_MSG_PER_BUFFER)) // size of the header of the ring buffer
 
 #define INITIAL_CONTEXT_NUMBER 10
 #define N_CONTEXT_REALLOC 5
 
 #define MR_SIZE ((sizeof(rdma_ringbuffer_t) * 2) + NOTIFICATION_OFFSET_SIZE)
-
-#define RMA_MSG_SIZE (sizeof(rdma_msg_t))
-#define MAX_N_MSG_PER_BUFFER 10
-
-#define MAX_W_R_INDEX MAX_N_MSG_PER_BUFFER
 
 #define N_POLL_PER_CQ 1000
 
@@ -112,7 +112,6 @@ struct rdma_ringbuffer
     rdma_flag_t flags;
     uint32_t write_index;
     uint32_t read_index;
-    // char data[RING_BUFFER_SIZE];
     rdma_msg_t data[MAX_N_MSG_PER_BUFFER];
 };
 

@@ -26,8 +26,6 @@ void error_and_exit(const char *msg);
 
 void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_manager_t *rdma_ctx);
 
-// rdma_context_t rdma_ctx[MAX_NUMBER_OF_RDMA_CONN] = {0};
-
 rdma_context_manager_t rdma_ctxm = {0};
 sk_context_t sk_ctx = {0};
 bpf_context_t bpf_ctx = {0};
@@ -137,7 +135,7 @@ int main()
 
 void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_manager_t *rdma_ctx)
 {
-    char buffer[MAX_PAYLOAD_SIZE];
+    char buffer[MAX_SIZE_SK_MSG];
     fd_set read_fds, temp_fds;
     ssize_t bytes_received;
 
@@ -177,7 +175,7 @@ void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_man
         {
             if (i != sk_ctx->server_sk_fd && FD_ISSET(i, &temp_fds))
             {
-                bytes_received = recv(i, buffer, sizeof(buffer) - 1, 0);
+                bytes_received = recv(i, buffer, TEST_BUFFER_SIZE, 0); // TODO: ???????????????????
                 if (bytes_received <= 0)
                 {
                     if (bytes_received == 0)
@@ -190,11 +188,6 @@ void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_man
                 }
                 else
                 {
-                    if (bytes_received > MAX_PAYLOAD_SIZE)
-                    {
-                        printf("Message too big: %zu\n", bytes_received);
-                        continue;
-                    }
 #ifdef PROXY_DEBUG
                     buffer[bytes_received] = '\0';
                     printf("-----------------------------------------------------------------------(%d)\n", k);

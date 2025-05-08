@@ -10,6 +10,7 @@ int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code);
 int rdma_ret_err(rdma_context_t *rdma_ctx, char *msg)
 {
     fprintf(stderr, "ERROR: %s\n", msg);
+    perror("::: ");
     if (rdma_ctx)
     {
         /*printf("Cleaning up RMDA...\n");
@@ -464,8 +465,12 @@ int rdma_post_write_(rdma_context_t *ctx, uintptr_t remote_addr, uintptr_t local
 
     // Post send in SQ with ibv_post_send
     struct ibv_send_wr *bad_send_wr_data;
-    if (ibv_post_send(ctx->conn->qp, &send_wr_data, &bad_send_wr_data) != 0) // Post the send work request
+    int ret = ibv_post_send(ctx->conn->qp, &send_wr_data, &bad_send_wr_data);
+    if (ret != 0) // Post the send work request
+    {
+        printf("CODE: %d\n", ret);
         return rdma_ret_err(ctx, "Failed to post send - rdma_post_write");
+    }
 
 #ifdef RDMA_DEBUG_WR
     if (ctx->is_server)
@@ -512,6 +517,7 @@ int rdma_write_msg(rdma_context_t *ctx, char *data, int data_size, struct sock_i
 
     if (number_of_msg != 1)
     {
+        // TODO: handle the case of multiple messages
         printf("Not yet :)\n");
     }
 
@@ -521,8 +527,11 @@ int rdma_write_msg(rdma_context_t *ctx, char *data, int data_size, struct sock_i
         return 0;
     }
 
+    int wi = ringbuffer->write_index % MAX_N_MSG_PER_BUFFER;
+    int ri = ringbuffer->read_index % MAX_N_MSG_PER_BUFFER;
+
     // check if the receiver has enough space
-    if ((ringbuffer->write_index + number_of_msg) % RING_BUFFER_SIZE == ringbuffer->read_index)
+    if ((wi + number_of_msg) % RING_BUFFER_SIZE == ri)
     {
         printf("Buffer full\n");
         return rdma_ret_err(ctx, "Buffer full - rdma_write_msg");
@@ -533,7 +542,7 @@ int rdma_write_msg(rdma_context_t *ctx, char *data, int data_size, struct sock_i
     if (number_of_msg == 1)
     {
         // write the message
-        msg = &ringbuffer->data[ringbuffer->write_index];
+        msg = &ringbuffer->data[wi];
         msg->msg_flags = 0;
         msg->original_sk_id = original_socket;
         msg->msg_size = data_size;
@@ -544,66 +553,63 @@ int rdma_write_msg(rdma_context_t *ctx, char *data, int data_size, struct sock_i
         return rdma_ret_err(ctx, "Message too big TODO - rdma_write_msg");
     }
 
-    // calculate the remote address
-    size_t data_offset = (size_t)((char *)msg - (char *)ctx->buffer);
-    uintptr_t remote_addr_data = ctx->remote_addr + data_offset;
-
-    size_t write_index_offset = (size_t)((char *)ringbuffer - (char *)ctx->buffer) + sizeof(rdma_flag_t);
-    uintptr_t remote_addr_write_index = ctx->remote_addr + write_index_offset;
-
     // update the write index
     ringbuffer->write_index += number_of_msg;
-    if (ringbuffer->write_index >= MAX_N_MSG_PER_BUFFER)
-        ringbuffer->write_index = 0;
 
-    // write data
-    if (rdma_post_write_(ctx, remote_addr_data, (uintptr_t)msg, (ssize_t)(number_of_msg * sizeof(rdma_msg_t))) != 0)
-        return rdma_ret_err(ctx, "Failed to post write - rdma_write_msg");
+    wi = ringbuffer->write_index % MAX_N_MSG_PER_BUFFER;
+    ri = ringbuffer->read_index % MAX_N_MSG_PER_BUFFER;
 
-    // update the write index on the remote side
-    if (rdma_post_write_(ctx, remote_addr_write_index, (uintptr_t)(ctx->buffer + write_index_offset), sizeof(ringbuffer->write_index)) != 0) // sizeof(uint32_t)
-        return rdma_ret_err(ctx, "Failed to post write - rdma_write_msg");
+    printf("write idx: %u\n", ringbuffer->write_index);
+    printf("read idx: %u\n", ringbuffer->read_index);
+
+    if (wi - ri >= FLUSH_THREASHOLD_N)
+    {
+        printf("FLUSHING\n");
+        printf("N: %d", wi - ri);
+        // update the write index on the remote side
+        size_t write_index_offset = (size_t)((char *)ringbuffer - (char *)ctx->buffer) + sizeof(rdma_flag_t);
+        uintptr_t remote_addr_write_index = ctx->remote_addr + write_index_offset;
+
+        if (rdma_post_write_(ctx, remote_addr_write_index, (uintptr_t)(ctx->buffer + write_index_offset), sizeof(ringbuffer->write_index)) != 0) // sizeof(uint32_t)
+            return rdma_ret_err(ctx, "Failed to post write - rdma_write_msg");
+
+        // write the data to the remote buffer
+        uintptr_t batch_start = (uintptr_t)ringbuffer +
+                                sizeof(rdma_flag_t) +
+                                sizeof(uint32_t) + // skip the header
+                                sizeof(uint32_t) +
+                                ri * sizeof(rdma_msg_t);
+
+        size_t batch_size = (wi - ri) * sizeof(rdma_msg_t);
+
+        uintptr_t remote_addr = ctx->remote_addr + (batch_start - (uintptr_t)ctx->buffer);
+
+        printf("Batch start: %p\n", (void *)batch_start);
+        printf("Batch size: %zu\n", batch_size);
+
+        printf("Remote addr: %p\n", (void *)remote_addr);
+
+        if (rdma_post_write_(ctx, remote_addr, (uintptr_t)batch_start, batch_size) != 0)
+            return rdma_ret_err(ctx, "Failed to post write - rdma_write_msg");
+
+        rdma_ringbuffer_t *buffer_to_read = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
+
+        // check if the other side is polling
+        if (!(buffer_to_read->flags.flags & RING_BUFFER_POLLING))
+        {
+            printf("Other side is NOT polling\n");
+            rdma_send_data_ready(ctx);
+        }
+
+        // TODO: update the read index on the remote side
+        ringbuffer->read_index = ringbuffer->write_index;
+    }
 
     return 0;
 }
 
-int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks)
+int rdma_parse_msg(bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *msg)
 {
-    // find the data
-    rdma_ringbuffer_t *rb_local = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
-    rdma_ringbuffer_t *ringbuffer = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
-
-    if (ringbuffer == NULL || ringbuffer->read_index == ringbuffer->write_index)
-    {
-        // no data to read
-        printf("No data to read\n");
-        return 0;
-    }
-
-    // get the rdma_msg
-    rdma_msg_t *msg = &ringbuffer->data[ringbuffer->read_index];
-    int number_of_msg = 1;
-
-    if (msg->msg_size > MAX_PAYLOAD_SIZE)
-    {
-        printf("Message too big: %u\n", msg->msg_size);
-        return 0;
-    }
-
-    // update the read index
-    ringbuffer->read_index += number_of_msg;
-    if (ringbuffer->read_index >= MAX_N_MSG_PER_BUFFER)
-        ringbuffer->read_index = 0;
-
-    size_t read_index_offset = (size_t)((char *)ringbuffer - (char *)ctx->buffer) + sizeof(rdma_flag_t) + sizeof(ringbuffer->write_index);
-    uintptr_t remote_addr_read_index = ctx->remote_addr + read_index_offset;
-
-    if (rdma_post_write_(ctx, remote_addr_read_index, (uintptr_t)(ctx->buffer + read_index_offset), sizeof(ringbuffer->read_index)) != 0) // sizeof(uint32_t)
-        return rdma_ret_err(ctx, "Failed to post write - rdma_write_msg");
-
-    // allow the polling thread to poll again
-    rb_local->flags.flags |= RING_BUFFER_CAN_POLLING;
-
     // loockup the original socket
     // swap the ip and port
     msg->original_sk_id.dip ^= msg->original_sk_id.sip;
@@ -616,11 +622,11 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
     // find the corresponding proxy socket
     struct sock_id proxy_sk_id = get_proxy_sk_from_app_sk(bpf_ctx, msg->original_sk_id);
 
-    /*printf("O [%u:%u -> %u:%u] <-> P [%u:%u -> %u:%u]\n",
+    printf("O [%u:%u -> %u:%u] <-> P [%u:%u -> %u:%u]\n",
            msg->original_sk_id.sip, msg->original_sk_id.sport,
            msg->original_sk_id.dip, msg->original_sk_id.dport,
            proxy_sk_id.sip, proxy_sk_id.sport,
-           proxy_sk_id.dip, proxy_sk_id.dport);*/
+           proxy_sk_id.dip, proxy_sk_id.dport);
 
     // find the original socket in the list
     int i = 0;
@@ -639,6 +645,58 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
 
     if (i == NUMBER_OF_SOCKETS)
         printf("Socket not found in the list\n");
+
+    return 0;
+}
+
+int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks)
+{
+    // find the data
+    rdma_ringbuffer_t *rb_local = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
+    rdma_ringbuffer_t *ringbuffer = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
+
+    if (ringbuffer == NULL || ringbuffer->read_index == ringbuffer->write_index)
+    {
+        // no data to read
+        printf("No data to read\n");
+        return 0;
+    }
+
+    int ri = ringbuffer->read_index % MAX_N_MSG_PER_BUFFER;
+    int wi = ringbuffer->write_index % MAX_N_MSG_PER_BUFFER;
+
+    printf("RI: %u\n", ri);
+    printf("WI: %u\n", wi);
+
+    int number_of_msg = wi - ri;
+
+    printf("Number of msg: %u\n", number_of_msg);
+
+    // update the read index
+    ringbuffer->read_index += number_of_msg;
+    printf("Read index: %u\n", ringbuffer->read_index);
+    printf("Write index: %u\n", ringbuffer->write_index);
+
+    size_t read_index_offset = (size_t)((char *)ringbuffer - (char *)ctx->buffer) + sizeof(rdma_flag_t) + sizeof(ringbuffer->write_index);
+    uintptr_t remote_addr_read_index = ctx->remote_addr + read_index_offset;
+
+    if (rdma_post_write_(ctx, remote_addr_read_index,
+                         (uintptr_t)(ctx->buffer + read_index_offset),
+                         sizeof(ringbuffer->read_index)) != 0) // sizeof(uint32_t)
+        return rdma_ret_err(ctx, "Failed to post write - rdma_write_msg");
+
+    // allow the polling thread to poll again
+    rb_local->flags.flags |= RING_BUFFER_CAN_POLLING;
+
+    // parse the message
+    for (int i = 0; i < number_of_msg; i++)
+    {
+        int idx = (ri + i) % MAX_N_MSG_PER_BUFFER;
+        printf("Idx: %u\n", idx);
+        rdma_msg_t *msg = &ringbuffer->data[idx];
+        printf("Addr: %p\n", (void *)msg);
+        rdma_parse_msg(bpf_ctx, client_sks, msg);
+    }
 
     return 0;
 }

@@ -179,7 +179,7 @@ int rdma_manager_destroy(rdma_context_manager_t *ctxm)
     printf("Stopping threads...\n");
 
     // destroy the threads
-    if (ctxm->notification_thread)
+    /*if (ctxm->notification_thread)
     {
         pthread_join(ctxm->notification_thread, NULL);
         ctxm->notification_thread = 0;
@@ -618,8 +618,8 @@ void send_thread(void *arg)
     {
         if (ctx->is_ready == FALSE)
             printf("TX: Context is NOT ready\n");
-        else if (ctx->thread_busy_tx == TRUE)
-            printf("TX: Context is BUSY\n");
+        /*else if (ctx->thread_busy_tx == TRUE)
+            printf("TX: Context is BUSY\n");*/
 
         pthread_cond_wait(&ctx->cond_tx, &ctx->mtx_tx);
     }
@@ -629,15 +629,6 @@ void send_thread(void *arg)
     // write the data to the remote buffer
     if (rdma_write_msg(ctx, param->tx_data, param->tx_size, param->original_socket) != 0)
         return manager_ret_void(NULL, "Failed to write msg - send_thread");
-
-    rdma_ringbuffer_t *buffer_to_read = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
-
-    // check if the other side is polling
-    if (!(buffer_to_read->flags.flags & RING_BUFFER_POLLING))
-    {
-        printf("Other side is NOT polling\n");
-        rdma_send_data_ready(ctx);
-    }
 
     pthread_mutex_lock(&ctx->mtx_tx);
     ctx->thread_busy_tx = FALSE;
@@ -660,8 +651,8 @@ void read_thread(void *arg)
     {
         if (param->ctx->is_ready == FALSE)
             printf("RX: Context is NOT ready\n");
-        else if (param->ctx->thread_busy_rx == TRUE)
-            printf("RX: Context is BUSY\n");
+        /*else if (param->ctx->thread_busy_rx == TRUE)
+            printf("RX: Context is BUSY\n");*/
 
         pthread_cond_wait(&param->ctx->cond_rx, &param->ctx->mtx_rx);
     }
@@ -723,6 +714,7 @@ void *polling_thread(void *arg)
             // check if there are any messages to read
             if (rb_remote->write_index != rb_remote->read_index)
             {
+                printf("LEGGO");
                 // set the flag in CAN NOT polling
                 rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks);
                 /*rb_local->flags.flags &= ~RING_BUFFER_CAN_POLLING;
