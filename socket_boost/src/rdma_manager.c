@@ -331,13 +331,15 @@ int rdma_recv_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
         printf("S: Remote address: %p, Remote rkey: %u\n", (void *)ctx->remote_addr, ctx->remote_rkey);*/
 
         ctx->ringbuffer_server = (rdma_ringbuffer_t *)(ctx->buffer + NOTIFICATION_OFFSET_SIZE);
-        atomic_store(&ctx->ringbuffer_server->read_index, 0);
+        atomic_store(&ctx->ringbuffer_server->local_read_index, 0);
+        atomic_store(&ctx->ringbuffer_server->remote_read_index, 0);
         atomic_store(&ctx->ringbuffer_server->remote_write_index, 0);
         atomic_store(&ctx->ringbuffer_server->local_write_index, 0);
         atomic_store(&ctx->ringbuffer_server->flags.flags, 0);
 
         ctx->ringbuffer_client = (rdma_ringbuffer_t *)(ctx->buffer + NOTIFICATION_OFFSET_SIZE + RING_BUFFER_OFFSET_SIZE); // skip the notification header and the server buffer
-        atomic_store(&ctx->ringbuffer_client->read_index, 0);
+        atomic_store(&ctx->ringbuffer_client->local_read_index, 0);
+        atomic_store(&ctx->ringbuffer_client->remote_read_index, 0);
         atomic_store(&ctx->ringbuffer_client->remote_write_index, 0);
         atomic_store(&ctx->ringbuffer_client->local_write_index, 0);
         atomic_store(&ctx->ringbuffer_client->flags.flags, 0);
@@ -770,7 +772,7 @@ void *rdma_manager_polling_thread(void *arg)
                 continue;
 
             // check if there are any messages to read
-            if (atomic_load(&rb_remote->remote_write_index) != atomic_load(&rb_remote->read_index))
+            if (atomic_load(&rb_remote->remote_write_index) != atomic_load(&rb_remote->local_read_index))
             {
                 // rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks);
 

@@ -5,67 +5,11 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <sys/time.h>
-#include <pthread.h>
-#include <sys/select.h>
 #include "config.h"
-
-int sock;
-char msg_out[TEST_BUFFER_SIZE];
-char msg_in[TEST_BUFFER_SIZE];
-
-void *socket_handler_thread(void *arg)
-{
-    int i = 0;
-    ssize_t len_rcv;
-
-    fd_set readfds;
-    while (1)
-    {
-        FD_ZERO(&readfds);
-        FD_SET(sock, &readfds);
-
-        int activity = select(sock + 1, &readfds, NULL, NULL, NULL);
-        if (activity < 0)
-        {
-            perror("select error");
-            break;
-        }
-
-        if (FD_ISSET(sock, &readfds))
-        {
-            i++;
-            len_rcv = recv(sock, msg_in, TEST_BUFFER_SIZE, 0);
-            if (len_rcv < 0)
-            {
-                perror("Receive failed");
-                break;
-            }
-
-#ifdef CLIENT_CHECK_RESP
-            if (len_rcv > 0)
-            {
-                if (memcmp(msg_out, msg_in, TEST_BUFFER_SIZE) != 0)
-                {
-                    printf("Received message does not match sent message\n");
-                    break;
-                }
-            }
-#endif // CLIENT_CHECK_RESP
-
-            if (i == N_OF_MSG_CS)
-            {
-                break;
-            }
-        }
-    }
-
-    printf("Received %d messages\n", i);
-
-    return NULL;
-}
 
 int main(int argc, char **argv)
 {
+
     const char *remote_ip = getenv("REMOTE_IP");
     if (remote_ip == NULL)
     {
@@ -75,7 +19,7 @@ int main(int argc, char **argv)
 
     int N = (argc == 2) ? atoi(argv[1]) : 0;
 
-    sock = socket(AF_INET, SOCK_STREAM, 0);
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0)
     {
         perror("Socket creation failed");
@@ -103,7 +47,9 @@ int main(int argc, char **argv)
 
     printf("Connected to server\n");
 
-    // Initialize the message to send
+    char msg_out[TEST_BUFFER_SIZE];
+    char msg_in[TEST_BUFFER_SIZE];
+
     for (int j = 0; j < TEST_BUFFER_SIZE; j++)
         msg_out[j] = 'A';
 
@@ -120,15 +66,6 @@ int main(int argc, char **argv)
     gettimeofday(&start, NULL);
 #endif // CLIENT_CHRONO
 
-    // Launch the handler thread to listen for responses
-    pthread_t tid;
-    if (pthread_create(&tid, NULL, socket_handler_thread, NULL) != 0)
-    {
-        perror("Failed to create thread");
-        close(sock);
-        return EXIT_FAILURE;
-    }
-
     int i = 0;
     while (1)
     {
@@ -139,25 +76,37 @@ int main(int argc, char **argv)
 
         if (argc != 2)
         {
-            if (i == N_OF_MSG_CS)
+            if (i == 10)
                 break;
             printf("Press Enter to continue...\n");
             getchar();
         }
 
-        // Send message
         send(sock, msg_out, TEST_BUFFER_SIZE, 0);
 
-        if (i % (N_OF_MSG_CS / 10) == 0)
+        if (i % 1000 == 0)
+            printf("i: %d\n", i);
+
+#ifdef CLIENT_WAIT_RESP
+        ssize_t len_rcv = recv(sock, msg_in, TEST_BUFFER_SIZE, 0);
+        if (len_rcv < 0)
         {
-            printf("%d %%\n", (i * 100) / N_OF_MSG_CS);
+            perror("Receive failed");
+            break;
         }
+
+#ifdef CLIENT_CHECK_RESP
+        if (len_rcv > 0)
+        {
+            if (memcmp(msg_out, msg_in, TEST_BUFFER_SIZE) != 0)
+            {
+                printf("Received message does not match sent message\n");
+                break;
+            }
+        }
+#endif // CLIENT_CHECK_RESP
+#endif // CLIENT_WAIT_RESP
     }
-
-    printf("Sent %d messages\n", i);
-
-    // Wait for the thread to finish
-    pthread_join(tid, NULL);
 
     printf("FINISHED\n");
 

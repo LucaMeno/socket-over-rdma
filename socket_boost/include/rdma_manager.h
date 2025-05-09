@@ -20,7 +20,7 @@
 #include "rdma_utils.h"
 
 #define N_POLL_PER_CQ 1000
-#define N_THREADS_POOL 10
+#define N_THREADS_POOL 15
 
 typedef struct task task_t;
 typedef struct thread_pool thread_pool_t;

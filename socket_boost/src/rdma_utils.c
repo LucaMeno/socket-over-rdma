@@ -308,7 +308,8 @@ int rdma_client_connect(rdma_context_t *cctx)
 
     cctx->ringbuffer_server = (rdma_ringbuffer_t *)(cctx->buffer +
                                                     NOTIFICATION_OFFSET_SIZE);
-    atomic_store(&cctx->ringbuffer_server->read_index, 0);
+    atomic_store(&cctx->ringbuffer_server->local_read_index, 0);
+    atomic_store(&cctx->ringbuffer_server->remote_read_index, 0);
     atomic_store(&cctx->ringbuffer_server->remote_write_index, 0);
     atomic_store(&cctx->ringbuffer_server->local_write_index, 0);
     atomic_store(&cctx->ringbuffer_server->flags.flags, 0);
@@ -317,7 +318,8 @@ int rdma_client_connect(rdma_context_t *cctx)
                                                     NOTIFICATION_OFFSET_SIZE +
                                                     RING_BUFFER_OFFSET_SIZE); // skip the notification header and the server buffer
     atomic_store(&cctx->ringbuffer_client->remote_write_index, 0);
-    atomic_store(&cctx->ringbuffer_client->read_index, 0);
+    atomic_store(&cctx->ringbuffer_client->local_read_index, 0);
+    atomic_store(&cctx->ringbuffer_client->remote_read_index, 0);
     atomic_store(&cctx->ringbuffer_client->local_write_index, 0);
     atomic_store(&cctx->ringbuffer_client->flags.flags, 0);
 
@@ -475,6 +477,8 @@ int rdma_post_write_(rdma_context_t *ctx, uintptr_t remote_addr, uintptr_t local
     send_wr_data.wr.rdma.rkey = ctx->remote_rkey;
     send_wr_data.sg_list = &sge_data;
     send_wr_data.num_sge = 1;
+    /*if (1)
+        send_wr_data.send_flags = IBV_SEND_SIGNALED;*/
 
     // Post send in SQ with ibv_post_send
     struct ibv_send_wr *bad_send_wr_data;
@@ -485,14 +489,10 @@ int rdma_post_write_(rdma_context_t *ctx, uintptr_t remote_addr, uintptr_t local
         return rdma_ret_err(ctx, "Failed to post send - rdma_post_write");
     }
 
-    if (0)
-    {
-        // Poll the completion queue
+    // Poll the completion queue
+    /*if (1)
         if (rdma_poll_cq_send(ctx) != 0)
-            return rdma_ret_err(ctx, "Failed to poll CQ - rdma_post_write");
-    }
-
-    // NOT poll the CQ since the write is not signaled
+            return rdma_ret_err(ctx, "Failed to poll CQ - rdma_post_write");/**/
 
 #ifdef RDMA_DEBUG_WRITE
     if (ctx->is_server)
@@ -517,10 +517,21 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
         return 0;
     }
 
-    if (atomic_load(&ringbuffer->read_index) == atomic_load(&ringbuffer->local_write_index))
+    if (atomic_load(&ringbuffer->local_read_index) == atomic_load(&ringbuffer->local_write_index))
     {
         pthread_mutex_unlock(&ctx->mtx_flush);
         return 0; // nothing to flush
+    }
+
+    if (atomic_load(&ringbuffer->local_read_index) != atomic_load(&ringbuffer->remote_read_index))
+    {
+        pthread_mutex_unlock(&ctx->mtx_flush);
+        /*printf("RX is not ready, local: %u, remote: %u, remote_r addr: %p\n",
+               atomic_load(&ringbuffer->local_read_index),
+               atomic_load(&ringbuffer->remote_read_index),
+               (void *)&ringbuffer->remote_read_index);*/
+        //printf(".");
+        return 0; // RX is not ready
     }
 
     // flush the buffer
@@ -531,7 +542,7 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
     // update the remote write index
     atomic_store(&ringbuffer->remote_write_index, atomic_load(&ringbuffer->local_write_index));
 
-    u_int32_t ri = atomic_load(&ringbuffer->read_index) % MAX_N_MSG_PER_BUFFER;
+    u_int32_t ri = atomic_load(&ringbuffer->local_read_index) % MAX_N_MSG_PER_BUFFER;
     u_int32_t wi = atomic_load(&ringbuffer->remote_write_index) % MAX_N_MSG_PER_BUFFER;
 
 #ifdef RDMA_DEBUG_W_FLUSH
@@ -593,9 +604,6 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
         return rdma_ret_err(ctx, "Failed to post write index");
     }
 
-    printf("Updating REMOTE write index: %u\n",
-           (unsigned int)ringbuffer->remote_write_index);
-
     rdma_ringbuffer_t *peer_rb = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
 
     if (!(atomic_load(&peer_rb->flags.flags) & RING_BUFFER_POLLING))
@@ -603,7 +611,7 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
 
     // update the read index on the local side
     // prevent the flush from being called again (could be improved?)
-    atomic_store(&ringbuffer->read_index, atomic_load(&ringbuffer->remote_write_index));
+    atomic_store(&ringbuffer->local_read_index, atomic_load(&ringbuffer->remote_write_index));
 
     // set the last flush time
     uint64_t now = get_time_ms();
@@ -637,14 +645,18 @@ int rdma_write_msg(rdma_context_t *ctx, char *data, int data_size, struct sock_i
         return rdma_ret_err(ctx, "Message too big - rdma_write_msg");
 
     int wi = atomic_load(&ringbuffer->local_write_index) % MAX_N_MSG_PER_BUFFER;
-    int ri = atomic_load(&ringbuffer->read_index) % MAX_N_MSG_PER_BUFFER;
+    int ri = atomic_load(&ringbuffer->remote_read_index) % MAX_N_MSG_PER_BUFFER;
 
     int available_space = (ri + MAX_N_MSG_PER_BUFFER - wi - 1) % MAX_N_MSG_PER_BUFFER;
 
-    if (available_space < number_of_msg)
+    while (available_space < number_of_msg)
     {
+        //printf(",");
+        wi = atomic_load(&ringbuffer->local_write_index) % MAX_N_MSG_PER_BUFFER;
+        ri = atomic_load(&ringbuffer->remote_read_index) % MAX_N_MSG_PER_BUFFER;
+        available_space = (ri + MAX_N_MSG_PER_BUFFER - wi - 1) % MAX_N_MSG_PER_BUFFER;
         // Buffer is full
-        return rdma_ret_err(ctx, "Buffer is full - rdma_write_msg");
+        // return rdma_ret_err(ctx, "Buffer is full - rdma_write_msg");
     }
 
     if (number_of_msg == 1)
@@ -720,9 +732,9 @@ int rdma_parse_msg(bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *
     if (i == NUMBER_OF_SOCKETS)
     {
         // socket not found
-        printf("Socket not found in the list: %u:%u -> %u:%u\n",
+        /*printf("Socket not found in the list: %u:%u -> %u:%u\n",
                msg->original_sk_id.sip, msg->original_sk_id.sport,
-               msg->original_sk_id.dip, msg->original_sk_id.dport);
+               msg->original_sk_id.dip, msg->original_sk_id.dport);*/
     }
 
     return 0;
@@ -739,7 +751,7 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
     if (!ringbuffer)
         return rdma_ret_err(ctx, "Ringbuffer is NULL - rdma_read_msg");
 
-    int ri = atomic_load(&ringbuffer->read_index);
+    int ri = atomic_load(&ringbuffer->local_read_index);
     int wi = atomic_load(&ringbuffer->remote_write_index);
 
     if (wi == ri)
@@ -755,7 +767,7 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
 
 #ifdef RDMA_DEBUG_READ
     printf("READING: ri: %d, wi: %d, number_of_msg: %d, write_index: %d, read_index: %d\n",
-           ri, wi, number_of_msg, ringbuffer->remote_write_index, ringbuffer->read_index);
+           ri, wi, number_of_msg, ringbuffer->remote_write_index, ringbuffer->local_read_index);
 #endif // RDMA_DEBUG_READ
 
     // manage the wrap around
@@ -790,24 +802,25 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
     }
 
     // ringbuffer->read_index += number_of_msg;
-    atomic_fetch_add(&ringbuffer->read_index, number_of_msg);
+    atomic_fetch_add(&ringbuffer->local_read_index, number_of_msg);
 
     // update the read index on the remote side
+    atomic_store(&ringbuffer->remote_read_index, atomic_load(&ringbuffer->local_read_index));
+
     size_t read_index_offset = (size_t)((char *)ringbuffer - (char *)ctx->buffer) +
                                sizeof(rdma_flag_t) +
-                               sizeof(ringbuffer->remote_write_index) +
-                               sizeof(ringbuffer->local_write_index);
+                               sizeof(ringbuffer->remote_write_index);
 
     uintptr_t remote_addr_read_index = ctx->remote_addr + read_index_offset;
 
     if (rdma_post_write_(ctx, remote_addr_read_index,
                          (uintptr_t)(ctx->buffer + read_index_offset),
-                         sizeof(uint32_t), FALSE) != 0)
+                         sizeof(ringbuffer->remote_read_index), FALSE) != 0)
         return rdma_ret_err(ctx, "Failed to post read index update");
 
-    printf("Updating REMOTE read index: %u\n",
-           (unsigned int)ringbuffer->read_index);
-
+    /*printf("Updating REMOTE read index: %u, mem_remote: %p\n",
+           ringbuffer->remote_read_index,
+           (void *)remote_addr_read_index);*/
     // allow polling again
     atomic_fetch_or(&rb_local->flags.flags, RING_BUFFER_CAN_POLLING);
 

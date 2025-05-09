@@ -60,7 +60,7 @@ int main()
     ssize_t bytes_received;
     while (1)
     {
-        bytes_received = read(new_socket, buffer, TEST_BUFFER_SIZE);
+        bytes_received = recv(new_socket, buffer, TEST_BUFFER_SIZE, 0);
         if (bytes_received <= 0)
         {
             printf("Client disconnected or error occurred.\n");
@@ -72,9 +72,6 @@ int main()
             printf("%d %%\n", (i * 100) / N_OF_MSG_CS);
         }
         i++;
-
-        if (i == N_OF_MSG_CS)
-            break;
 
 #ifdef SERVER_SEND_RESP
         send(new_socket, buffer, TEST_BUFFER_SIZE, 0);

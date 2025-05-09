@@ -23,12 +23,12 @@
 #define UNUSED(x) (void)(x)
 
 #define MAX_PAYLOAD_SIZE (1024 * 4) // 8KB
-#define MAX_N_MSG_PER_BUFFER 1024
+#define MAX_N_MSG_PER_BUFFER 2048
 
 #define RING_BUFFER_SIZE ((sizeof(rdma_msg_t) * MAX_N_MSG_PER_BUFFER) + 1)
 
-#define FLUSH_THRESHOLD_N (400) // number of messages to flush: 40% of the buffer
-#define FLUSH_INTERVAL_MS 1000
+#define FLUSH_THRESHOLD_N (512) // number of messages to flush: 40% of the buffer
+#define FLUSH_INTERVAL_MS 100 // ms
 
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
@@ -110,8 +110,9 @@ struct rdma_ringbuffer
 {
     rdma_flag_t flags;
     atomic_uint remote_write_index;
+    atomic_uint remote_read_index;
     atomic_uint local_write_index;
-    atomic_uint read_index;
+    atomic_uint local_read_index;
     rdma_msg_t data[MAX_N_MSG_PER_BUFFER];
 };
 

@@ -196,6 +196,11 @@ void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_man
                     // printf("Msg text: \t%s\n", buffer);
 #endif // PROXY_DEBUG
                     struct sock_id app = get_app_sk_from_proxy_fd(bpf_ctx, sk_ctx->client_sk_fd, i);
+                    if (app.sip == 0)
+                    {
+                        printf("NO-");
+                        continue;
+                    }
                     // Send the message using RDMA
                     rdma_manager_send(rdma_ctx, buffer, bytes_received, app);
                 }
