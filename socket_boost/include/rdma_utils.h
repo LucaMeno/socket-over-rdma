@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
+#include <stdatomic.h>
 
 #include "scap.h"
 #include "sk_utils.h"
@@ -22,17 +23,15 @@
 #define UNUSED(x) (void)(x)
 
 #define MAX_PAYLOAD_SIZE (1024 * 4) // 8KB
-#define MAX_N_MSG_PER_BUFFER 128
+#define MAX_N_MSG_PER_BUFFER 1024
 
-#define RMA_MSG_SIZE (sizeof(rdma_msg_t))
-#define RING_BUFFER_SIZE ((RMA_MSG_SIZE * MAX_N_MSG_PER_BUFFER) + 1)
+#define RING_BUFFER_SIZE ((sizeof(rdma_msg_t) * MAX_N_MSG_PER_BUFFER) + 1)
 
-#define FLUSH_THREASHOLD_N (MAX_N_MSG_PER_BUFFER * 0.4) // number of messages to flush: 40% of the buffer
-#define FLUSH_THREASHOLD_TIME 5                         // milliseconds
+#define FLUSH_THRESHOLD_N (400) // number of messages to flush: 40% of the buffer
+#define FLUSH_INTERVAL_MS 1000
 
-#define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t))
+#define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
-#define RING_BUFFER_HEADER_SIZE (sizeof(rdma_ringbuffer_t) - (sizeof(rdma_msg_t) * MAX_N_MSG_PER_BUFFER)) // size of the header of the ring buffer
 
 #define INITIAL_CONTEXT_NUMBER 10
 #define N_CONTEXT_REALLOC 5
@@ -83,7 +82,7 @@ typedef struct
 
 struct rdma_flag
 {
-    volatile uint32_t flags;
+    atomic_uint flags;
 };
 
 enum ring_buffer_flags
@@ -110,8 +109,9 @@ struct rdma_msg
 struct rdma_ringbuffer
 {
     rdma_flag_t flags;
-    uint32_t write_index;
-    uint32_t read_index;
+    atomic_uint remote_write_index;
+    atomic_uint local_write_index;
+    atomic_uint read_index;
     rdma_msg_t data[MAX_N_MSG_PER_BUFFER];
 };
 
@@ -144,8 +144,13 @@ struct rdma_context
     pthread_cond_t cond_rx; // condition variable for the threads
     int thread_busy_rx;     // flag to indicate if the context is busy
 
+    pthread_mutex_t mtx_polling; // to be sure only one thread is using the context at a time
+
     rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server
     rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
+
+    uint64_t last_flush_ns;
+    pthread_mutex_t mtx_flush;
 };
 
 /** SETUP CONTEXT */
@@ -168,6 +173,8 @@ int rdma_write_msg(rdma_context_t *ctx, char *data, int data_size, struct sock_i
 
 int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks);
 
+int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer);
+
 // polling
 int rdma_poll_cq_send(rdma_context_t *ctx);
 int rdma_poll_memory(volatile uint32_t *flag_to_poll);
@@ -175,5 +182,6 @@ int rdma_set_polling_status(rdma_context_t *ctx, uint32_t is_polling);
 
 int rdma_send_data_ready(rdma_context_t *ctx);
 const char *get_op_name(rdma_communication_code_t code);
+uint64_t get_time_ms();
 
 #endif // RDMA_UTILS_H

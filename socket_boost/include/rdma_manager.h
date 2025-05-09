@@ -52,7 +52,8 @@ struct rdma_context_manager
 
     pthread_t notification_thread; // thread for the notification
     pthread_t server_thread;       // thread for the server
-    pthread_t polling_thread;      // thread for polling the circular buffer    
+    pthread_t polling_thread;      // thread for polling the circular buffer
+    pthread_t flush_thread;        // thread for flushing the circular buffer
 };
 
 struct thread_pool_arg
