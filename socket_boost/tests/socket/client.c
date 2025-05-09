@@ -154,6 +154,8 @@ int main(int argc, char **argv)
         }
     }
 
+    printf("Sent %d messages\n", i);
+
     // Wait for the thread to finish
     pthread_join(tid, NULL);
 

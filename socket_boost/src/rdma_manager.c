@@ -338,8 +338,6 @@ int rdma_recv_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
         if (start_polling(ctxm, ctx) != 0)
             return manager_ret_err(ctx, "Failed to send data ready notification - rdma_recv_notification");
 
-        /*if (rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks) != 0)
-            return manager_ret_err(ctx, "Failed to read message - rdma_recv_notification");*/
         break;
 
     default:
@@ -714,10 +712,11 @@ void *polling_thread(void *arg)
             // check if there are any messages to read
             if (rb_remote->write_index != rb_remote->read_index)
             {
-                printf("LEGGO");
+                
+                //rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks);
+
                 // set the flag in CAN NOT polling
-                rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks);
-                /*rb_local->flags.flags &= ~RING_BUFFER_CAN_POLLING;
+                rb_local->flags.flags &= ~RING_BUFFER_CAN_POLLING;
 
                 // launch a thread
                 thread_pool_arg_t *arg2 = malloc(sizeof(thread_pool_arg_t));
@@ -734,7 +733,7 @@ void *polling_thread(void *arg)
                     arg = NULL;
                     arg2 = NULL;
                     return manager_ret_null(NULL, "Failed to add task to thread pool - sk_send");
-                }*/
+                }
             }
         }
 

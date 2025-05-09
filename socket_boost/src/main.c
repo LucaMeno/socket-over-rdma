@@ -126,9 +126,9 @@ int main()
     check_error(err, "");
     printf("Successfully detached eBPF program\n");
 
-    err = rdma_manager_destroy(&rdma_ctxm);
+    /*err = rdma_manager_destroy(&rdma_ctxm);
     check_error(err, "");
-    printf("RDMA manager destroyed\n");
+    printf("RDMA manager destroyed\n");*/
 
     return 0;
 }
