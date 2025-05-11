@@ -2,8 +2,6 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-// #define REMOTE_IP "192.168.88.134"
-
 #define TRUE 1
 #define FALSE 0
 
@@ -11,29 +9,28 @@
 #define RDMA_PORT 7471
 #define RDMA_DEBUG_SR // sedn/recv
 // #define RDMA_DEBUG_WRITE
-#define RDMA_DEBUG_W_FLUSH
-#define RDMA_DEBUG_READ
+//#define RDMA_DEBUG_W_FLUSH
+//#define RDMA_DEBUG_READ
 // #define RDMA_DEBUG_PARSE_MSG
 // #define RDMA_DEBUG_WRITE_IN_MSG
 
 // CS TEST
 #define TEST_SERVER_PORT 7777
-#define TEST_BUFFER_SIZE 512 // size of the msg sent
+#define TEST_BUFFER_SIZE 1024 // size of the msg sent
 
-#define SERVER_SEND_RESP // server sends a response to the client
-#define CLIENT_WAIT_RESP // client waits for a response from the server
+//#define SERVER_SEND_RESP // server sends a response to the client
+//#define CLIENT_WAIT_RESP // client waits for a response from the server
 
 // #define CLIENT_CHECK_RESP
-#define N_OF_MSG_CS (100000)
+#define N_OF_MSG_CS (100000000)
 #define CLIENT_CHRONO // client measures the time taken to send CLIENT_GAP messages
 
 #define WAIT_FOR_RDMA_CONN
 
 // MAIN
-#define PROXY_PORT 5556
+#define PROXY_PORT 5555
 #define SERVER_IP "127.0.0.1"
 #define TARGET_PORT TEST_SERVER_PORT
-#define MAX_SIZE_SK_MSG (1024 * 8) // 8KB
 // #define PROXY_DEBUG
 
 // SOCKET

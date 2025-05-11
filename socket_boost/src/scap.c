@@ -360,3 +360,15 @@ struct sock_id get_app_sk_from_proxy_fd(bpf_context_t *ctx, client_sk_t client_s
 
     return sk_assoc_v.app;
 }
+
+struct sock_id get_app_sk_from_proxy_sk(bpf_context_t *ctx, struct sock_id proxy_sk)
+{
+    struct association_t app = {0};
+    struct association_t proxy = {0};
+
+    proxy.proxy = proxy_sk;
+
+    int err = bpf_map_lookup_elem(ctx->socket_association_fd, &proxy, &app);
+
+    return app.app;
+}

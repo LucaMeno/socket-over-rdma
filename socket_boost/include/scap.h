@@ -56,4 +56,6 @@ struct sock_id get_proxy_sk_from_app_sk(bpf_context_t *ctx, struct sock_id app_s
 
 struct sock_id get_app_sk_from_proxy_fd(bpf_context_t *ctx, client_sk_t client_sks[], int target_fd);
 
+struct sock_id get_app_sk_from_proxy_sk(bpf_context_t *ctx, struct sock_id proxy_sk);
+
 #endif // SCAP_H

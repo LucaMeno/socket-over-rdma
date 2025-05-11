@@ -73,12 +73,25 @@ int main()
         }
         i++;
 
+        if (i == N_OF_MSG_CS)
+        {
+            break;
+        }
+
 #ifdef SERVER_SEND_RESP
         send(new_socket, buffer, TEST_BUFFER_SIZE, 0);
 #endif
     }
 
     printf("Receved %d msg\n", i);
+
+#ifndef SERVER_SEND_RESP
+    printf("Sending ACK to client...\n");
+    send(new_socket, buffer, TEST_BUFFER_SIZE, 0);
+#endif // SERVER_SEND_RESP
+
+    if (recv(new_socket, buffer, TEST_BUFFER_SIZE, 0) <= 0)
+        printf("Client disconnected\n");
 
     // Close the socket
     printf("Stopping server...\n");

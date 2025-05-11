@@ -22,13 +22,13 @@
 
 #define UNUSED(x) (void)(x)
 
-#define MAX_PAYLOAD_SIZE (1024 * 4) // 8KB
+#define MAX_PAYLOAD_SIZE (1024) // 8KB
 #define MAX_N_MSG_PER_BUFFER 2048
 
 #define RING_BUFFER_SIZE ((sizeof(rdma_msg_t) * MAX_N_MSG_PER_BUFFER) + 1)
 
-#define FLUSH_THRESHOLD_N (512) // number of messages to flush: 40% of the buffer
-#define FLUSH_INTERVAL_MS 100 // ms
+#define FLUSH_THRESHOLD_N (256) // number of messages to flush: 40% of the buffer
+#define FLUSH_INTERVAL_MS 10    // ms
 
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
@@ -96,6 +96,7 @@ enum ring_buffer_flags
 enum msg_flags
 {
     DATA_CONT = 0x02,
+    RDMA_MSG_ERROR = 0x04,
 };
 
 struct rdma_msg
@@ -134,8 +135,8 @@ struct rdma_context
     // Context id
     __u32 remote_ip; // Remote IP
 
-    int is_server; // TRUE if server, FALSE if client
-    int is_ready;  // TRUE if the context is ready
+    int is_server;        // TRUE if server, FALSE if client
+    atomic_uint is_ready; // TRUE if the context is ready
 
     pthread_mutex_t mtx_tx; // to be sure only one thread is using the context at a time
     pthread_cond_t cond_tx; // condition variable for the threads
@@ -170,7 +171,7 @@ int rdma_setup_context(rdma_context_t *ctx);
 
 // send and receive
 
-int rdma_write_msg(rdma_context_t *ctx, char *data, int data_size, struct sock_id original_socket);
+int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_socket);
 
 int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks);
 

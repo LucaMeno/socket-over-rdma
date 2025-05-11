@@ -3,7 +3,6 @@
 #define SOCKET_UTILS_H
 
 #define NUMBER_OF_SOCKETS 16
-#define BUFFER_SIZE 2048
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +17,7 @@
 #include <bpf/bpf.h>
 
 #include "common.h"
+#include "config.h"
 
 /**
  * Structure to hold the socket information related to the proxy sockets

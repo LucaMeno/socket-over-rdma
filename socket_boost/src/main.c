@@ -33,7 +33,7 @@ bpf_context_t bpf_ctx = {0};
 int fun(void *ctx, void *data, size_t len)
 {
     struct userspace_data_t *user_data = (struct userspace_data_t *)data;
-    printf("New Association: APP [%u:%u -> %u:%u] <-> PROXY [%u:%u -> %u:%u] - OP: %d\n",
+    printf("New : [%u:%u -> %u:%u] <-> [%u:%u -> %u:%u]\n",
            user_data->association.app.sip,
            user_data->association.app.sport,
            user_data->association.app.dip,
@@ -41,8 +41,7 @@ int fun(void *ctx, void *data, size_t len)
            user_data->association.proxy.sip,
            user_data->association.proxy.sport,
            user_data->association.proxy.dip,
-           user_data->association.proxy.dport,
-           user_data->sockops_op);
+           user_data->association.proxy.dport);
 
     // start the RDMA connection
     // only the client start the connection
@@ -83,8 +82,8 @@ int main()
     int nport = sizeof(ports_to_set) / sizeof(ports_to_set[0]);
 
     // const char *ip_env = getenv("REMOTE_IP");
-    const char *ip1 = "192.168.100.6";
-    const char *ip2 = "192.168.100.5";
+    const char *ip1 = "192.168.17.86";
+    const char *ip2 = "192.168.17.84";
     __u32 ips_to_set[2];
 
     ips_to_set[0] = inet_addr(ip1);
@@ -116,7 +115,10 @@ int main()
     err = rdma_manager_run(&rdma_ctxm, RDMA_PORT, &bpf_ctx, sk_ctx.client_sk_fd);
 
     printf("Waiting for messages, press Ctrl+C to exit...\n");
-    wait_for_msg(&bpf_ctx, &sk_ctx, &rdma_ctxm);
+    while (!STOP)
+    {
+        sleep(1);
+    }
 
     err = cleanup_socket(&sk_ctx);
     check_error(err, "");
@@ -132,7 +134,7 @@ int main()
 
     return 0;
 }
-
+/*
 void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_manager_t *rdma_ctx)
 {
     char buffer[MAX_SIZE_SK_MSG];
@@ -208,7 +210,7 @@ void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_man
         }
     }
 }
-
+*/
 void handle_signal(int signal)
 {
     STOP = true;

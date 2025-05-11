@@ -76,7 +76,7 @@ int main(int argc, char **argv)
 
         if (argc != 2)
         {
-            if (i == 10)
+            if (i == N_OF_MSG_CS)
                 break;
             printf("Press Enter to continue...\n");
             getchar();
@@ -84,8 +84,10 @@ int main(int argc, char **argv)
 
         send(sock, msg_out, TEST_BUFFER_SIZE, 0);
 
-        if (i % 1000 == 0)
-            printf("i: %d\n", i);
+        if (i % (N_OF_MSG_CS / 10) == 0)
+        {
+            printf("%d %%\n", (i * 100) / N_OF_MSG_CS);
+        }
 
 #ifdef CLIENT_WAIT_RESP
         ssize_t len_rcv = recv(sock, msg_in, TEST_BUFFER_SIZE, 0);
@@ -108,7 +110,17 @@ int main(int argc, char **argv)
 #endif // CLIENT_WAIT_RESP
     }
 
-    printf("FINISHED\n");
+    printf("FINISHED, waiting for server ACK\n");
+
+#ifndef CLIENT_WAIT_RESP
+    ssize_t len_rcv = recv(sock, msg_in, TEST_BUFFER_SIZE, 0);
+    if (len_rcv < 0)
+    {
+        perror("Receive failed");
+        close(sock);
+        return EXIT_FAILURE;
+    }
+#endif // CLIENT_WAIT_RESP
 
     printf("Disconnected from server\n");
     if (close(sock) < 0)

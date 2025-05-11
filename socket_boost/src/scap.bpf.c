@@ -115,7 +115,9 @@ int sockops_prog(struct bpf_sock_ops *skops)
 
 	if (sk == NULL)
 	{
+#ifdef EBPF_DEBUG_MODE
 		bpf_printk("Socket is NULL, op: %d", op);
+#endif // EBPF_DEBUG_MODE
 		return 0;
 	}
 
@@ -156,7 +158,9 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		if (is_ip_target_2 != NULL)
 			goto is_target;
 
+#ifdef EBPF_DEBUG_MODE
 		bpf_printk("SKIP [SRC: %u:%u, DST: %u:%u] - not target port", sk_id.sip, sk_id.sport, sk_id.dip, sk_id.dport);
+#endif // EBPF_DEBUG_MODE		
 		return 0;
 
 	is_target:
@@ -232,13 +236,16 @@ int sockops_prog(struct bpf_sock_ops *skops)
 #endif // EBPF_DEBUG_MODE
 
 		break;
+#ifdef EBPF_DEBUG_MODE
 	case BPF_SOCK_OPS_STATE_CB:
 		// just in case....
 		bpf_printk("===========================================BPF_SOCK_OPS_STATE_CB===========================================");
+
 		break;
 	default:
 		bpf_printk("Unknown socket operation: %d\n", op);
 		break;
+#endif // EBPF_DEBUG_MODE
 	}
 
 	return 0;
