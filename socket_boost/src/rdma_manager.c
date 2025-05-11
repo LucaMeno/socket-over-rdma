@@ -13,7 +13,7 @@ void *rdma_manager_flush_thread(void *arg);
 void *rdma_manager_writer_thread(void *arg);
 
 // WORKER THREADS
-//void send_thread(void *arg);
+// void send_thread(void *arg);
 void read_thread(void *arg);
 void flush_thread(void *arg);
 
@@ -751,14 +751,15 @@ void *rdma_manager_writer_thread(void *arg)
                     }
                 }
 
-                if (ctx == NULL)
+                if (ctx == NULL || atomic_load(&ctx->is_ready) == FALSE)
                 {
-                    printf("Context not found\n");
-                    continue;
-                }
-
-                while (atomic_load(&ctx->is_ready) == FALSE)
-                {
+                    printf("Context not found - writer_thread\n");
+                    pthread_mutex_lock(&ctxm->ctxs[i].mtx_tx);
+                    while (atomic_load(&ctx->is_ready) == FALSE)
+                    {
+                        pthread_cond_wait(&ctxm->ctxs[i].cond_tx, &ctxm->ctxs[i].mtx_tx);
+                    }
+                    pthread_mutex_unlock(&ctxm->ctxs[i].mtx_tx);
                 }
 
                 if (rdma_write_msg(ctx, i, app) != 0)

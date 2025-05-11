@@ -22,8 +22,8 @@
 
 #define UNUSED(x) (void)(x)
 
-#define MAX_PAYLOAD_SIZE (1024) // 8KB
-#define MAX_N_MSG_PER_BUFFER 2048
+#define MAX_PAYLOAD_SIZE (1024) // 1KB
+#define MAX_N_MSG_PER_BUFFER 1024
 
 #define RING_BUFFER_SIZE ((sizeof(rdma_msg_t) * MAX_N_MSG_PER_BUFFER) + 1)
 

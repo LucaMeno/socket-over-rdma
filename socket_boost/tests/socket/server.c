@@ -57,6 +57,7 @@ int main()
     printf("Client connected.\n");
 
     int i = 0;
+    uint32_t tot_len = 0;
     ssize_t bytes_received;
     while (1)
     {
@@ -66,6 +67,8 @@ int main()
             printf("Client disconnected or error occurred.\n");
             break;
         }
+
+        tot_len += bytes_received;
 
         if (i % (N_OF_MSG_CS / 10) == 0)
         {
@@ -84,6 +87,12 @@ int main()
     }
 
     printf("Receved %d msg\n", i);
+
+    printf("Total bytes received: %d\n", tot_len);
+
+    printf("Total bytes received (in MB): %.2f\n", (float)tot_len / (1024 * 1024));
+
+    printf("Total bytes received (in GB): %.2f\n", (float)tot_len / (1024 * 1024 * 1024));
 
 #ifndef SERVER_SEND_RESP
     printf("Sending ACK to client...\n");

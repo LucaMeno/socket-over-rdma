@@ -66,6 +66,7 @@ int main(int argc, char **argv)
     gettimeofday(&start, NULL);
 #endif // CLIENT_CHRONO
 
+    uint32_t tot_len = 0;
     int i = 0;
     while (1)
     {
@@ -82,7 +83,15 @@ int main(int argc, char **argv)
             getchar();
         }
 
-        send(sock, msg_out, TEST_BUFFER_SIZE, 0);
+        int len_sent = send(sock, msg_out, TEST_BUFFER_SIZE, 0);
+        
+        if(len_sent != TEST_BUFFER_SIZE)
+        {
+            perror("Send failed");
+            break;
+        }
+
+        tot_len += len_sent;
 
         if (i % (N_OF_MSG_CS / 10) == 0)
         {
@@ -130,6 +139,10 @@ int main(int argc, char **argv)
     }
 
     printf("Socket closed\n");
+
+    printf("Total bytes sent: %d\n", tot_len);
+    printf("Total bytes sent (in MB): %.2f\n", (float)tot_len / (1024 * 1024));
+    printf("Total bytes sent (in GB): %.2f\n", (float)tot_len / (1024 * 1024 * 1024));
 
 #ifdef CLIENT_CHRONO
     gettimeofday(&end, NULL);
