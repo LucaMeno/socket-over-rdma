@@ -27,7 +27,7 @@
 
 #define RING_BUFFER_SIZE ((sizeof(rdma_msg_t) * MAX_N_MSG_PER_BUFFER) + 1)
 
-#define FLUSH_THRESHOLD_N (256) // number of messages to flush: 40% of the buffer
+#define FLUSH_THRESHOLD_N (250) // number of messages to flush
 #define FLUSH_INTERVAL_MS 10    // ms
 
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)

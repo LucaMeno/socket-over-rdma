@@ -119,17 +119,7 @@ int main(int argc, char **argv)
 #endif // CLIENT_WAIT_RESP
     }
 
-    printf("FINISHED, waiting for server ACK\n");
-
-#ifndef CLIENT_WAIT_RESP
-    ssize_t len_rcv = recv(sock, msg_in, TEST_BUFFER_SIZE, 0);
-    if (len_rcv < 0)
-    {
-        perror("Receive failed");
-        close(sock);
-        return EXIT_FAILURE;
-    }
-#endif // CLIENT_WAIT_RESP
+    printf("FINISHED\n");
 
     printf("Disconnected from server\n");
     if (close(sock) < 0)

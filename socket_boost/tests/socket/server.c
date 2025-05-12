@@ -94,13 +94,9 @@ int main()
 
     printf("Total bytes received (in GB): %.2f\n", (float)tot_len / (1024 * 1024 * 1024));
 
-#ifndef SERVER_SEND_RESP
-    printf("Sending ACK to client...\n");
-    send(new_socket, buffer, TEST_BUFFER_SIZE, 0);
-#endif // SERVER_SEND_RESP
-
-    if (recv(new_socket, buffer, TEST_BUFFER_SIZE, 0) <= 0)
-        printf("Client disconnected\n");
+    while (recv(new_socket, buffer, TEST_BUFFER_SIZE, 0) <= 0)
+    {
+    }
 
     // Close the socket
     printf("Stopping server...\n");
