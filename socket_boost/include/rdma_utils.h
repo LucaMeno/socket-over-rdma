@@ -22,13 +22,11 @@
 
 #define UNUSED(x) (void)(x)
 
-#define MAX_PAYLOAD_SIZE (1024) // 1KB
-#define MAX_N_MSG_PER_BUFFER 1024
+#define MAX_PAYLOAD_SIZE (2048) // 1KB
+#define MAX_N_MSG_PER_BUFFER (1024)
 
-#define RING_BUFFER_SIZE ((sizeof(rdma_msg_t) * MAX_N_MSG_PER_BUFFER) + 1)
-
-#define FLUSH_THRESHOLD_N (250) // number of messages to flush
-#define FLUSH_INTERVAL_MS 10    // ms
+#define FLUSH_THRESHOLD_N (128) // number of messages to flush
+#define FLUSH_INTERVAL_MS 100    // ms
 
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))

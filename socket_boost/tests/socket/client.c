@@ -84,8 +84,8 @@ int main(int argc, char **argv)
         }
 
         int len_sent = send(sock, msg_out, TEST_BUFFER_SIZE, 0);
-        
-        if(len_sent != TEST_BUFFER_SIZE)
+
+        if (len_sent != TEST_BUFFER_SIZE)
         {
             perror("Send failed");
             break;
@@ -121,16 +121,7 @@ int main(int argc, char **argv)
 
     printf("FINISHED\n");
 
-    printf("Disconnected from server\n");
-    if (close(sock) < 0)
-    {
-        perror("Socket close failed");
-        return EXIT_FAILURE;
-    }
-
-    printf("Socket closed\n");
-
-    printf("Total bytes sent: %d\n", tot_len);
+    printf("Total bytes sent: %u\n", tot_len);
     printf("Total bytes sent (in MB): %.2f\n", (float)tot_len / (1024 * 1024));
     printf("Total bytes sent (in GB): %.2f\n", (float)tot_len / (1024 * 1024 * 1024));
 
@@ -141,6 +132,21 @@ int main(int argc, char **argv)
     double total_time = seconds + useconds / 1e6;
     printf("Total time: %f seconds\n", total_time);
 #endif // CLIENT_CHRONO
+
+    printf("Total throughput: %.2f MB/s\n", (float)tot_len / (1024 * 1024 * total_time));
+    printf("Total throughput: %.2f GB/s\n", (float)tot_len / (1024 * 1024 * 1024 * total_time));
+
+    printf("Press Enter to exit...\n");
+    getchar();
+
+    printf("Disconnected from server\n");
+    if (close(sock) < 0)
+    {
+        perror("Socket close failed");
+        return EXIT_FAILURE;
+    }
+
+    printf("Socket closed\n");
 
     return EXIT_SUCCESS;
 }

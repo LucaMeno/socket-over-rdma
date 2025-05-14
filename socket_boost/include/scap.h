@@ -27,19 +27,25 @@ typedef struct
 typedef struct
 {
     struct bpf_object *obj;
+
+    // PROGS
     int prog_fd_sockops;
     int prog_fd_sk_msg;
+    int cgroup_fd;    
+    struct bpf_program *prog_tcp_destroy_sock;
+    struct bpf_link *tcp_destroy_link;
+
+    // MAPS
     int intercepted_sk_fd;
     int free_sk_fd;
     int target_ports_fd;
     int socket_association_fd;
     int server_port_fd;
-    int ring_buffer_fd;
     int target_ip_fd;
-    struct bpf_program *prog_tcp_destroy_sock;
-    struct bpf_link *tcp_destroy_link;
-    int cgroup_fd;
+    int ring_buffer_fd;
     struct ring_buffer *rb;
+    int sock_proxyfd_association_fd;
+
     pthread_t thread_pool_rb;
     int stop_threads;
     EventHandler new_sk_event_handler;
@@ -57,5 +63,9 @@ struct sock_id get_proxy_sk_from_app_sk(bpf_context_t *ctx, struct sock_id app_s
 struct sock_id get_app_sk_from_proxy_fd(bpf_context_t *ctx, client_sk_t client_sks[], int target_fd);
 
 struct sock_id get_app_sk_from_proxy_sk(bpf_context_t *ctx, struct sock_id proxy_sk);
+
+int get_proxy_fd_from_app_sk(bpf_context_t *ctx, struct sock_id app_sk);
+
+int add_app_sk_to_proxy_fd(bpf_context_t *ctx, struct sock_id app_sk, int proxy_fd);
 
 #endif // SCAP_H

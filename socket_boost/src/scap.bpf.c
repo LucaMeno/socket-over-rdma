@@ -13,6 +13,14 @@
 
 struct
 {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 2048);
+	__type(key, struct sock_id);
+	__type(value, int);
+} sock_proxyfd_association SEC(".maps");
+
+struct
+{
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 2048);
 } new_sk SEC(".maps");
@@ -160,7 +168,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 
 #ifdef EBPF_DEBUG_MODE
 		bpf_printk("SKIP [SRC: %u:%u, DST: %u:%u] - not target port", sk_id.sip, sk_id.sport, sk_id.dip, sk_id.dport);
-#endif // EBPF_DEBUG_MODE		
+#endif // EBPF_DEBUG_MODE
 		return 0;
 
 	is_target:

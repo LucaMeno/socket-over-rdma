@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <sys/time.h>
 #include "config.h"
 
 int main()
@@ -56,6 +57,10 @@ int main()
 
     printf("Client connected.\n");
 
+#ifdef SERVER_CHRONO
+    struct timeval start, end;
+#endif // SERVER_CHRONO
+
     int i = 0;
     uint32_t tot_len = 0;
     ssize_t bytes_received;
@@ -67,6 +72,13 @@ int main()
             printf("Client disconnected or error occurred.\n");
             break;
         }
+
+#ifdef SERVER_CHRONO
+        if (i == 0)
+        {
+            gettimeofday(&start, NULL);
+        }
+#endif // SERVER_CHRONO
 
         tot_len += bytes_received;
 
@@ -86,6 +98,14 @@ int main()
 #endif
     }
 
+#ifdef SERVER_CHRONO
+    gettimeofday(&end, NULL);
+    long seconds = end.tv_sec - start.tv_sec;
+    long useconds = end.tv_usec - start.tv_usec;
+    double total_time = seconds + useconds / 1e6;
+    printf("Total time: %f seconds\n", total_time);
+#endif // SERVER_CHRONO
+
     printf("Receved %d msg\n", i);
 
     printf("Total bytes received: %d\n", tot_len);
@@ -94,7 +114,7 @@ int main()
 
     printf("Total bytes received (in GB): %.2f\n", (float)tot_len / (1024 * 1024 * 1024));
 
-    while (recv(new_socket, buffer, TEST_BUFFER_SIZE, 0) <= 0)
+    while (recv(new_socket, buffer, TEST_BUFFER_SIZE, 0) > 0)
     {
     }
 

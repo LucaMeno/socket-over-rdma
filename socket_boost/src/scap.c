@@ -89,7 +89,14 @@ int setup_bpf(bpf_context_t *ctx, EventHandler event_handler)
     if (err != 0)
         return scap_ret_err(ctx, "Failed to load BPF object");
 
-    struct bpf_map *intercepted_sockets, *socket_association, *target_ports, *server_port, *free_sk, *rb_map, *target_ip;
+    struct bpf_map *intercepted_sockets,
+        *socket_association,
+        *target_ports,
+        *server_port,
+        *free_sk,
+        *rb_map,
+        *target_ip,
+        *sock_proxyfd_association;
 
     // find the maps in the object file
     intercepted_sockets = bpf_object__find_map_by_name(ctx->obj, "intercepted_sockets");
@@ -120,6 +127,10 @@ int setup_bpf(bpf_context_t *ctx, EventHandler event_handler)
     if (!target_ip)
         return scap_ret_err(ctx, "Failed to find the target_ip map");
 
+    sock_proxyfd_association = bpf_object__find_map_by_name(ctx->obj, "sock_proxyfd_association");
+    if (!sock_proxyfd_association)
+        return scap_ret_err(ctx, "Failed to find the sock_proxyfd_association map");
+
     // get the file descriptor for the map
     ctx->intercepted_sk_fd = bpf_map__fd(intercepted_sockets);
     if (ctx->intercepted_sk_fd < 0)
@@ -148,6 +159,10 @@ int setup_bpf(bpf_context_t *ctx, EventHandler event_handler)
     ctx->target_ip_fd = bpf_map__fd(target_ip);
     if (ctx->target_ip_fd < 0)
         return scap_ret_err(ctx, "Failed to get target_ip fd");
+
+    ctx->sock_proxyfd_association_fd = bpf_map__fd(sock_proxyfd_association);
+    if (ctx->sock_proxyfd_association_fd < 0)
+        return scap_ret_err(ctx, "Failed to get sock_proxyfd_association fd");
 
     // find the programs in the object file
     struct bpf_program *prog_sockops, *prog_sk_msg;
@@ -371,4 +386,19 @@ struct sock_id get_app_sk_from_proxy_sk(bpf_context_t *ctx, struct sock_id proxy
     int err = bpf_map_lookup_elem(ctx->socket_association_fd, &proxy, &app);
 
     return app.app;
+}
+
+int get_proxy_fd_from_app_sk(bpf_context_t *ctx, struct sock_id app_sk)
+{
+    int fd = -1;
+    int err = bpf_map_lookup_elem(ctx->sock_proxyfd_association_fd, &app_sk, &fd);
+    return fd;
+}
+
+int add_app_sk_to_proxy_fd(bpf_context_t *ctx, struct sock_id app_sk, int proxy_fd)
+{
+    int err = bpf_map_update_elem(ctx->sock_proxyfd_association_fd, &app_sk, &proxy_fd, BPF_ANY);
+    if (err != 0)
+        return scap_ret_err(ctx, "Failed to update sock_proxyfd_association map");
+    return 0;
 }

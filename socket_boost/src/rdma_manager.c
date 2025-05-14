@@ -722,6 +722,7 @@ void *rdma_manager_writer_thread(void *arg)
         {
             if (FD_ISSET(i, &temp_fds))
             {
+                //printf(".");
                 // retrieve the proxy socket id
                 int j = 0;
                 for (; j < n; j++)
@@ -751,9 +752,14 @@ void *rdma_manager_writer_thread(void *arg)
                     }
                 }
 
-                if (ctx == NULL || atomic_load(&ctx->is_ready) == FALSE)
+                if (ctx == NULL)
                 {
                     printf("Context not found - writer_thread\n");
+                    continue;
+                }
+
+                if (atomic_load(&ctx->is_ready) == FALSE)
+                {
                     pthread_mutex_lock(&ctxm->ctxs[i].mtx_tx);
                     while (atomic_load(&ctx->is_ready) == FALSE)
                     {
