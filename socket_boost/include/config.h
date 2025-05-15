@@ -23,7 +23,7 @@
 // #define CLIENT_WAIT_RESP // client waits for a response from the server
 
 // #define CLIENT_CHECK_RESP
-#define N_OF_MSG_CS (10000000)
+#define N_OF_MSG_CS (100000)
 #define CLIENT_CHRONO // client measures the time taken to send CLIENT_GAP messages
 #define SERVER_CHRONO // server measures the time taken to receive CLIENT_GAP messages
 

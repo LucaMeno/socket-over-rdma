@@ -77,6 +77,8 @@ struct thread_pool_arg
     char *tx_data;
     int tx_size;
     int fd;
+    uint32_t start_read_index;
+    uint32_t end_read_index;
 };
 
 struct task

@@ -25,8 +25,8 @@
 #define MAX_PAYLOAD_SIZE (2048) // 1KB
 #define MAX_N_MSG_PER_BUFFER (1024)
 
-#define FLUSH_THRESHOLD_N (128) // number of messages to flush
-#define FLUSH_INTERVAL_MS 100    // ms
+#define FLUSH_THRESHOLD_N (64) // number of messages to flush
+#define FLUSH_INTERVAL_MS 1000000000   // ms
 
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
@@ -171,7 +171,7 @@ int rdma_setup_context(rdma_context_t *ctx);
 
 int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_socket);
 
-int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks);
+int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index);
 
 int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer);
 
