@@ -9,14 +9,14 @@
 #define RDMA_PORT 7471
 #define RDMA_DEBUG_SR // sedn/recv
 // #define RDMA_DEBUG_WRITE
-//#define RDMA_DEBUG_W_FLUSH
-//#define RDMA_DEBUG_READ
+#define RDMA_DEBUG_FLUSH
+#define RDMA_DEBUG_READ
 // #define RDMA_DEBUG_PARSE_MSG
 // #define RDMA_DEBUG_WRITE_IN_MSG
 // #define RDMA_DEBUG_WRITE_MSG
 
 // CS TEST
-#define TEST_SERVER_PORT 7778
+#define TEST_SERVER_PORT 7777
 #define TEST_BUFFER_SIZE 2048 // size of the msg sent
 
 // #define SERVER_SEND_RESP // server sends a response to the client
