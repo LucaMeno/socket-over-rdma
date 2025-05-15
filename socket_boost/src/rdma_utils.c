@@ -2,9 +2,11 @@
 
 #include "rdma_utils.h"
 
-int COUNT = 0; // for debugging
+int COUNT = 0;    // for debugging
 int TX_COUNT = 0; // for debugging
-int RX_COUNT = 0; // for debugging
+uint32_t TX_SIZE = 0;
+int RX_COUNT = 0;     // for debugging
+uint32_t RX_SIZE = 0; // for debugging
 
 // PRIVATE FUNCTIONS
 int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code);
@@ -380,6 +382,8 @@ int rdma_context_close(rdma_context_t *ctx)
 
 int rdma_setup_context(rdma_context_t *ctx)
 {
+    pthread_mutex_init(&ctx->mtx_test, NULL);
+
     // Initialize the slices
     atomic_store(&ctx->is_ready, FALSE);
     ctx->buffer = NULL;
@@ -550,8 +554,9 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
     u_int32_t wi_r = atomic_load(&ringbuffer->remote_write_index);
     uint32_t ri_l = atomic_load(&ringbuffer->local_read_index);
 
-    TX_COUNT += (wi_r + MAX_N_MSG_PER_BUFFER - ri_r) % MAX_N_MSG_PER_BUFFER;
-    printf("TX_COUNT: %d\n", TX_COUNT);
+    uint32_t inc = (wi_r + MAX_N_MSG_PER_BUFFER - ri_r) % MAX_N_MSG_PER_BUFFER;
+    TX_COUNT += inc;
+    printf("TX_COUNT: %d (+%d), TX_SIZE: %u\n", TX_COUNT, inc, TX_SIZE);
 
 #ifdef RDMA_DEBUG_W_FLUSH
     printf("FLUSHING n: %d, WI_R: %d, RI_R: %d, WI_L: %u, RI_L: %u\n",
@@ -654,12 +659,10 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
     if (!ringbuffer)
         return rdma_ret_err(ctx, "Ringbuffer is NULL - rdma_write_msg");
 
-    uint32_t wi_l = atomic_load(&ringbuffer->local_write_index);
-    uint32_t ri_r = atomic_load(&ringbuffer->remote_read_index);
-    uint32_t ri_l = atomic_load(&ringbuffer->local_read_index);
-    // uint32_t wi_r = atomic_load(&ringbuffer->remote_write_index);
+    uint32_t start_w_index = atomic_load(&ringbuffer->local_write_index);
+    uint32_t end_w_index = atomic_load(&ringbuffer->remote_read_index);
 
-    uint32_t available_space = (wi_l < ri_r) ? (ri_r - wi_l) : (MAX_N_MSG_PER_BUFFER - wi_l + ri_r);
+    uint32_t available_space = (start_w_index < end_w_index) ? (end_w_index - start_w_index) : (MAX_N_MSG_PER_BUFFER - start_w_index + end_w_index);
     available_space -= 1; // -1 to be always able to understand if the buffer is full or empty
 
     int c = COUNT;
@@ -667,9 +670,9 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
     {
         sched_yield(); // yield the CPU to other threads
         // Buffer is full
-        wi_l = atomic_load(&ringbuffer->local_write_index);
-        ri_r = atomic_load(&ringbuffer->remote_read_index);
-        available_space = (wi_l < ri_r) ? (ri_r - wi_l) : (MAX_N_MSG_PER_BUFFER - wi_l + ri_r);
+        start_w_index = atomic_load(&ringbuffer->local_write_index);
+        end_w_index = atomic_load(&ringbuffer->remote_read_index);
+        uint32_t available_space = (start_w_index < end_w_index) ? (end_w_index - start_w_index) : (MAX_N_MSG_PER_BUFFER - start_w_index + end_w_index);
         available_space -= 1;
 
         if (c == COUNT)
@@ -679,13 +682,13 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
         }
     }
 
-    wi_l %= MAX_N_MSG_PER_BUFFER;
-    ri_r %= MAX_N_MSG_PER_BUFFER;
+    start_w_index %= MAX_N_MSG_PER_BUFFER;
+    end_w_index %= MAX_N_MSG_PER_BUFFER;
 
-    rdma_msg_t *msg = &ringbuffer->data[wi_l];
+    rdma_msg_t *msg = &ringbuffer->data[start_w_index];
 
     // check if there is enough CONTIGUOUS space to write the message
-    uint32_t contiguous_space = (ri_r > wi_l) ? (ri_r - wi_l) : (MAX_N_MSG_PER_BUFFER - wi_l);
+    uint32_t contiguous_space = (end_w_index > start_w_index) ? (end_w_index - start_w_index) : (MAX_N_MSG_PER_BUFFER - start_w_index);
 
     // leave at least one slot free
     if (contiguous_space > available_space)
@@ -696,8 +699,10 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
     uint32_t size_to_read = ((contiguous_space - 1) * sizeof(rdma_msg_t)) + MAX_PAYLOAD_SIZE;
 
     msg->msg_size = recv(src_fd, msg->msg, size_to_read, 0);
-    if (msg->msg_size < 0)
-        return rdma_ret_err(ctx, "Failed to read from socket - rdma_write_msg");
+    if (msg->msg_size <= 0)
+        return msg->msg_size;
+
+    TX_SIZE += msg->msg_size;
 
     msg->msg_flags = 0;
     msg->original_sk_id = original_socket;
@@ -716,41 +721,52 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
         number_of_msg = 1;
     }
 
-    /*if (number_of_msg > 500)
+    if (number_of_msg > 500)
     {
         printf("Number of messages: %u\n", number_of_msg);
         printf("Msg size: %u\n", msg->msg_size);
         printf("size_to_read: %u\n", size_to_read);
         printf("contiguous_space: %u\n", contiguous_space);
         printf("available_space: %u\n", available_space);
-    }*/
+    }
 
-    /*if (contiguous_space < available_space)
+    if (msg->msg_size == size_to_read &&    // are there any other messages in the buffer?
+        start_w_index > end_w_index &&      // need to wrap around
+        contiguous_space < available_space) // this should be always true
     {
-        // this means that we can also write in the first part of the buffer
-        uint32_t contiguos_space_2 = available_space - contiguous_space;
-
-        if (contiguos_space_2 > 0)
+        // check if there is something to read
+        char dummy;
+        int test = recv(src_fd, &dummy, 1, MSG_PEEK);
+        if (test <= 0)
         {
-            // write the rest of the message in the first part of the buffer
-            rdma_msg_t *msg_2 = &ringbuffer->data[0];
-
-            size_to_read = ((contiguos_space_2 - 1) * sizeof(rdma_msg_t)) + MAX_PAYLOAD_SIZE;
-
-            msg_2->msg_size = recv(src_fd, msg_2->msg, size_to_read, 0);
-            if (msg_2->msg_size < 0)
-                return rdma_ret_err(ctx, "Failed to read from socket 2 - rdma_write_msg");
-
-            msg_2->msg_flags = 0;
-            msg_2->original_sk_id = original_socket;
-
-            // update the number of messages
-            number_of_msg += (((msg_2->msg_size - MAX_PAYLOAD_SIZE) +
-                               sizeof(rdma_msg_t) - 1) /
-                              sizeof(rdma_msg_t)) +
-                             1; // +1 for the header
+            goto skip_second_read;
         }
-    }*/
+
+        // this means that we can try to read other messages to write in the first part of the buffer
+        uint32_t contiguous_space_2 = available_space - contiguous_space;
+
+        // write the rest of the message in the first part of the buffer
+        rdma_msg_t *msg_2 = &ringbuffer->data[0];
+
+        size_to_read = ((contiguous_space_2 - 1) * sizeof(rdma_msg_t)) + MAX_PAYLOAD_SIZE;
+
+        msg_2->msg_size = recv(src_fd, msg_2->msg, size_to_read, 0);
+        if (msg_2->msg_size == EWOULDBLOCK || msg_2->msg_size == EAGAIN || msg_2->msg_size == 0)
+            return 1;
+
+        TX_SIZE += msg_2->msg_size;
+
+        msg_2->msg_flags = 0;
+        msg_2->original_sk_id = original_socket;
+
+        // update the number of messages
+        number_of_msg += (((msg_2->msg_size - MAX_PAYLOAD_SIZE) +
+                           sizeof(rdma_msg_t) - 1) /
+                          sizeof(rdma_msg_t)) +
+                         1; // +1 for the header
+    }
+
+skip_second_read:
 
 #ifdef RDMA_DEBUG_WRITE_MSG
     printf("WI_L: %u, RI_R: %u, WI_R: %u, RI_L: %u, AV_SP: %u, CONT_SP: %u\n",
@@ -762,21 +778,22 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
     // update the local write index
     atomic_fetch_add(&ringbuffer->local_write_index, number_of_msg);
 
-    /*wi_l = atomic_load(&ringbuffer->local_write_index) % MAX_N_MSG_PER_BUFFER;
-    ri_l = atomic_load(&ringbuffer->local_read_index) % MAX_N_MSG_PER_BUFFER;
+    start_w_index = atomic_load(&ringbuffer->local_write_index) % MAX_N_MSG_PER_BUFFER;
+    end_w_index = atomic_load(&ringbuffer->local_read_index) % MAX_N_MSG_PER_BUFFER;
 
-    if ((wi_l + MAX_N_MSG_PER_BUFFER - ri_l) % MAX_N_MSG_PER_BUFFER >= FLUSH_THRESHOLD_N)
+    if ((start_w_index + MAX_N_MSG_PER_BUFFER - end_w_index) % MAX_N_MSG_PER_BUFFER >= FLUSH_THRESHOLD_N)
     {
         // flush the buffer
         if (rdma_flush_buffer(ctx, ringbuffer) != 0)
             return rdma_ret_err(ctx, "Failed to flush buffer - rdma_write_msg");
-    }*/
+    }
 
     return 0;
 }
 
 int rdma_parse_msg(bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *msg)
 {
+    RX_SIZE += msg->msg_size;
 
     // retrive the proxy_fd
     int fd = get_proxy_fd_from_app_sk(bpf_ctx, msg->original_sk_id);
@@ -794,13 +811,6 @@ int rdma_parse_msg(bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *
         swapped.sip = msg->original_sk_id.dip;
         swapped.dport = msg->original_sk_id.sport;
         swapped.sport = msg->original_sk_id.dport;
-
-        /*msg->original_sk_id.dip ^= msg->original_sk_id.sip;
-        msg->original_sk_id.sip ^= msg->original_sk_id.dip;
-        msg->original_sk_id.dip ^= msg->original_sk_id.sip;
-        msg->original_sk_id.dport ^= msg->original_sk_id.sport;
-        msg->original_sk_id.sport ^= msg->original_sk_id.dport;
-        msg->original_sk_id.dport ^= msg->original_sk_id.sport;*/
 
         // find the corresponding proxy socket
         struct sock_id proxy_sk_id = get_proxy_sk_from_app_sk(bpf_ctx, swapped);
@@ -860,7 +870,7 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
         return 0;
     }
 
-    int number_of_msg = (end_read_index + MAX_N_MSG_PER_BUFFER - start_read_index) % MAX_N_MSG_PER_BUFFER;
+    uint32_t number_of_msg = (end_read_index + MAX_N_MSG_PER_BUFFER - start_read_index) % MAX_N_MSG_PER_BUFFER;
 
 #ifdef RDMA_DEBUG_READ
     uint32_t wi_l = atomic_load(&ringbuffer->local_write_index);
@@ -870,25 +880,26 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
 
     uint32_t original_start_read_index = start_read_index;
     uint32_t original_end_read_index = end_read_index;
-    /*start_read_index %= MAX_N_MSG_PER_BUFFER;
+    start_read_index %= MAX_N_MSG_PER_BUFFER;
     end_read_index %= MAX_N_MSG_PER_BUFFER;
 
     // manage the wrap around
-    if (start_read_index > end_read_index)
+    /*if (start_read_index > end_read_index)
     {
         //  read from ri to the end of the buffer
         for (int i = 0; i < MAX_N_MSG_PER_BUFFER - start_read_index;)
         {
             int idx = (start_read_index + i);
             rdma_msg_t *msg = &ringbuffer->data[idx];
+            pthread_mutex_lock(&ctx->mtx_test);
             rdma_parse_msg(bpf_ctx, client_sks, msg);
+            pthread_mutex_unlock(&ctx->mtx_test);
 
-            uint32_t number_of_msg = (((msg->msg_size - MAX_PAYLOAD_SIZE) +
-                                       sizeof(rdma_msg_t) - 1) /
-                                      sizeof(rdma_msg_t)) +
-                                     1; // +1 for the header
-            i += number_of_msg;
-            // printf("number_of_msg 1 : %d\n", number_of_msg);
+            uint32_t n = (((msg->msg_size - MAX_PAYLOAD_SIZE) +
+                           sizeof(rdma_msg_t) - 1) /
+                          sizeof(rdma_msg_t)) +
+                         1; // +1 for the header
+            i += n;
         }
 
         // read from the beginning of the buffer to wi
@@ -897,14 +908,15 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
         {
             int idx = (i);
             rdma_msg_t *msg = &ringbuffer->data[idx];
+            pthread_mutex_lock(&ctx->mtx_test);
             rdma_parse_msg(bpf_ctx, client_sks, msg);
+            pthread_mutex_unlock(&ctx->mtx_test);
 
-            uint32_t number_of_msg = (((msg->msg_size - MAX_PAYLOAD_SIZE) +
-                                       sizeof(rdma_msg_t) - 1) /
-                                      sizeof(rdma_msg_t)) +
-                                     1; // +1 for the header
-            i += number_of_msg;
-            // printf("number_of_msg 2 : %d\n", number_of_msg);
+            uint32_t n = (((msg->msg_size - MAX_PAYLOAD_SIZE) +
+                           sizeof(rdma_msg_t) - 1) /
+                          sizeof(rdma_msg_t)) +
+                         1; // +1 for the header
+            i += n;
         }
     }
     else
@@ -914,27 +926,44 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
         {
             int idx = (start_read_index + i);
             rdma_msg_t *msg = &ringbuffer->data[idx];
+            pthread_mutex_lock(&ctx->mtx_test);
             rdma_parse_msg(bpf_ctx, client_sks, msg);
+            pthread_mutex_unlock(&ctx->mtx_test);
 
-            uint32_t number_of_msg = (((msg->msg_size - MAX_PAYLOAD_SIZE) +
-                                       sizeof(rdma_msg_t) - 1) /
-                                      sizeof(rdma_msg_t)) +
-                                     1; // +1 for the header
-            i += number_of_msg;
+            uint32_t n = (((msg->msg_size - MAX_PAYLOAD_SIZE) +
+                           sizeof(rdma_msg_t) - 1) /
+                          sizeof(rdma_msg_t)) +
+                         1; // +1 for the header
+            i += n;
             // printf("number_of_msg 12 : %d\n", number_of_msg);
         }
     }*/
 
-    pthread_mutex_lock(&ctx->mtx_tx);
-    /*printf("original_start_read_index: %u, end_read_index: %u, remote_read_index: %u\n",
-           original_start_read_index, end_read_index, atomic_load(&ringbuffer->remote_read_index));*/
-    while (original_start_read_index < atomic_load(&ringbuffer->remote_read_index))
+    for (int i = 0; i < number_of_msg;)
     {
-        pthread_cond_wait(&ctx->cond_tx, &ctx->mtx_tx);
+        int idx = (start_read_index + i) % MAX_N_MSG_PER_BUFFER;
+        rdma_msg_t *msg = &ringbuffer->data[idx];
+        pthread_mutex_lock(&ctx->mtx_test);
+        rdma_parse_msg(bpf_ctx, client_sks, msg);
+        pthread_mutex_unlock(&ctx->mtx_test);
+
+        uint32_t n = (((msg->msg_size - MAX_PAYLOAD_SIZE) +
+                       sizeof(rdma_msg_t) - 1) /
+                      sizeof(rdma_msg_t)) +
+                     1; // +1 for the header
+        i += n;
     }
 
-    RX_COUNT += (original_end_read_index + MAX_N_MSG_PER_BUFFER - original_start_read_index) % MAX_N_MSG_PER_BUFFER;
-    printf("RX_COUNT: %d\n", RX_COUNT);
+    pthread_mutex_lock(&ctx->mtx_rx);
+    /*printf("original_start_read_index: %u, end_read_index: %u, remote_read_index: %u\n",
+           original_start_read_index, end_read_index, atomic_load(&ringbuffer->remote_read_index));*/
+    while (original_start_read_index != atomic_load(&ringbuffer->remote_read_index))
+    {
+        pthread_cond_wait(&ctx->cond_rx, &ctx->mtx_rx);
+    }
+
+    RX_COUNT += number_of_msg;
+    printf("RX_COUNT: %d (+%d), RX_SIZE: %u\n", RX_COUNT, number_of_msg, RX_SIZE);
 
     atomic_store(&ringbuffer->remote_read_index, original_end_read_index);
 
@@ -948,14 +977,14 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
                          (uintptr_t)(ctx->buffer + read_index_offset),
                          sizeof(ringbuffer->remote_read_index),
                          TRUE) != 0)
+    {
+        pthread_cond_broadcast(&ctx->cond_rx);
+        pthread_mutex_unlock(&ctx->mtx_rx);
         return rdma_ret_err(ctx, "Failed to post read index update");
-
-    /*printf("Updating REMOTE read index: %u, mem_remote: %p\n",
-           ringbuffer->remote_read_index,
-           (void *)remote_addr_read_index);*/
+    }
 
     pthread_cond_broadcast(&ctx->cond_rx);
-    pthread_mutex_unlock(&ctx->mtx_tx);
+    pthread_mutex_unlock(&ctx->mtx_rx);
 
     return 0;
 }

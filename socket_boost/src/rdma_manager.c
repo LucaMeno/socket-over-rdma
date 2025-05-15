@@ -608,7 +608,6 @@ void *rdma_manager_writer_thread(void *arg)
     rdma_context_manager_t *ctxm = param->ctxm;
     client_sk_t *sk_to_monitor = param->sk_to_monitor;
     int n = param->n;
-    int i = 0;
 
     if (sk_to_monitor == NULL || n <= 0 || ctxm == NULL)
         return manager_ret_null(NULL, "Invalid arguments - rdma_manager_writer_thread");
@@ -647,15 +646,15 @@ void *rdma_manager_writer_thread(void *arg)
         }
 
         // Handle data on client sockets
-        for (int i = 0; i <= max_fd; i++)
+        for (int fd = 0; fd <= max_fd; fd++)
         {
-            if (FD_ISSET(i, &temp_fds))
+            if (FD_ISSET(fd, &temp_fds))
             {
                 // printf(".");
                 //  retrieve the proxy socket id
                 int j = 0;
                 for (; j < n; j++)
-                    if (sk_to_monitor[j].fd == i)
+                    if (sk_to_monitor[j].fd == fd)
                         break;
                 if (j == n)
                 {
@@ -672,11 +671,11 @@ void *rdma_manager_writer_thread(void *arg)
 
                 // get the context
                 rdma_context_t *ctx = NULL;
-                for (int i = 0; i < ctxm->ctx_count; i++)
+                for (int ctx_idx = 0; ctx_idx < ctxm->ctx_count; ctx_idx++)
                 {
-                    if (ctxm->ctxs[i].remote_ip == app.dip)
+                    if (ctxm->ctxs[ctx_idx].remote_ip == app.dip)
                     {
-                        ctx = &ctxm->ctxs[i];
+                        ctx = &ctxm->ctxs[ctx_idx];
                         break;
                     }
                 }
@@ -689,42 +688,39 @@ void *rdma_manager_writer_thread(void *arg)
 
                 if (atomic_load(&ctx->is_ready) == FALSE)
                 {
-                    pthread_mutex_lock(&ctxm->ctxs[i].mtx_tx);
+                    pthread_mutex_lock(&ctx->mtx_tx);
                     while (atomic_load(&ctx->is_ready) == FALSE)
                     {
-                        pthread_cond_wait(&ctxm->ctxs[i].cond_tx, &ctxm->ctxs[i].mtx_tx);
+                        pthread_cond_wait(&ctx->cond_tx, &ctx->mtx_tx);
                     }
-                    pthread_mutex_unlock(&ctxm->ctxs[i].mtx_tx);
+                    pthread_mutex_unlock(&ctx->mtx_tx);
                 }
 
-                if (rdma_write_msg(ctx, i, app) != 0)
+                while (1)
                 {
-                    printf("Client disconnected or error occurred - writer_thread\n");
-                    close(i);
-                    FD_CLR(i, &read_fds);
-                }
-
-                rdma_ringbuffer_t *ringbuffer = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
-
-                u_int32_t wi_l = atomic_load(&ringbuffer->local_write_index) % MAX_N_MSG_PER_BUFFER;
-                u_int32_t ri_l = atomic_load(&ringbuffer->local_read_index) % MAX_N_MSG_PER_BUFFER;
-
-                if ((wi_l + MAX_N_MSG_PER_BUFFER - ri_l) % MAX_N_MSG_PER_BUFFER >= FLUSH_THRESHOLD_N)
-                {
-                    // lauch the flush thread
-                    thread_pool_arg_t *flush_arg = malloc(sizeof(thread_pool_arg_t));
-                    if (flush_arg == NULL)
-                        return manager_ret_null(NULL, "Failed to allocate memory for thread pool arg - rdma_manager_flush_thread");
-
-                    flush_arg->ctxm = ctxm;
-                    flush_arg->ctx = ctx;
-
-                    // add the task to the thread pool
-                    if (thread_pool_add(ctxm->pool, flush_thread, flush_arg) != 0)
+                    char dummy;
+                    int test = recv(fd, &dummy, 1, MSG_PEEK);
+                    if (test > 0)
                     {
-                        free(flush_arg);
-                        flush_arg = NULL;
-                        return manager_ret_null(NULL, "Failed to add task to thread pool - rdma_manager_flush_thread");
+                        // there is data to read
+                        if (rdma_write_msg(ctx, fd, app) != 0)
+                        {
+                            printf("Client disconnected or error occurred - writer_thread\n");
+                            FD_CLR(fd, &read_fds);
+                            close(fd);
+                            continue;
+                        }
+                    }
+                    else if (test == 0)
+                    {
+                        printf("0\n");
+                        // connection closed
+                        break;
+                    }
+                    else if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    {
+                        perror("recv error");
+                        break; // no more data to read
                     }
                 }
             }
@@ -756,24 +752,6 @@ void read_thread(void *arg)
     if (rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks, param->start_read_index, param->end_read_index) != 0)
         return manager_ret_void(NULL, "Failed to read slice - read_thread");
 
-    // thread sync
-    /*pthread_mutex_lock(&param->ctx->mtx_rx);
-    while (atomic_load(&param->ctx->is_ready) == FALSE || param->ctx->thread_busy_rx == TRUE)
-    {
-        pthread_cond_wait(&param->ctx->cond_rx, &param->ctx->mtx_rx);
-    }
-    param->ctx->thread_busy_rx = TRUE;
-    pthread_mutex_unlock(&param->ctx->mtx_rx);
-
-    // read the data from the remote buffer
-    if (rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks, param->start_read_index, param->end_read_index) != 0)
-        return manager_ret_void(NULL, "Failed to read slice - read_thread");
-
-    pthread_mutex_lock(&param->ctx->mtx_rx);
-    param->ctx->thread_busy_rx = FALSE;
-    pthread_cond_signal(&param->ctx->cond_rx); // wake up the other threads waiting for this context
-    pthread_mutex_unlock(&param->ctx->mtx_rx);*/
-
     return;
 }
 
@@ -789,23 +767,23 @@ void flush_thread(void *arg)
         return manager_ret_void(NULL, "Context is NULL - flush_thread");
 
     // thread sync
-    pthread_mutex_lock(&param->ctx->mtx_rx);
+    pthread_mutex_lock(&param->ctx->mtx_tx);
     while (atomic_load(&param->ctx->is_ready) == FALSE || param->ctx->thread_busy_rx == TRUE)
     {
-        pthread_cond_wait(&param->ctx->cond_rx, &param->ctx->mtx_rx);
+        pthread_cond_wait(&param->ctx->cond_tx, &param->ctx->mtx_tx);
     }
     param->ctx->thread_busy_rx = TRUE;
-    pthread_mutex_unlock(&param->ctx->mtx_rx);
+    pthread_mutex_unlock(&param->ctx->mtx_tx);
 
     // read the data from the remote buffer
     rdma_ringbuffer_t *rb = (param->ctx->is_server == TRUE) ? param->ctx->ringbuffer_server : param->ctx->ringbuffer_client;
     if (rdma_flush_buffer(param->ctx, rb) != 0)
         return manager_ret_void(NULL, "Failed to flush - flush_thread");
 
-    pthread_mutex_lock(&param->ctx->mtx_rx);
+    pthread_mutex_lock(&param->ctx->mtx_tx);
     param->ctx->thread_busy_rx = FALSE;
-    pthread_cond_signal(&param->ctx->cond_rx); // wake up the other threads waiting for this context
-    pthread_mutex_unlock(&param->ctx->mtx_rx);
+    pthread_cond_signal(&param->ctx->cond_tx); // wake up the other threads waiting for this context
+    pthread_mutex_unlock(&param->ctx->mtx_tx);
 
     return;
 }
@@ -845,22 +823,16 @@ void *rdma_manager_polling_thread(void *arg)
             if (!(atomic_load(&rb_local->flags.flags) & RING_BUFFER_POLLING))
                 non_polling++;
 
-            // anyway, since we are polling, check if there are any messages to read
-            // check if we can poll the buffer
-            /*if (!(atomic_load(&rb_local->flags.flags) & RING_BUFFER_CAN_POLLING))
-                continue;*/
-
             // check if there are any messages to read
-            if (atomic_load(&rb_remote->remote_write_index) != atomic_load(&rb_remote->local_read_index))
+            uint32_t remote_w = atomic_load(&rb_remote->remote_write_index);
+            uint32_t local_r = atomic_load(&rb_remote->local_read_index);
+            if (remote_w != local_r)
             {
                 // set the local read index to avoid reading the same data again
-                uint32_t start_read_index = atomic_load(&rb_remote->local_read_index);
-                atomic_store(&rb_remote->local_read_index, atomic_load(&rb_remote->remote_write_index));
+                uint32_t start_read_index = local_r;
+                atomic_store(&rb_remote->local_read_index, remote_w);
 
-                uint32_t end_read_index = atomic_load(&rb_remote->remote_write_index);
-
-                // set the flag in CAN NOT polling
-                // atomic_fetch_and(&rb_local->flags.flags, ~RING_BUFFER_CAN_POLLING);
+                uint32_t end_read_index = remote_w;
 
                 // launch a thread
                 thread_pool_arg_t *arg2 = malloc(sizeof(thread_pool_arg_t));
