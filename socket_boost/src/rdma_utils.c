@@ -671,7 +671,10 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
         if (c == COUNT)
         {
             COUNT++;
-            printf("STUCK %d\n", COUNT);
+            if (COUNT % 1000 == 0)
+            {
+                printf("STUCK %d\n", COUNT);
+            }
         }
     }
 
@@ -714,6 +717,8 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
         number_of_msg = 1;
     }
 
+    msg->number_of_slots = number_of_msg;
+
     /*if (number_of_msg > 500)
     {
         printf("Number of messages: %u\n", number_of_msg);
@@ -753,17 +758,21 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
         msg_2->original_sk_id = original_socket;
 
         // update the number of messages
+        uint32_t number_of_msg_2 = 0;
         if (msg_2->msg_size > MAX_PAYLOAD_SIZE)
         {
-            number_of_msg += (((msg_2->msg_size - MAX_PAYLOAD_SIZE) +
-                               sizeof(rdma_msg_t) - 1) /
-                              sizeof(rdma_msg_t)) +
-                             1; // +1 for the header
+            number_of_msg_2 = (((msg_2->msg_size - MAX_PAYLOAD_SIZE) +
+                                sizeof(rdma_msg_t) - 1) /
+                               sizeof(rdma_msg_t)) +
+                              1; // +1 for the header
         }
         else
         {
-            number_of_msg += 1;
+            number_of_msg_2 = 1;
         }
+        msg_2->number_of_slots = number_of_msg_2;
+
+        number_of_msg += number_of_msg_2;
     }
 
 skip_second_read:
@@ -851,7 +860,6 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
     if (!ctx)
         return rdma_ret_err(ctx, "Context is NULL - rdma_read_msg");
 
-    rdma_ringbuffer_t *rb_local = ctx->is_server ? ctx->ringbuffer_server : ctx->ringbuffer_client;
     rdma_ringbuffer_t *ringbuffer = ctx->is_server ? ctx->ringbuffer_client : ctx->ringbuffer_server;
 
     if (!ringbuffer)
@@ -874,28 +882,12 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
     {
         int idx = (start_read_index + i) % MAX_N_MSG_PER_BUFFER;
         rdma_msg_t *msg = &ringbuffer->data[idx];
-        pthread_mutex_lock(&ctx->mtx_test);
         rdma_parse_msg(bpf_ctx, client_sks, msg);
-        pthread_mutex_unlock(&ctx->mtx_test);
-
-        if (msg->msg_size > MAX_PAYLOAD_SIZE)
-        {
-            // read the rest of the message
-            uint32_t n = (((msg->msg_size - MAX_PAYLOAD_SIZE) +
-                           sizeof(rdma_msg_t) - 1) /
-                          sizeof(rdma_msg_t)) +
-                         1; // +1 for the header
-            i += n;
-        }
-        else
-        {
-            i++;
-        }
+        i += msg->number_of_slots;
     }
 
     pthread_mutex_lock(&ctx->mtx_rx);
-    /*printf("original_start_read_index: %u, end_read_index: %u, remote_read_index: %u\n",
-           original_start_read_index, end_read_index, atomic_load(&ringbuffer->remote_read_index));*/
+
     while (original_start_read_index != atomic_load(&ringbuffer->remote_read_index))
     {
         pthread_cond_wait(&ctx->cond_rx, &ctx->mtx_rx);

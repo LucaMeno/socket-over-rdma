@@ -22,11 +22,11 @@
 
 #define UNUSED(x) (void)(x)
 
-#define MAX_PAYLOAD_SIZE (2048) // 1KB
-#define MAX_N_MSG_PER_BUFFER (1024)
+#define MAX_PAYLOAD_SIZE (1024 * 8)
+#define MAX_N_MSG_PER_BUFFER (1024 * 4)
 
-#define FLUSH_THRESHOLD_N (128) // number of messages to flush
-#define FLUSH_INTERVAL_MS 10   // ms
+#define FLUSH_THRESHOLD_N (512) // number of messages to flush
+#define FLUSH_INTERVAL_MS 100    // ms
 
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
@@ -102,6 +102,7 @@ struct rdma_msg
     uint32_t msg_flags;            // flags
     struct sock_id original_sk_id; // id of the socket
     uint32_t msg_size;             // size of the message
+    uint32_t number_of_slots;      // number of slots
     char msg[MAX_PAYLOAD_SIZE];    // message
 };
 

@@ -838,6 +838,7 @@ void *rdma_manager_polling_thread(void *arg)
                 thread_pool_arg_t *arg2 = malloc(sizeof(thread_pool_arg_t));
                 if (arg2 == NULL)
                     return manager_ret_null(NULL, "Failed to allocate memory for thread pool arg - rdma_manager_polling_thread");
+
                 arg2->ctxm = param->ctxm;
                 arg2->ctx = ctx;
                 arg2->start_read_index = start_read_index;
@@ -981,8 +982,17 @@ thread_pool_t *thread_pool_create(int num_threads)
     }
     for (int i = 0; i < num_threads; ++i)
     {
-        pthread_create(&pool->threads[i], NULL, worker, pool);
+        if (pthread_create(&pool->threads[i], NULL, worker, pool) != 0)
+        {
+            printf("Failed to create thread %d\n", i);
+            free(pool->threads);
+            pool->threads = NULL;
+            free(pool);
+            pool = NULL;
+            return NULL;
+        }
     }
+    printf("Thread pool created with %d threads\n", num_threads);
     return pool;
 }
 
@@ -1005,7 +1015,6 @@ int thread_pool_add(thread_pool_t *pool, void (*function)(void *), void *arg)
     {
         pool->head = pool->tail = task;
     }
-    thread_pool_arg_t *arg2 = (thread_pool_arg_t *)arg;
 
     pthread_cond_signal(&pool->cond);
     pthread_mutex_unlock(&pool->lock);
