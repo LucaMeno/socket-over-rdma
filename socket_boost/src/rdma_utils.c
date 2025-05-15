@@ -671,7 +671,7 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
         if (c == COUNT)
         {
             COUNT++;
-            printf("STUCK\n");
+            printf("STUCK %d\n", COUNT);
         }
     }
 
@@ -878,11 +878,19 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
         rdma_parse_msg(bpf_ctx, client_sks, msg);
         pthread_mutex_unlock(&ctx->mtx_test);
 
-        uint32_t n = (((msg->msg_size - MAX_PAYLOAD_SIZE) +
-                       sizeof(rdma_msg_t) - 1) /
-                      sizeof(rdma_msg_t)) +
-                     1; // +1 for the header
-        i += n;
+        if (msg->msg_size > MAX_PAYLOAD_SIZE)
+        {
+            // read the rest of the message
+            uint32_t n = (((msg->msg_size - MAX_PAYLOAD_SIZE) +
+                           sizeof(rdma_msg_t) - 1) /
+                          sizeof(rdma_msg_t)) +
+                         1; // +1 for the header
+            i += n;
+        }
+        else
+        {
+            i++;
+        }
     }
 
     pthread_mutex_lock(&ctx->mtx_rx);
