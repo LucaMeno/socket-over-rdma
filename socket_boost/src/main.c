@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/select.h>
+#include <execinfo.h>
 #include "common.h"
 #include "scap.h"
 #include "sk_utils.h"
@@ -23,8 +24,6 @@ volatile sig_atomic_t STOP = false;
 void handle_signal(int signal);
 void check_error(int result, const char *msg);
 void error_and_exit(const char *msg);
-
-void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_manager_t *rdma_ctx);
 
 rdma_context_manager_t rdma_ctxm = {0};
 sk_context_t sk_ctx = {0};
@@ -134,83 +133,7 @@ int main()
 
     return 0;
 }
-/*
-void wait_for_msg(bpf_context_t *bpf_ctx, sk_context_t *sk_ctx, rdma_context_manager_t *rdma_ctx)
-{
-    char buffer[MAX_SIZE_SK_MSG];
-    fd_set read_fds, temp_fds;
-    ssize_t bytes_received;
 
-    // Initialize the file descriptor set
-    FD_ZERO(&read_fds);
-    FD_SET(sk_ctx->server_sk_fd, &read_fds);
-
-    for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
-        if (sk_ctx->client_sk_fd[i].fd >= 0)
-            FD_SET(sk_ctx->client_sk_fd[i].fd, &read_fds);
-
-    // Set the maximum file descriptor
-    int max_fd = sk_ctx->server_sk_fd;
-    for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
-        if (sk_ctx->client_sk_fd[i].fd > max_fd)
-            max_fd = sk_ctx->client_sk_fd[i].fd;
-
-    int k = 1;
-    while (!STOP)
-    {
-        temp_fds = read_fds;
-
-        int activity = select(max_fd + 1, &temp_fds, NULL, NULL, NULL);
-        if (activity == -1)
-        {
-            if (errno == EINTR)
-            {
-                printf("Select interrupted by signal\n");
-                break;
-            }
-            perror("select error");
-            break;
-        }
-
-        // Handle data on client sockets
-        for (int i = 0; i <= max_fd; i++)
-        {
-            if (i != sk_ctx->server_sk_fd && FD_ISSET(i, &temp_fds))
-            {
-                bytes_received = recv(i, buffer, TEST_BUFFER_SIZE, 0); // TODO: ???????????????????
-                if (bytes_received <= 0)
-                {
-                    if (bytes_received == 0)
-                        printf("Client %d disconnected\n", i);
-                    else
-                        perror("recv error");
-
-                    close(i);
-                    FD_CLR(i, &read_fds);
-                }
-                else
-                {
-#ifdef PROXY_DEBUG
-                    buffer[bytes_received] = '\0';
-                    printf("-----------------------------------------------------------------------(%d)\n", k);
-                    k++;
-                    printf("Rx from fd:\t%d\n", i);
-                    // printf("Msg text: \t%s\n", buffer);
-#endif // PROXY_DEBUG
-                    struct sock_id app = get_app_sk_from_proxy_fd(bpf_ctx, sk_ctx->client_sk_fd, i);
-                    if (app.sip == 0)
-                    {
-                        printf("NO-");
-                        continue;
-                    }
-                    // Send the message using RDMA
-                    rdma_manager_send(rdma_ctx, buffer, bytes_received, app);
-                }
-            }
-        }
-    }
-}
-*/
 void handle_signal(int signal)
 {
     STOP = true;

@@ -156,7 +156,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 			goto is_target;
 
 		// check if SRC or DST IP is the one of the target IPs
-		key = sk_id.dip;
+		/*key = sk_id.dip;
 		int *is_ip_target_1 = bpf_map_lookup_elem(&target_ip, &key);
 		if (is_ip_target_1 != NULL)
 			goto is_target;
@@ -164,7 +164,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		key = sk_id.sip;
 		int *is_ip_target_2 = bpf_map_lookup_elem(&target_ip, &key);
 		if (is_ip_target_2 != NULL)
-			goto is_target;
+			goto is_target;*/
 
 #ifdef EBPF_DEBUG_MODE
 		bpf_printk("SKIP [SRC: %u:%u, DST: %u:%u] - not target port", sk_id.sip, sk_id.sport, sk_id.dip, sk_id.dport);

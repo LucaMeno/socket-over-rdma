@@ -108,7 +108,7 @@ int main()
 
     printf("Receved %d msg\n", i);
 
-    printf("Total bytes received: %u\n", tot_len);
+    printf("Total bytes received: %u/%u\n", tot_len, (u_int32_t)((u_int32_t)N_OF_MSG_CS * (u_int32_t)TEST_BUFFER_SIZE));
 
     printf("Total bytes received (in MB): %.2f\n", (float)tot_len / (1024 * 1024));
 

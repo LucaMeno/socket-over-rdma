@@ -717,7 +717,7 @@ void *rdma_manager_writer_thread(void *arg)
                         // connection closed
                         break;
                     }
-                    else if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    else
                     {
                         perror("recv error");
                         break; // no more data to read
@@ -727,6 +727,7 @@ void *rdma_manager_writer_thread(void *arg)
         }
     }
 
+    printf("Writer thread exiting\n");
     free(param->sk_to_monitor);
     param->sk_to_monitor = NULL;
     free(param);
@@ -766,24 +767,13 @@ void flush_thread(void *arg)
     if (!param->ctx)
         return manager_ret_void(NULL, "Context is NULL - flush_thread");
 
-    // thread sync
-    pthread_mutex_lock(&param->ctx->mtx_tx);
-    while (atomic_load(&param->ctx->is_ready) == FALSE || param->ctx->thread_busy_rx == TRUE)
-    {
-        pthread_cond_wait(&param->ctx->cond_tx, &param->ctx->mtx_tx);
-    }
-    param->ctx->thread_busy_rx = TRUE;
-    pthread_mutex_unlock(&param->ctx->mtx_tx);
-
     // read the data from the remote buffer
     rdma_ringbuffer_t *rb = (param->ctx->is_server == TRUE) ? param->ctx->ringbuffer_server : param->ctx->ringbuffer_client;
+    if (rb == NULL)
+        return manager_ret_void(NULL, "Ring buffer is NULL - flush_thread");
+
     if (rdma_flush_buffer(param->ctx, rb) != 0)
         return manager_ret_void(NULL, "Failed to flush - flush_thread");
-
-    pthread_mutex_lock(&param->ctx->mtx_tx);
-    param->ctx->thread_busy_rx = FALSE;
-    pthread_cond_signal(&param->ctx->cond_tx); // wake up the other threads waiting for this context
-    pthread_mutex_unlock(&param->ctx->mtx_tx);
 
     return;
 }
@@ -834,24 +824,59 @@ void *rdma_manager_polling_thread(void *arg)
 
                 uint32_t end_read_index = remote_w;
 
-                // launch a thread
-                thread_pool_arg_t *arg2 = malloc(sizeof(thread_pool_arg_t));
+                /*thread_pool_arg_t *arg2 = malloc(sizeof(thread_pool_arg_t));
                 if (arg2 == NULL)
                     return manager_ret_null(NULL, "Failed to allocate memory for thread pool arg - rdma_manager_polling_thread");
-
                 arg2->ctxm = param->ctxm;
                 arg2->ctx = ctx;
                 arg2->start_read_index = start_read_index;
                 arg2->end_read_index = end_read_index;
-
-                // add the task to the thread pool
                 if (thread_pool_add(param->ctxm->pool, read_thread, arg2) != 0)
                 {
-                    free(arg);
                     free(arg2);
-                    arg = NULL;
-                    arg2 = NULL;
                     return manager_ret_null(NULL, "Failed to add task to thread pool - rdma_manager_polling_thread");
+                }*/
+
+                int n_msg = end_read_index - start_read_index;
+                // TODO: check if n_msg is negative
+
+                uint32_t idx = start_read_index;
+                while (idx < end_read_index)
+                {
+                    thread_pool_arg_t *arg2 = malloc(sizeof(thread_pool_arg_t));
+                    if (arg2 == NULL)
+                        return manager_ret_null(NULL, "Failed to allocate memory for thread pool arg - rdma_manager_polling_thread");
+
+                    arg2->ctxm = param->ctxm;
+                    arg2->ctx = ctx;
+                    arg2->start_read_index = idx;
+
+                    int count = 0;
+                    while (idx < end_read_index)
+                    {
+                        int iterator = idx % MAX_N_MSG_PER_BUFFER;
+                        rdma_msg_t *msg = &rb_remote->data[iterator];
+
+                        if (msg->number_of_slots <= 0)
+                        {
+                            free(arg2);
+                            return manager_ret_null(NULL, "Invalid message slot count");
+                        }
+
+                        count += msg->number_of_slots;
+                        idx += msg->number_of_slots;
+
+                        if (count >= FLUSH_THRESHOLD_N)
+                            break;
+                    }
+
+                    arg2->end_read_index = idx;
+
+                    if (thread_pool_add(param->ctxm->pool, read_thread, arg2) != 0)
+                    {
+                        free(arg2);
+                        return manager_ret_null(NULL, "Failed to add task to thread pool - rdma_manager_polling_thread");
+                    }
                 }
             }
         }
@@ -897,7 +922,6 @@ void *rdma_manager_flush_thread(void *arg)
 
             if (now - ctx->last_flush_ns >= FLUSH_INTERVAL_MS)
             {
-                // continue;
                 //  post a new work request
                 //  launch a thread
                 thread_pool_arg_t *arg2 = malloc(sizeof(thread_pool_arg_t));
