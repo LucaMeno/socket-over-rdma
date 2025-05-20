@@ -79,7 +79,7 @@ int main(int argc, char **argv)
         {
             if (i == N_OF_MSG_CS)
                 break;
-            printf("Press Enter to continue...\n");
+            printf("%d - Press Enter to continue...\n", i);
             getchar();
         }
 

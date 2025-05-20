@@ -40,7 +40,8 @@
 // EBPF userspace
 
 // EBPF
-// #define EBPF_DEBUG_MODE
+//#define EBPF_DEBUG_SOCKET
+//#define EBPF_DEBUG_MSG
 // #define INTERCEPT_EVERYTHING
 
 #endif

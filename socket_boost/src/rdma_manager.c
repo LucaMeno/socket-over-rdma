@@ -666,6 +666,7 @@ void *rdma_manager_writer_thread(void *arg)
                 if (app.sip == 0)
                 {
                     printf("No app socket found - writer_thread\n");
+                    FD_CLR(fd, &read_fds);
                     continue;
                 }
 
@@ -703,11 +704,11 @@ void *rdma_manager_writer_thread(void *arg)
                     if (test > 0)
                     {
                         // there is data to read
-                        if (rdma_write_msg(ctx, fd, app) != 0)
+                        if (rdma_write_msg(ctx, fd, app) != 1)
                         {
                             printf("Client disconnected or error occurred - writer_thread\n");
-                            FD_CLR(fd, &read_fds);
-                            close(fd);
+                            /*FD_CLR(fd, &read_fds);
+                            close(fd);*/
                             continue;
                         }
                     }
@@ -719,8 +720,18 @@ void *rdma_manager_writer_thread(void *arg)
                     }
                     else
                     {
-                        perror("recv error");
-                        break; // no more data to read
+                        if (errno == EAGAIN || errno == EWOULDBLOCK)
+                        {
+                            break;
+                        }
+                        else
+                        {
+                            perror("recv error");
+                            // TODO
+                            /*FD_CLR(fd, &read_fds);
+                            close(fd);*/
+                            break;
+                        }
                     }
                 }
             }

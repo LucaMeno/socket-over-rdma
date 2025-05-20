@@ -123,9 +123,9 @@ int sockops_prog(struct bpf_sock_ops *skops)
 
 	if (sk == NULL)
 	{
-#ifdef EBPF_DEBUG_MODE
+#ifdef EBPF_DEBUG_SOCKET
 		bpf_printk("Socket is NULL, op: %d", op);
-#endif // EBPF_DEBUG_MODE
+#endif // EBPF_DEBUG_SOCKET
 		return 0;
 	}
 
@@ -166,16 +166,16 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		if (is_ip_target_2 != NULL)
 			goto is_target;*/
 
-#ifdef EBPF_DEBUG_MODE
+#ifdef EBPF_DEBUG_SOCKET
 		bpf_printk("SKIP [SRC: %u:%u, DST: %u:%u] - not target port", sk_id.sip, sk_id.sport, sk_id.dip, sk_id.dport);
-#endif // EBPF_DEBUG_MODE
+#endif // EBPF_DEBUG_SOCKET
 		return 0;
 
 	is_target:
 
-#ifdef EBPF_DEBUG_MODE
+#ifdef EBPF_DEBUG_SOCKET
 		bpf_printk("----------sockops-----------");
-#endif // EBPF_DEBUG_MODE
+#endif // EBPF_DEBUG_SOCKET
 
 		/* NOP */; //  just to avoid the warning
 
@@ -237,14 +237,14 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		// submit the ring buffer
 		bpf_ringbuf_submit(userdata_ptr, 0);
 
-#ifdef EBPF_DEBUG_MODE
+#ifdef EBPF_DEBUG_SOCKET
 		bpf_printk("ADD: APP [SRC: %u:%u, DST: %u:%u] <-> PROXY [SRC: %u:%u, DST: %u:%u]",
 				   sk_association_app.app.sip, sk_association_app.app.sport, sk_association_app.app.dip, sk_association_app.app.dport,
 				   sk_association_proxy.proxy.sip, sk_association_proxy.proxy.sport, sk_association_proxy.proxy.dip, sk_association_proxy.proxy.dport);
-#endif // EBPF_DEBUG_MODE
+#endif // EBPF_DEBUG_SOCKET
 
 		break;
-#ifdef EBPF_DEBUG_MODE
+#ifdef EBPF_DEBUG_SOCKET
 	case BPF_SOCK_OPS_STATE_CB:
 		// just in case....
 		bpf_printk("===========================================BPF_SOCK_OPS_STATE_CB===========================================");
@@ -253,7 +253,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 	default:
 		bpf_printk("Unknown socket operation: %d\n", op);
 		break;
-#endif // EBPF_DEBUG_MODE
+#endif // EBPF_DEBUG_SOCKET
 	}
 
 	return 0;
@@ -262,9 +262,9 @@ int sockops_prog(struct bpf_sock_ops *skops)
 SEC("sk_msg")
 int sk_msg_prog(struct sk_msg_md *msg)
 {
-#ifdef EBPF_DEBUG_MODE
+#ifdef EBPF_DEBUG_MSG
 	bpf_printk("----------sk_msg-----------");
-#endif // EBPF_DEBUG_MODE
+#endif // EBPF_DEBUG_MSG
 
 	// Only process IPv4 packets
 	if (msg->family != AF_INET)
@@ -304,9 +304,9 @@ int sk_msg_prog(struct sk_msg_md *msg)
 		sk_association_key.app = sk_id;
 	}
 
-#ifdef EBPF_DEBUG_MODE
+#ifdef EBPF_DEBUG_MSG
 	bpf_printk("SRC -- [SRC: %u:%u, DST: %u:%u]", sk_id.sip, sk_id.sport, sk_id.dip, sk_id.dport);
-#endif // EBPF_DEBUG_MODE
+#endif // EBPF_DEBUG_MSG
 
 	// Lookup socket association
 	sk_association_val = bpf_map_lookup_elem(&socket_association, &sk_association_key);
@@ -319,9 +319,9 @@ int sk_msg_prog(struct sk_msg_md *msg)
 	// Determine the destination socket ID based on the direction
 	struct sock_id dest_sk_id = (sk_id.dport == *server_port_ptr) ? sk_association_val->app : sk_association_val->proxy;
 
-#ifdef EBPF_DEBUG_MODE
+#ifdef EBPF_DEBUG_MSG
 	bpf_printk("DST -- [SRC: %u:%u, DST: %u:%u]", dest_sk_id.sip, dest_sk_id.sport, dest_sk_id.dip, dest_sk_id.dport);
-#endif // EBPF_DEBUG_MODE
+#endif // EBPF_DEBUG_MSG
 
 	// Redirect the message to the associated socket
 	ret = bpf_msg_redirect_hash(msg, &intercepted_sockets, &dest_sk_id, BPF_F_INGRESS);
@@ -331,9 +331,9 @@ int sk_msg_prog(struct sk_msg_md *msg)
 		return SK_PASS;
 	}
 
-#ifdef EBPF_DEBUG_MODE
+#ifdef EBPF_DEBUG_MSG
 	bpf_printk("Redirect msg to %s", (sk_id.dport == *server_port_ptr) ? "app" : "proxy");
-#endif // EBPF_DEBUG_MODE
+#endif // EBPF_DEBUG_MSG
 
 	return SK_PASS;
 }
@@ -361,12 +361,12 @@ int tcp_destroy_sock_prog(struct trace_event_raw_tcp_event_sk *ctx)
 		return 0;
 	}
 
-#ifdef EBPF_DEBUG_MODE
+#ifdef EBPF_DEBUG_SOCKET
 	bpf_printk("----------sk_close-----------");
 	bpf_printk("REM: APP [SRC: %u:%u, DST: %u:%u] <-> PROXY [SRC: %u:%u, DST: %u:%u]",
 			   sk_association_app.app.sip, sk_association_app.app.sport, sk_association_app.app.dip, sk_association_app.app.dport,
 			   sk_association_proxy->proxy.sip, sk_association_proxy->proxy.sport, sk_association_proxy->proxy.dip, sk_association_proxy->proxy.dport);
-#endif // EBPF_DEBUG_MODE
+#endif // EBPF_DEBUG_SOCKET
 
 	struct sock_id sk_id_proxy = sk_association_proxy->proxy;
 
@@ -397,10 +397,10 @@ int tcp_destroy_sock_prog(struct trace_event_raw_tcp_event_sk *ctx)
 	// the socket is not removed from the intercepted_sockets map
 	// because it will be automatically removed when the socket is closed
 
-#ifdef EBPF_DEBUG_MODE
+#ifdef EBPF_DEBUG_SOCKET
 	bpf_printk("Free sk: [SRC: %u:%u, DST: %u:%u]",
 			   sk_id_proxy.sip, sk_id_proxy.sport, sk_id_proxy.dip, sk_id_proxy.dport);
-#endif // EBPF_DEBUG_MODE
+#endif // EBPF_DEBUG_SOCKET
 
 	return 0;
 }

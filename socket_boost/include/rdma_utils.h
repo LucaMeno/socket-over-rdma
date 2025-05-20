@@ -21,12 +21,15 @@
 #include "config.h"
 
 #define UNUSED(x) (void)(x)
+#define RING_IDX(i) ((i) & (MAX_N_MSG_PER_BUFFER - 1))
 
 #define MAX_PAYLOAD_SIZE (1024 * 8)
+
+// POWER OF 2!!!!!!!!!!!
 #define MAX_N_MSG_PER_BUFFER (1024 * 8)
 
-#define FLUSH_THRESHOLD_N (128) // number of messages to flush
-#define FLUSH_INTERVAL_MS 100    // ms
+#define FLUSH_THRESHOLD_N (256) // number of messages to flush
+#define FLUSH_INTERVAL_MS 100   // ms
 
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))

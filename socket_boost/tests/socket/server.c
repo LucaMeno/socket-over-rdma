@@ -7,6 +7,18 @@
 #include <sys/time.h>
 #include "config.h"
 
+ssize_t recv_all(int socket, void *buffer, size_t length) {
+    size_t total_received = 0;
+    while (total_received < length) {
+        ssize_t bytes = recv(socket, (char *)buffer + total_received, length - total_received, 0);
+        if (bytes <= 0) {
+            return bytes; // error or disconnect
+        }
+        total_received += bytes;
+    }
+    return total_received;
+}
+
 int main()
 {
     int server_fd, new_socket;
@@ -66,7 +78,8 @@ int main()
     ssize_t bytes_received;
     while (1)
     {
-        bytes_received = recv(new_socket, buffer, TEST_BUFFER_SIZE, 0);
+        bytes_received = recv_all(new_socket, buffer, TEST_BUFFER_SIZE);
+
         if (bytes_received <= 0)
         {
             printf("Client disconnected or error occurred.\n");

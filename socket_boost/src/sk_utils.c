@@ -112,6 +112,8 @@ void *client_thread(void *arg)
     sk_ctx->client_sk_fd[client_id].sk_id.dip = sk_ctx->server_ip;
     sk_ctx->client_sk_fd[client_id].sk_id.dport = sk_ctx->server_port;
 
+    set_socket_nonblocking(client_fd);
+
     // Wait for condition variable
     pthread_mutex_lock(&mutex);
     while (shared == 0)
