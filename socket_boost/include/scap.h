@@ -11,12 +11,11 @@
 #include "common.h"
 #include "sk_utils.h"
 #include "config.h"
-// #include "rdma_manager.h"
 
 #define CGROUP_PATH "/sys/fs/cgroup"
 #define PATH_TO_BPF_OBJ_FILE "build/obj/scap.bpf.o"
 
-#define POOL_RB_INTERVAL 100
+#define POOL_RB_INTERVAL 100 // milliseconds
 
 typedef struct
 {
@@ -31,7 +30,7 @@ typedef struct
     // PROGS
     int prog_fd_sockops;
     int prog_fd_sk_msg;
-    int cgroup_fd;    
+    int cgroup_fd;
     struct bpf_program *prog_tcp_destroy_sock;
     struct bpf_link *tcp_destroy_link;
 
@@ -51,21 +50,17 @@ typedef struct
     EventHandler new_sk_event_handler;
 } bpf_context_t;
 
-int setup_bpf(bpf_context_t *ctx, EventHandler event_handler);
-int run_bpf(bpf_context_t *ctx);
-int cleanup_bpf(bpf_context_t *ctx);
-int set_target_ports(bpf_context_t *ctx, __u16 target_p[], int n, __u16 server_port);
-int set_target_ip(bpf_context_t *ctx, __u32 target_ip[], int n);
-int push_sock_to_map(bpf_context_t *ctx, client_sk_t client_sks[], int n);
+int bpf_init(bpf_context_t *ctx, EventHandler event_handler);
+int bpf_run(bpf_context_t *ctx);
+int bpf_destroy(bpf_context_t *ctx);
+int bpf_set_target_ports(bpf_context_t *ctx, __u16 target_p[], int n, __u16 server_port);
+int bpf_set_target_ip(bpf_context_t *ctx, __u32 target_ip[], int n);
+int bpf_push_sock_to_map(bpf_context_t *ctx, client_sk_t client_sks[], int n);
 
-struct sock_id get_proxy_sk_from_app_sk(bpf_context_t *ctx, struct sock_id app_sk);
-
-struct sock_id get_app_sk_from_proxy_fd(bpf_context_t *ctx, client_sk_t client_sks[], int target_fd);
-
-struct sock_id get_app_sk_from_proxy_sk(bpf_context_t *ctx, struct sock_id proxy_sk);
-
-int get_proxy_fd_from_app_sk(bpf_context_t *ctx, struct sock_id app_sk);
-
-int add_app_sk_to_proxy_fd(bpf_context_t *ctx, struct sock_id app_sk, int proxy_fd);
+struct sock_id bpf_get_proxy_sk_from_app_sk(bpf_context_t *ctx, struct sock_id app_sk);
+struct sock_id bpf_get_app_sk_from_proxy_fd(bpf_context_t *ctx, client_sk_t client_sks[], int target_fd);
+struct sock_id bpf_get_app_sk_from_proxy_sk(bpf_context_t *ctx, struct sock_id proxy_sk);
+int bpf_get_proxy_fd_from_app_sk(bpf_context_t *ctx, struct sock_id app_sk);
+int bpf_add_app_sk_to_proxy_fd(bpf_context_t *ctx, struct sock_id app_sk, int proxy_fd);
 
 #endif // SCAP_H

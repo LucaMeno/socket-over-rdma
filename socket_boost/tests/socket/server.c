@@ -114,7 +114,7 @@ int main()
             break;
         }
 
-#ifdef SERVER_SEND_RESP
+#ifdef C_S_RESPONSE
         send(new_socket, buffer, TEST_BUFFER_SIZE, 0);
 #endif
     }

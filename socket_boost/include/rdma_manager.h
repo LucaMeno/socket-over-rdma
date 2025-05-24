@@ -29,14 +29,20 @@
 #define MAX_LOOP_WITH_NO_MSG 100000       // 100k
 #define POLLING_TIME_LIMIT_MS (1000 * 10) // 10 seconds
 
+#define FLUSH_INTERVAL_MS 100 // ms
+
 #define N_THREADS_POOL 15
-#define N_WRITER_THREADS NUMBER_OF_SOCKETS
+#define N_WRITER_THREADS NUMBER_OF_SOCKETS // 1 thread per proxy socket
+
+#define INITIAL_CONTEXT_NUMBER 10
+#define N_CONTEXT_REALLOC 5
 
 typedef struct task task_t;
 typedef struct thread_pool thread_pool_t;
 typedef struct rdma_context_manager rdma_context_manager_t;
-typedef struct thread_pool_arg thread_pool_arg_t;
 typedef struct writer_thread_arg writer_thread_arg_t;
+typedef struct reader_thread_arg reader_thread_arg_t;
+typedef struct flush_thread_arg flush_thread_arg_t;
 
 struct thread_pool
 {
@@ -60,16 +66,15 @@ struct rdma_context_manager
     client_sk_t *client_sks;              // list of client sockets
     bpf_context_t *bpf_ctx;               // BPF context
 
-    pthread_t notification_thread; // thread for the notification
-    pthread_t server_thread;       // thread for the server
-    pthread_t polling_thread;      // thread for polling the circular buffer
-    pthread_t flush_thread;        // thread for flushing the circular buffer
+    pthread_t notification_thread;             // thread for the notification
+    pthread_t server_thread;                   // thread for the server
+    pthread_t polling_thread;                  // thread for polling the circular buffer
+    pthread_t flush_thread;                    // thread for flushing the circular buffer
+    pthread_t writer_thread[N_WRITER_THREADS]; // thread for writing to the circular buffer
 
     pthread_mutex_t mtx_polling;
     pthread_cond_t cond_polling;   // condition variable for polling
     int is_polling_thread_running; // flag to indicate if the polling thread is running
-
-    pthread_t writer_thread[N_WRITER_THREADS]; // thread for writing to the circular buffer
 
     atomic_uint stop_threads; // flag to stop the threads
 };
@@ -81,22 +86,23 @@ struct writer_thread_arg
     int n;
 };
 
-struct thread_pool_arg
+struct reader_thread_arg
 {
     rdma_context_manager_t *ctxm;
-    rdma_context_t *ctx;            // context to use
-    struct sock_id original_socket; // id of the socket
-    char *tx_data;
-    int tx_size;
-    int fd;
+    rdma_context_t *ctx; // context to use
     uint32_t start_read_index;
     uint32_t end_read_index;
+};
+
+struct flush_thread_arg
+{
+    rdma_context_t *ctx; // context to use
 };
 
 struct task
 {
     void (*function)(void *);
-    thread_pool_arg_t *arg;
+    void *arg;
     struct task *next;
 };
 

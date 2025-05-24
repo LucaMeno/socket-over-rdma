@@ -19,7 +19,7 @@ int scap_ret_err(bpf_context_t *bpf_ctx, char *msg)
     if (bpf_ctx)
     {
         printf("Cleaning up BPF resources...\n");
-        cleanup_bpf(bpf_ctx);
+        bpf_destroy(bpf_ctx);
     }
     return -1;
 }
@@ -46,8 +46,14 @@ void *bpf_ringbuf_poll(void *ctx)
     while (bpf_ctx->stop_threads == FALSE)
     {
         err = ring_buffer__poll(bpf_ctx->rb, POOL_RB_INTERVAL);
+
         if (err < 0)
         {
+            if (bpf_ctx->stop_threads == TRUE)
+            {
+                // if we are stopping, just exit the loop
+                break;
+            }
             perror("Failed to poll ring buffer - bpf_ringbuf_poll");
             break;
         }
@@ -69,7 +75,7 @@ int bpf_launch_poll_thread(bpf_context_t *ctx)
     return 0;
 }
 
-int setup_bpf(bpf_context_t *ctx, EventHandler event_handler)
+int bpf_init(bpf_context_t *ctx, EventHandler event_handler)
 {
     if (!ctx)
         return -1;
@@ -188,9 +194,13 @@ int setup_bpf(bpf_context_t *ctx, EventHandler event_handler)
     return 0;
 }
 
-int cleanup_bpf(bpf_context_t *ctx)
+int bpf_destroy(bpf_context_t *ctx)
 {
     int err = 0;
+    if (!ctx)
+        return -1;
+
+    ctx->stop_threads = TRUE;
 
     // Detach sk_msg_prog from sockmap
     if (ctx->intercepted_sk_fd > 0)
@@ -233,7 +243,7 @@ int cleanup_bpf(bpf_context_t *ctx)
     return 0;
 }
 
-int run_bpf(bpf_context_t *ctx)
+int bpf_run(bpf_context_t *ctx)
 {
     int err = 0;
 
@@ -260,7 +270,7 @@ int run_bpf(bpf_context_t *ctx)
     return 0;
 }
 
-int set_target_ports(bpf_context_t *ctx, __u16 target_ports[], int n, __u16 server_port)
+int bpf_set_target_ports(bpf_context_t *ctx, __u16 target_ports[], int n, __u16 server_port)
 {
     int val = 1;
     int err = 0;
@@ -282,7 +292,7 @@ int set_target_ports(bpf_context_t *ctx, __u16 target_ports[], int n, __u16 serv
     return 0;
 }
 
-int push_sock_to_map(bpf_context_t *ctx, client_sk_t client_sks[], int n)
+int bpf_push_sock_to_map(bpf_context_t *ctx, client_sk_t client_sks[], int n)
 {
     int err = 0;
     for (int i = 0; i < n; i++)
@@ -300,7 +310,7 @@ int push_sock_to_map(bpf_context_t *ctx, client_sk_t client_sks[], int n)
     return 0;
 }
 
-struct sock_id get_proxy_sk_from_app_sk(bpf_context_t *ctx, struct sock_id app_sk)
+struct sock_id bpf_get_proxy_sk_from_app_sk(bpf_context_t *ctx, struct sock_id app_sk)
 {
     struct association_t app = {0};
     struct association_t proxy = {0};
@@ -312,7 +322,7 @@ struct sock_id get_proxy_sk_from_app_sk(bpf_context_t *ctx, struct sock_id app_s
     return proxy.proxy;
 }
 
-int set_target_ip(bpf_context_t *ctx, __u32 target_ip[], int n)
+int bpf_set_target_ip(bpf_context_t *ctx, __u32 target_ip[], int n)
 {
     int val = 1;
     int err = 0;
@@ -328,7 +338,7 @@ int set_target_ip(bpf_context_t *ctx, __u32 target_ip[], int n)
     return 0;
 }
 
-struct sock_id get_app_sk_from_proxy_fd(bpf_context_t *ctx, client_sk_t client_sks[], int target_fd)
+struct sock_id bpf_get_app_sk_from_proxy_fd(bpf_context_t *ctx, client_sk_t client_sks[], int target_fd)
 {
     struct sock_id app_sk = {0};
 
@@ -376,7 +386,7 @@ struct sock_id get_app_sk_from_proxy_fd(bpf_context_t *ctx, client_sk_t client_s
     return sk_assoc_v.app;
 }
 
-struct sock_id get_app_sk_from_proxy_sk(bpf_context_t *ctx, struct sock_id proxy_sk)
+struct sock_id bpf_get_app_sk_from_proxy_sk(bpf_context_t *ctx, struct sock_id proxy_sk)
 {
     struct association_t app = {0};
     struct association_t proxy = {0};
@@ -388,14 +398,14 @@ struct sock_id get_app_sk_from_proxy_sk(bpf_context_t *ctx, struct sock_id proxy
     return app.app;
 }
 
-int get_proxy_fd_from_app_sk(bpf_context_t *ctx, struct sock_id app_sk)
+int bpf_get_proxy_fd_from_app_sk(bpf_context_t *ctx, struct sock_id app_sk)
 {
     int fd = -1;
     int err = bpf_map_lookup_elem(ctx->sock_proxyfd_association_fd, &app_sk, &fd);
     return fd;
 }
 
-int add_app_sk_to_proxy_fd(bpf_context_t *ctx, struct sock_id app_sk, int proxy_fd)
+int bpf_add_app_sk_to_proxy_fd(bpf_context_t *ctx, struct sock_id app_sk, int proxy_fd)
 {
     int err = bpf_map_update_elem(ctx->sock_proxyfd_association_fd, &app_sk, &proxy_fd, BPF_ANY);
     if (err != 0)

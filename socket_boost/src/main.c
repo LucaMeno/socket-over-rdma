@@ -47,7 +47,7 @@ int fun(void *ctx, void *data, size_t len)
     if (user_data->sockops_op == BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB)
     {
         int ret;
-        int proxy_fd = get_proxy_fd_from_sockid(&sk_ctx, user_data->association.proxy);
+        int proxy_fd = sk_get_proxy_fd_from_sockid(&sk_ctx, user_data->association.proxy);
 
         if (proxy_fd < 0)
         {
@@ -71,7 +71,7 @@ int main()
         .ctx = NULL,
         .handle_event = fun};
 
-    err = setup_bpf(&bpf_ctx, handler);
+    err = bpf_init(&bpf_ctx, handler);
 
     check_error(err, "");
     printf("eBPF program setup complete\n");
@@ -90,23 +90,23 @@ int main()
 
     int nip = sizeof(ips_to_set) / sizeof(ips_to_set[0]);
 
-    err = set_target_ports(&bpf_ctx, ports_to_set, nport, PROXY_PORT);
+    err = bpf_set_target_ports(&bpf_ctx, ports_to_set, nport, PROXY_PORT);
     check_error(err, "");
     printf("Target ports set\n");
 
-    err = set_target_ip(&bpf_ctx, ips_to_set, nip);
+    err = bpf_set_target_ip(&bpf_ctx, ips_to_set, nip);
     check_error(err, "");
     printf("Target IPs set\n");
 
-    err = run_bpf(&bpf_ctx);
+    err = bpf_run(&bpf_ctx);
     check_error(err, "");
     printf("eBPF program attached to socket\n");
 
-    err = setup_sockets(&sk_ctx, PROXY_PORT, inet_addr(SERVER_IP));
+    err = sk_init(&sk_ctx, PROXY_PORT, inet_addr(SERVER_IP));
     check_error(err, "");
     printf("Sockets setup complete\n");
 
-    err = push_sock_to_map(&bpf_ctx, sk_ctx.client_sk_fd, NUMBER_OF_SOCKETS);
+    err = bpf_push_sock_to_map(&bpf_ctx, sk_ctx.client_sk_fd, NUMBER_OF_SOCKETS);
     check_error(err, "");
     printf("Map updated\n");
 
@@ -119,17 +119,17 @@ int main()
         sleep(1);
     }
 
-    err = cleanup_socket(&sk_ctx);
+    err = sk_destroy(&sk_ctx);
     check_error(err, "");
     printf("Socket closed\n");
 
-    err = cleanup_bpf(&bpf_ctx);
+    err = bpf_destroy(&bpf_ctx);
     check_error(err, "");
     printf("Successfully detached eBPF program\n");
 
-    /*err = rdma_manager_destroy(&rdma_ctxm);
+    err = rdma_manager_destroy(&rdma_ctxm);
     check_error(err, "");
-    printf("RDMA manager destroyed\n");*/
+    printf("RDMA manager destroyed\n");
 
     return 0;
 }

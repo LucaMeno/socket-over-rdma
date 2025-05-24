@@ -13,17 +13,13 @@
 #define RDMA_DEBUG_READ
 // #define RDMA_DEBUG_PARSE_MSG
 // #define RDMA_DEBUG_WRITE_IN_MSG
-// #define RDMA_DEBUG_WRITE_MSG
 
 // CS TEST
 #define TEST_SERVER_PORT 7777
 #define TEST_BUFFER_SIZE 2048 // size of the msg sent
-
-// #define SERVER_SEND_RESP // server sends a response to the client
-// #define CLIENT_WAIT_RESP // client waits for a response from the server
-
-// #define CLIENT_CHECK_RESP
+//#define C_S_RESPONSE // server sends a response to the client and client waits for it
 #define N_OF_MSG_CS (10000000)
+
 #define CLIENT_CHRONO // client measures the time taken to send CLIENT_GAP messages
 #define SERVER_CHRONO // server measures the time taken to receive CLIENT_GAP messages
 

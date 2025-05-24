@@ -9,50 +9,18 @@ atomic_uint RX_COUNT = 0; // for debugging
 atomic_uint RX_SIZE = 0;  // for debugging
 
 // PRIVATE FUNCTIONS
+
+// UTILS
 int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code);
+int rdma_poll_cq_send(rdma_context_t *ctx);
 
-/** MISC */
+// ERROR HANDLING
+int rdma_ret_err(rdma_context_t *rdma_ctx, char *msg);
 
-int rdma_ret_err(rdma_context_t *rdma_ctx, char *msg)
-{
-    fprintf(stderr, "ERROR: %s\n", msg);
-    if (rdma_ctx)
-    {
-        /*printf("Cleaning up RMDA...\n");
-        rdma_context_close(rdma_ctx);*/
-    }
-    return -1;
-}
+// COMMUNICATION
+int rdma_parse_msg(bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *msg);
 
-void *rdma_ret_null(rdma_context_t *rdma_ctx, char *msg)
-{
-    fprintf(stderr, "ERROR: %s\n", msg);
-    if (rdma_ctx)
-    {
-        /*printf("Cleaning up RMDA...\n");
-        rdma_context_close(rdma_ctx);*/
-    }
-    return NULL;
-}
-
-const char *get_op_name(rdma_communication_code_t code)
-{
-    switch (code)
-    {
-    case RDMA_DATA_READY:
-        return "RDMA_DATA_READY";
-    case EXCHANGE_REMOTE_INFO:
-        return "EXCHANGE_REMOTE_INFO";
-    case RDMA_CLOSE_CONTEXT:
-        return "RDMA_CLOSE_CONTEXT";
-    case NONE:
-        return "NONE";
-    default:
-        return "UNKNOWN";
-    }
-}
-
-/** SERVER */
+/** CLIENT - SERVER */
 
 int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel *server_ec)
 {
@@ -132,8 +100,6 @@ int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel
 
     return 0;
 }
-
-/** CLIENT */
 
 int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port)
 {
@@ -339,8 +305,11 @@ int rdma_client_connect(rdma_context_t *cctx)
 
 /** SETUP */
 
-int rdma_context_close(rdma_context_t *ctx)
+int rdma_context_destroy(rdma_context_t *ctx)
 {
+    if (ctx == NULL)
+        return 0; // nothing to destroy
+
     if (ctx->conn)
     {
         rdma_destroy_qp(ctx->conn);
@@ -358,6 +327,7 @@ int rdma_context_close(rdma_context_t *ctx)
         free(ctx->buffer);
     if (ctx->client_ec)
         rdma_destroy_event_channel(ctx->client_ec);
+
     ctx->conn = NULL;
     ctx->pd = NULL;
     ctx->mr = NULL;
@@ -373,19 +343,17 @@ int rdma_context_close(rdma_context_t *ctx)
     pthread_mutex_destroy(&ctx->mtx_rx);
     pthread_cond_destroy(&ctx->cond_rx);
 
-    pthread_mutex_destroy(&ctx->mtx_polling);
-
     pthread_mutex_destroy(&ctx->mtx_flush);
+
+    pthread_mutex_destroy(&ctx->mtx_test);
 
     return 0;
 }
 
-int rdma_setup_context(rdma_context_t *ctx)
+int rdma_context_init(rdma_context_t *ctx)
 {
-    pthread_mutex_init(&ctx->mtx_test, NULL);
-
-    // Initialize the slices
     atomic_store(&ctx->is_ready, FALSE);
+    ctx->remote_ip = 0;
     ctx->buffer = NULL;
     ctx->buffer_size = 0;
     ctx->conn = NULL;
@@ -393,28 +361,26 @@ int rdma_setup_context(rdma_context_t *ctx)
     ctx->mr = NULL;
     ctx->recv_cq = NULL;
     ctx->send_cq = NULL;
-    ctx->remote_ip = 0;
     ctx->remote_rkey = 0;
     ctx->remote_addr = 0;
-
-    pthread_mutex_init(&ctx->mtx_tx, NULL);
-    pthread_cond_init(&ctx->cond_tx, NULL);
-    ctx->thread_busy_tx = FALSE;
-
-    pthread_mutex_init(&ctx->mtx_rx, NULL);
-    pthread_cond_init(&ctx->cond_rx, NULL);
-    ctx->thread_busy_rx = FALSE;
-
-    pthread_mutex_init(&ctx->mtx_polling, NULL);
+    ctx->client_ec = NULL;
 
     ctx->ringbuffer_client = NULL;
     ctx->ringbuffer_server = NULL;
+
+    pthread_mutex_init(&ctx->mtx_tx, NULL);
+    pthread_cond_init(&ctx->cond_tx, NULL);
+
+    pthread_mutex_init(&ctx->mtx_rx, NULL);
+    pthread_cond_init(&ctx->cond_rx, NULL);
 
     ctx->last_flush_ns = 0;
     pthread_mutex_init(&ctx->mtx_flush, NULL);
 
     atomic_store(&ctx->flush_threshold, MIN_FLUSH_THRESHOLD);
     atomic_store(&ctx->n_msg_sent, 0);
+
+    pthread_mutex_init(&ctx->mtx_test, NULL);
 
     return 0;
 }
@@ -467,6 +433,16 @@ int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code)
                get_op_name(notification->from_client.code), notification->from_client.code);
     }
 #endif // RDMA_DEBUG_SR
+    return 0;
+}
+
+int rdma_send_data_ready(rdma_context_t *ctx)
+{
+    // TODO: count the number of notification sent to notice the disconnection
+    printf("Sending data ready notification\n");
+    if (rdma_send_notification(ctx, RDMA_DATA_READY) != 0)
+        return rdma_ret_err(ctx, "Failed to send notification - rdma_send_data_ready");
+
     return 0;
 }
 
@@ -552,7 +528,7 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
     {
         // wrap-around
         uintptr_t batch_start = (uintptr_t)&ringbuffer->data[r_idx];
-        size_t batch_size = (MAX_N_MSG_PER_BUFFER - r_idx) * sizeof(rdma_msg_t);
+        size_t batch_size = (MAX_MSG_BUFFER - r_idx) * sizeof(rdma_msg_t);
 
         uintptr_t remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
 
@@ -656,7 +632,7 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
         end_w_index = atomic_load(&ringbuffer->remote_read_index);
 
         uint32_t used = start_w_index - end_w_index; // wrap-around safe
-        available_space = MAX_N_MSG_PER_BUFFER - used - 1;
+        available_space = MAX_MSG_BUFFER - used - 1;
 
         if (available_space >= 1)
             break;
@@ -671,13 +647,13 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
     }
 
     // modulo the indexes
-    start_w_index &= (MAX_N_MSG_PER_BUFFER - 1); // start_w_index %= MAX_N_MSG_PER_BUFFER;
-    end_w_index &= (MAX_N_MSG_PER_BUFFER - 1);
+    start_w_index &= (MAX_MSG_BUFFER - 1); // start_w_index %= MAX_MSG_BUFFER;
+    end_w_index &= (MAX_MSG_BUFFER - 1);
 
     rdma_msg_t *msg = &ringbuffer->data[start_w_index];
 
     // check if there is enough CONTIGUOUS space to write the message
-    uint32_t contiguous_space = MAX_N_MSG_PER_BUFFER - start_w_index;
+    uint32_t contiguous_space = MAX_MSG_BUFFER - start_w_index;
 
     // leave at least one slot free
     if (contiguous_space > available_space)
@@ -775,10 +751,10 @@ skip_second_read:
     // update the local write index
     atomic_fetch_add(&ringbuffer->local_write_index, number_of_msg);
 
-    uint32_t actual_index = atomic_load(&ringbuffer->local_write_index) % MAX_N_MSG_PER_BUFFER;
-    uint32_t last_flush_index = atomic_load(&ringbuffer->local_read_index) % MAX_N_MSG_PER_BUFFER;
+    uint32_t actual_index = atomic_load(&ringbuffer->local_write_index) % MAX_MSG_BUFFER;
+    uint32_t last_flush_index = atomic_load(&ringbuffer->local_read_index) % MAX_MSG_BUFFER;
 
-    uint32_t msg_to_flush = (actual_index - last_flush_index) & (MAX_N_MSG_PER_BUFFER - 1);
+    uint32_t msg_to_flush = (actual_index - last_flush_index) & (MAX_MSG_BUFFER - 1);
 
     pthread_mutex_unlock(&ctx->mtx_tx);
 
@@ -795,7 +771,7 @@ skip_second_read:
 int rdma_parse_msg(bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *msg)
 {
     // retrive the proxy_fd
-    int fd = get_proxy_fd_from_app_sk(bpf_ctx, msg->original_sk_id);
+    int fd = bpf_get_proxy_fd_from_app_sk(bpf_ctx, msg->original_sk_id);
     if (fd > 0)
     {
         send(fd, msg->msg, msg->msg_size, 0);
@@ -812,7 +788,7 @@ int rdma_parse_msg(bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *
         swapped.sport = msg->original_sk_id.dport;
 
         // find the corresponding proxy socket
-        struct sock_id proxy_sk_id = get_proxy_sk_from_app_sk(bpf_ctx, swapped);
+        struct sock_id proxy_sk_id = bpf_get_proxy_sk_from_app_sk(bpf_ctx, swapped);
 
 #ifdef RDMA_DEBUG_PARSE_MSG
         printf("O [%u:%u -> %u:%u] <-> P [%u:%u -> %u:%u]\n",
@@ -832,7 +808,7 @@ int rdma_parse_msg(bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *
                 client_sks[i].sk_id.dport == proxy_sk_id.dport)
             {
                 // update the map with the new socket
-                add_app_sk_to_proxy_fd(bpf_ctx, msg->original_sk_id, client_sks[i].fd);
+                bpf_add_app_sk_to_proxy_fd(bpf_ctx, msg->original_sk_id, client_sks[i].fd);
 
                 // found the socket
                 send(client_sks[i].fd, msg->msg, msg->msg_size, 0);
@@ -868,7 +844,7 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
         return 0;
     }
 
-    uint32_t number_of_msg = (end_read_index + MAX_N_MSG_PER_BUFFER - start_read_index) % MAX_N_MSG_PER_BUFFER;
+    uint32_t number_of_msg = (end_read_index + MAX_MSG_BUFFER - start_read_index) % MAX_MSG_BUFFER;
 
     uint32_t original_start_read_index = start_read_index;
     uint32_t original_end_read_index = end_read_index;
@@ -929,6 +905,8 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
     return 0;
 }
 
+/** POLLING */
+
 int rdma_poll_cq_send(rdma_context_t *ctx)
 {
     if (ctx->send_cq == NULL)
@@ -949,24 +927,6 @@ int rdma_poll_cq_send(rdma_context_t *ctx)
         fprintf(stderr, "CQ error: %s (%d)\n", ibv_wc_status_str(wc.status), wc.status);
         return rdma_ret_err(ctx, "Failed to poll CQ - rdma_poll_cq_send");
     }
-
-    return 0;
-}
-
-int rdma_poll_memory(volatile uint32_t *flag_to_poll)
-{
-    int i = 1;
-    while (*flag_to_poll == FALSE)
-    {
-        // TODO: add a timeout in some way
-        if (i % 1000 == 0)
-        {
-            __asm__ __volatile__("pause" ::: "memory");
-        }
-    }
-
-    // consume the flag
-    *flag_to_poll = FALSE;
 
     return 0;
 }
@@ -1006,14 +966,23 @@ int rdma_set_polling_status(rdma_context_t *ctx, uint32_t is_polling)
     return 0;
 }
 
-int rdma_send_data_ready(rdma_context_t *ctx)
-{
-    // TODO: count the number of notification sent to notice the disconnection
-    printf("Sending data ready notification\n");
-    if (rdma_send_notification(ctx, RDMA_DATA_READY) != 0)
-        return rdma_ret_err(ctx, "Failed to send notification - rdma_send_data_ready");
+/** MISC */
 
-    return 0;
+const char *get_op_name(rdma_communication_code_t code)
+{
+    switch (code)
+    {
+    case RDMA_DATA_READY:
+        return "RDMA_DATA_READY";
+    case EXCHANGE_REMOTE_INFO:
+        return "EXCHANGE_REMOTE_INFO";
+    case RDMA_CLOSE_CONTEXT:
+        return "RDMA_CLOSE_CONTEXT";
+    case NONE:
+        return "NONE";
+    default:
+        return "UNKNOWN";
+    }
 }
 
 uint64_t get_time_ms()
@@ -1021,4 +990,17 @@ uint64_t get_time_ms()
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000;
+}
+
+/** ERRORS */
+
+int rdma_ret_err(rdma_context_t *rdma_ctx, char *msg)
+{
+    fprintf(stderr, "ERROR: %s\n", msg);
+    if (rdma_ctx)
+    {
+        /*printf("Cleaning up RMDA...\n");
+        rdma_context_destroy(rdma_ctx);*/
+    }
+    return -1;
 }

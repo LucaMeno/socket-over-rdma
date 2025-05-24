@@ -346,7 +346,7 @@ struct rdma_ringbuffer
     atomic_uint remote_read_index;
     atomic_uint local_write_index;
     atomic_uint local_read_index;
-    rdma_msg_t data[MAX_N_MSG_PER_BUFFER];
+    rdma_msg_t data[MAX_MSG_BUFFER];
 };
 
 

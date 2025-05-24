@@ -58,7 +58,7 @@ int main(int argc, char **argv)
 
 #ifdef WAIT_FOR_RDMA_CONN
     printf("Waiting for RDMA connection...\n");
-    sleep(3);
+    sleep(2);
 #endif // WAIT_FOR_RDMA_CONN
 
 #ifdef CLIENT_CHRONO
@@ -100,7 +100,7 @@ int main(int argc, char **argv)
             printf("%d %%\n", (i * 100) / N_OF_MSG_CS);
         }
 
-#ifdef CLIENT_WAIT_RESP
+#ifdef C_S_RESPONSE
         ssize_t len_rcv = recv(sock, msg_in, TEST_BUFFER_SIZE, 0);
         if (len_rcv < 0)
         {
@@ -108,7 +108,6 @@ int main(int argc, char **argv)
             break;
         }
 
-#ifdef CLIENT_CHECK_RESP
         if (len_rcv > 0)
         {
             if (memcmp(msg_out, msg_in, TEST_BUFFER_SIZE) != 0)
@@ -117,8 +116,7 @@ int main(int argc, char **argv)
                 break;
             }
         }
-#endif // CLIENT_CHECK_RESP
-#endif // CLIENT_WAIT_RESP
+#endif // C_S_RESPONSE
     }
 
     printf("FINISHED\n");

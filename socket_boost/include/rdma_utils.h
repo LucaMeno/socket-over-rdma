@@ -21,7 +21,9 @@
 #include "config.h"
 
 #define UNUSED(x) (void)(x)
-#define RING_IDX(i) ((i) & (MAX_N_MSG_PER_BUFFER - 1))
+#define RING_IDX(i) ((i) & (MAX_MSG_BUFFER - 1))
+
+// THRESHOLDS MANAGEMENT
 
 #define MIN_FLUSH_THRESHOLD 16
 #define MID_FLUSH_THRESHOLD 256
@@ -31,21 +33,16 @@
 #define USE_MID_FT_IF_SMALLER_THAN 512  // if the number of messages is smaller than this, use the mid flush threshold
 #define USE_MAX_FT_IF_SMALLER_THAN 2048 // if the number of messages is smaller than this, use the maximum flush threshold
 
-#define MSG_TO_READ_PER_THREAD 2048
-
+// BUFFER CONFIGURATION
+#define MAX_MSG_BUFFER (1024 * 8) // POWER OF 2!!!!!!!!!!!
 #define MAX_PAYLOAD_SIZE (1024 * 8)
 
-// POWER OF 2!!!!!!!!!!!
-#define MAX_N_MSG_PER_BUFFER (1024 * 8)
+// READ
+#define MSG_TO_READ_PER_THREAD 2048
 
-#define FLUSH_INTERVAL_MS 100 // ms
-
+// SIZE OF STRUCTURES
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
-
-#define INITIAL_CONTEXT_NUMBER 10
-#define N_CONTEXT_REALLOC 5
-
 #define MR_SIZE ((sizeof(rdma_ringbuffer_t) * 2) + NOTIFICATION_OFFSET_SIZE)
 
 typedef enum rdma_communication_code rdma_communication_code_t;
@@ -78,8 +75,6 @@ enum rdma_communication_code
 typedef struct
 {
     rdma_communication_code_t code; // code of the notification
-    int slice_offset;               // offset of the slice in the buffer
-    struct sock_id original_sk_id;  // id of the socket
 } notification_data_t;
 
 typedef struct
@@ -123,7 +118,7 @@ struct rdma_ringbuffer
     atomic_uint remote_read_index;
     atomic_uint local_write_index;
     atomic_uint local_read_index;
-    rdma_msg_t data[MAX_N_MSG_PER_BUFFER];
+    rdma_msg_t data[MAX_MSG_BUFFER];
 };
 
 struct rdma_context
@@ -147,59 +142,48 @@ struct rdma_context
     int is_server;        // TRUE if server, FALSE if client
     atomic_uint is_ready; // TRUE if the context is ready
 
-    pthread_mutex_t mtx_tx; // to be sure only one thread is using the context at a time
-    pthread_cond_t cond_tx; // condition variable for the threads
-    int thread_busy_tx;     // flag to indicate if the context is busy
+    pthread_mutex_t mtx_tx; // used to wait for the context to be ready
+    pthread_cond_t cond_tx; // used to signal the context is ready
 
-    pthread_mutex_t mtx_rx; // to be sure only one thread is using the context at a time
-    pthread_cond_t cond_rx; // condition variable for the threads
-    int thread_busy_rx;     // flag to indicate if the context is busy
+    pthread_mutex_t mtx_rx; // to protect the read operations
+    pthread_cond_t cond_rx; // used to protect the commit of the read operations (update remote read index)
 
-    pthread_mutex_t mtx_polling; // to be sure only one thread is using the context at a time
+    uint64_t last_flush_ns;    // last time the buffer was flushed, used to avoid flushing too often
+    pthread_mutex_t mtx_flush; // to protect the flush operations
+
+    pthread_mutex_t mtx_test; // mutex for testing purposes DEBUG
+
+    atomic_uint n_msg_sent; // counter for the number of messages sent, used to determinate the threshold for flushing
+    atomic_uint flush_threshold;
+
+    uint64_t time_start_polling; // time when the polling started, used to be able to stop the polling thread
+    uint32_t loop_with_no_msg;   // number of loops with no messages, used to stop the polling thread if there are no messages for a while
 
     rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server
     rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
-
-    uint64_t last_flush_ns;
-    pthread_mutex_t mtx_flush;
-
-    pthread_mutex_t mtx_test;
-
-    atomic_uint n_msg_sent;
-    atomic_uint flush_threshold;
-
-    uint64_t time_start_polling;
-    uint32_t loop_with_no_msg;
 };
 
 /** SETUP CONTEXT */
 
-// Server-side functions
+// CLIENT - SERVER
 int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel *server_ec);
-
-// Client-side functions
 int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port);
 int rdma_client_connect(rdma_context_t *cctx);
 
-int rdma_context_close(rdma_context_t *ctx);
-int rdma_setup_context(rdma_context_t *ctx);
+// SETUP
+int rdma_context_destroy(rdma_context_t *ctx);
+int rdma_context_init(rdma_context_t *ctx);
 
-/** COMMUNICATION */
-
-// send and receive
-
+// COMMUNICATION
 int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_socket);
-
 int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index);
-
 int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer);
+int rdma_send_data_ready(rdma_context_t *ctx);
 
-// polling
-int rdma_poll_cq_send(rdma_context_t *ctx);
-int rdma_poll_memory(volatile uint32_t *flag_to_poll);
+// POLLING
 int rdma_set_polling_status(rdma_context_t *ctx, uint32_t is_polling);
 
-int rdma_send_data_ready(rdma_context_t *ctx);
+// UTILS
 const char *get_op_name(rdma_communication_code_t code);
 uint64_t get_time_ms();
 

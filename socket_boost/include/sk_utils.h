@@ -43,12 +43,8 @@ typedef struct
     int client_id;
 } client_thread_arg_t;
 
-int setup_sockets(sk_context_t *sk_ctx, __u16 server_port, __u32 server_ip);
-void *client_thread(void *arg);
-int set_socket_nonblocking(int sockfd);
-// int wait_for_msg(sk_context_t *sk_ctx, void *handler);
-int cleanup_socket(sk_context_t *sk_ctx);
-
-int get_proxy_fd_from_sockid(sk_context_t *ctx, struct sock_id sk_id);
+int sk_init(sk_context_t *sk_ctx, __u16 server_port, __u32 server_ip);
+int sk_destroy(sk_context_t *sk_ctx);
+int sk_get_proxy_fd_from_sockid(sk_context_t *ctx, struct sock_id sk_id);
 
 #endif // SOCKET_UTILS_H

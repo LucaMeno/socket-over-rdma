@@ -2,21 +2,24 @@
 
 #include "sk_utils.h"
 
+// PRIVATE FUNCTIONS
 int shared = 0;
 pthread_mutex_t mutex;
 pthread_cond_t cond_var;
 
-int sk_ret_err(sk_context_t *sk_ctx, const char *msg)
+void *client_thread(void *arg);
+int set_socket_nonblocking(int sockfd);
 
+int sk_ret_err(sk_context_t *sk_ctx, const char *msg)
 {
     perror(msg);
     printf("Cleaning up resources...\n");
-    if (sk_ctx)
-        cleanup_socket(sk_ctx);
+    /*if (sk_ctx)
+        sk_destroy(sk_ctx);*/
     return -1;
 }
 
-int setup_sockets(sk_context_t *sk_ctx, __u16 server_port, __u32 server_ip)
+int sk_init(sk_context_t *sk_ctx, __u16 server_port, __u32 server_ip)
 {
     sk_ctx->server_port = server_port;
     sk_ctx->server_ip = server_ip;
@@ -136,7 +139,7 @@ int set_socket_nonblocking(int sockfd)
     return 0;
 }
 
-int cleanup_socket(sk_context_t *sk_ctx)
+int sk_destroy(sk_context_t *sk_ctx)
 {
     // Notify all threads to exit
     pthread_mutex_lock(&mutex);
@@ -158,7 +161,7 @@ int cleanup_socket(sk_context_t *sk_ctx)
     return 0;
 }
 
-int get_proxy_fd_from_sockid(sk_context_t *ctx, struct sock_id sk_id)
+int sk_get_proxy_fd_from_sockid(sk_context_t *ctx, struct sock_id sk_id)
 {
     for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
     {
