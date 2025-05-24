@@ -12,7 +12,7 @@ It allows for high-performance communication between processes using RDMA techno
 Install pre-requirements:
 ```sh
 sudo apt update
-sudo apt install -y make clang gcc libbpf-dev librdmacm-dev rdma-core libibverbs-dev git llvm -y
+sudo apt install make clang gcc libbpf-dev librdmacm-dev rdma-core libibverbs-dev git llvm -y
 ```
 
 Install bpftool:

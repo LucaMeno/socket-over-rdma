@@ -5,8 +5,8 @@
 int COUNT = 0;    // for debugging
 int TX_COUNT = 0; // for debugging
 uint32_t TX_SIZE = 0;
-int RX_COUNT = 0;     // for debugging
-uint32_t RX_SIZE = 0; // for debugging
+atomic_uint RX_COUNT = 0; // for debugging
+atomic_uint RX_SIZE = 0;  // for debugging
 
 // PRIVATE FUNCTIONS
 int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code);
@@ -413,6 +413,9 @@ int rdma_setup_context(rdma_context_t *ctx)
     ctx->last_flush_ns = 0;
     pthread_mutex_init(&ctx->mtx_flush, NULL);
 
+    atomic_store(&ctx->flush_threshold, MIN_FLUSH_THRESHOLD);
+    atomic_store(&ctx->n_msg_sent, 0);
+
     return 0;
 }
 
@@ -612,9 +615,13 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
     ctx->last_flush_ns = get_time_ms();
 
 #ifdef RDMA_DEBUG_FLUSH
-    uint32_t msg_to_flush = (actual_w - actual_r) & (MAX_N_MSG_PER_BUFFER - 1);
+    uint32_t msg_to_flush = RING_IDX(actual_w - actual_r);
     TX_COUNT += msg_to_flush;
-    printf("TX_COUNT: %d (+%d), TX_SIZE: %u\n", TX_COUNT, msg_to_flush, TX_SIZE);
+    printf("TX_COUNT: %d (+%d), TX_SIZE: %u Thrsh: %u\n",
+           TX_COUNT,
+           msg_to_flush,
+           TX_SIZE,
+           atomic_load(&ctx->flush_threshold));
 #endif // RDMA_DEBUG_FLUSH
 
     pthread_mutex_unlock(&ctx->mtx_flush);
@@ -763,6 +770,8 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
 
 skip_second_read:
 
+    atomic_fetch_add(&ctx->n_msg_sent, number_of_msg);
+
     // update the local write index
     atomic_fetch_add(&ringbuffer->local_write_index, number_of_msg);
 
@@ -773,7 +782,7 @@ skip_second_read:
 
     pthread_mutex_unlock(&ctx->mtx_tx);
 
-    if (msg_to_flush >= FLUSH_THRESHOLD_N)
+    if (msg_to_flush >= atomic_load(&ctx->flush_threshold))
     {
         // flush the buffer
         if (rdma_flush_buffer(ctx, ringbuffer) != 0)
@@ -874,8 +883,8 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
         rdma_parse_msg(bpf_ctx, client_sks, msg);
         i += msg->number_of_slots;
 #ifdef RDMA_DEBUG_READ
-        RX_COUNT += msg->number_of_slots;
-        RX_SIZE += msg->msg_size;
+        atomic_fetch_add(&RX_COUNT, msg->number_of_slots);
+        atomic_fetch_add(&RX_SIZE, msg->msg_size);
         n += msg->msg_size;
 #endif // RDMA_DEBUG_READ
     }
@@ -907,9 +916,9 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
 
 #ifdef RDMA_DEBUG_READ
     printf("RX_COUNT: %d (+%d), RX_SIZE: %u (+%u) rem_r_idx: %u\n",
-           RX_COUNT,
+           atomic_load(&RX_COUNT),
            number_of_msg,
-           RX_SIZE,
+           atomic_load(&RX_SIZE),
            n,
            (unsigned int)atomic_load(&ringbuffer->remote_read_index));
 #endif // RDMA_DEBUG_READ

@@ -3,7 +3,7 @@ CC = gcc
 CLANG_FLAGS = -g -O2 -target bpf
 BPFTOOL = bpftool
 LDLIBS = -lbpf -lrdmacm -libverbs
-PUSH = rsync -avz --delete /home/lmenozzi/poli/socket-over-rdma/socket_boost/build lmenozzi@192.168.17.86:/home/lmenozzi/poli/socket-over-rdma
+PUSH = rsync -avz --delete /home/lmenozzi/poli/socket-over-rdma/socket_boost/build lmenozzi@192.168.17.85:/home/lmenozzi/poli/socket-over-rdma
 #CFLAGS = -pg
 
 SRC = src

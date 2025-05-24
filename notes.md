@@ -256,3 +256,100 @@ sudo usermod -aG docker $USER
 newgrp docker
 
 ```
+
+
+```c
+
+// Writer thread
+while(1)
+{
+  Select(fds_to_monitor);
+
+  If(ISSET(fd))
+  {
+    while (1)
+    {
+      // consume the buffer
+      char dummy;
+      int size = recv(fd, dummy, 1, MSG_PEEK);
+      If(size > 0) rdma_write_msg(fd);
+    }
+  }
+}
+
+// write msg
+if(ringbuffer.size > 0)
+{
+  int contiguos_space = ....
+  msg.size = recv(fd, msg.data, contiguos_space, 0);
+  msg.socket_id = get_socket_id(fd);
+  mag.number_of_msg = msg.size / sizeof(msg);
+}
+
+...
+if(number_of_msg_written > THRESHOLD)
+{
+  // flush
+  write(buffer.data[start], number_of_msg_written);
+  // update the write index
+  write(new_write_index);
+  if(peerBuffer.flags.is_polling == FALSE) {
+    // send notification
+    send(data_ready);
+  }
+}
+
+// Reader thread
+while(1)
+{
+  if(read_index != write_index)
+  {
+    // add a read job
+    int n_msg = write_index - read_index;
+    int n_thread = n_msg / MAX_MSG_PER_THREAD;
+    for(int i = 0; i < n_thread; i++)
+    {
+      threadpool.add_job(read_job, 
+                      read_index + i * MAX_MSG_PER_THREAD,
+                      MAX_MSG_PER_THREAD);
+    }
+  }
+}
+
+// read job
+int i=0;
+for(start; i<start+number_of_msg;)
+{
+  *msg = read_buffer[i];
+  int dest_fd = lookup(swap(msg->socket_id));
+  send(dest_fd, msg->data, msg->size, 0);
+  i += msg.number_of_msg;
+}
+// update the other side
+write(peerBuffer, new_read_index);
+
+
+
+struct rdma_msg
+{
+    uint32_t msg_flags;            // flags
+    struct sock_id original_sk_id; // id of the socket
+    uint32_t msg_size;             // size of the message
+    uint32_t number_of_slots;      // number of slots
+    char msg[MAX_PAYLOAD_SIZE];    // message
+};
+
+struct rdma_ringbuffer
+{
+    rdma_flag_t flags;
+    atomic_uint remote_write_index;
+    atomic_uint remote_read_index;
+    atomic_uint local_write_index;
+    atomic_uint local_read_index;
+    rdma_msg_t data[MAX_N_MSG_PER_BUFFER];
+};
+
+
+
+
+```

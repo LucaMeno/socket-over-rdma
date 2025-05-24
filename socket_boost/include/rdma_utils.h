@@ -23,13 +23,22 @@
 #define UNUSED(x) (void)(x)
 #define RING_IDX(i) ((i) & (MAX_N_MSG_PER_BUFFER - 1))
 
+#define MIN_FLUSH_THRESHOLD 16
+#define MID_FLUSH_THRESHOLD 256
+#define MAX_FLUSH_THRESHOLD 1024
+
+#define USE_MIN_FT_IF_SMALLER_THAN 64   // if the number of messages is smaller than this, use the minimum flush threshold
+#define USE_MID_FT_IF_SMALLER_THAN 512  // if the number of messages is smaller than this, use the mid flush threshold
+#define USE_MAX_FT_IF_SMALLER_THAN 2048 // if the number of messages is smaller than this, use the maximum flush threshold
+
+#define MSG_TO_READ_PER_THREAD 2048
+
 #define MAX_PAYLOAD_SIZE (1024 * 8)
 
 // POWER OF 2!!!!!!!!!!!
 #define MAX_N_MSG_PER_BUFFER (1024 * 8)
 
-#define FLUSH_THRESHOLD_N (256) // number of messages to flush
-#define FLUSH_INTERVAL_MS 100   // ms
+#define FLUSH_INTERVAL_MS 100 // ms
 
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
@@ -38,8 +47,6 @@
 #define N_CONTEXT_REALLOC 5
 
 #define MR_SIZE ((sizeof(rdma_ringbuffer_t) * 2) + NOTIFICATION_OFFSET_SIZE)
-
-#define N_POLL_PER_CQ 1000
 
 typedef enum rdma_communication_code rdma_communication_code_t;
 typedef struct rdma_msg rdma_msg_t;
@@ -157,6 +164,12 @@ struct rdma_context
     pthread_mutex_t mtx_flush;
 
     pthread_mutex_t mtx_test;
+
+    atomic_uint n_msg_sent;
+    atomic_uint flush_threshold;
+
+    uint64_t time_start_polling;
+    uint32_t loop_with_no_msg;
 };
 
 /** SETUP CONTEXT */

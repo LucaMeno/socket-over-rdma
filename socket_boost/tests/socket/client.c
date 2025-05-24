@@ -83,9 +83,11 @@ int main(int argc, char **argv)
             getchar();
         }
 
-        int len_sent = send(sock, msg_out, TEST_BUFFER_SIZE, 0);
+        strcpy(msg_out, "Message CIAOOO iughyiubtfg1722896");
 
-        if (len_sent != TEST_BUFFER_SIZE)
+        int len_sent = send(sock, msg_out, strlen(msg_out), 0);
+
+        if (len_sent != strlen(msg_out))
         {
             perror("Send failed");
             break;

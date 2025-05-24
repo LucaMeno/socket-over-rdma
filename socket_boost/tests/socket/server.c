@@ -69,6 +69,8 @@ int main()
 
     printf("Client connected.\n");
 
+    const char *msg_fixed = "Message CIAOOO iughyiubtfg1722896";
+
 #ifdef SERVER_CHRONO
     struct timeval start, end;
 #endif // SERVER_CHRONO
@@ -78,12 +80,18 @@ int main()
     ssize_t bytes_received;
     while (1)
     {
-        bytes_received = recv_all(new_socket, buffer, TEST_BUFFER_SIZE);
+        bytes_received = recv_all(new_socket, buffer, strlen(msg_fixed));
+        //bytes_received = recv(new_socket, buffer, strlen(msg_fixed), 0);
 
         if (bytes_received <= 0)
         {
             printf("Client disconnected or error occurred.\n");
             break;
+        }
+
+        if(strcmp(buffer, msg_fixed) != 0)
+        {
+            printf("Received message %d: %.*s\n", i, (int)bytes_received, buffer);
         }
 
 #ifdef SERVER_CHRONO

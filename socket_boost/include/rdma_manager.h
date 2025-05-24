@@ -17,10 +17,18 @@
 #include <pthread.h>
 #include <poll.h>
 #include <sys/select.h>
+#include <xmmintrin.h>
 
 #include "rdma_utils.h"
 
-#define N_POLL_PER_CQ 1000
+// polling cq per rdma send/recv
+#define N_POLL_PER_CQ 10000
+#define BUSY_SPIN_LIMIT 1000
+
+// polling buffer for messages
+#define MAX_LOOP_WITH_NO_MSG 100000       // 100k
+#define POLLING_TIME_LIMIT_MS (1000 * 10) // 10 seconds
+
 #define N_THREADS_POOL 15
 #define N_WRITER_THREADS NUMBER_OF_SOCKETS
 
@@ -56,6 +64,10 @@ struct rdma_context_manager
     pthread_t server_thread;       // thread for the server
     pthread_t polling_thread;      // thread for polling the circular buffer
     pthread_t flush_thread;        // thread for flushing the circular buffer
+
+    pthread_mutex_t mtx_polling;
+    pthread_cond_t cond_polling;   // condition variable for polling
+    int is_polling_thread_running; // flag to indicate if the polling thread is running
 
     pthread_t writer_thread[N_WRITER_THREADS]; // thread for writing to the circular buffer
 
