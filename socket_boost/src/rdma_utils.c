@@ -37,16 +37,34 @@ int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel
     ctx->mr = ibv_reg_mr(ctx->pd, ctx->buffer, MR_SIZE,
                          IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
 
+    if (!ctx->mr)
+        return rdma_ret_err(ctx, "ibv_reg_mr");
+
+    // create the completion channel to be able to use select()
+    ctx->comp_channel = ibv_create_comp_channel(ctx->conn->verbs);
+    if (!ctx->comp_channel)
+        return rdma_ret_err(ctx, "ibv_create_comp_channel");
+
     ctx->send_cq = ibv_create_cq(ctx->conn->verbs, 10, NULL, NULL, 0);
     if (!ctx->send_cq)
+    {
+        ibv_destroy_cq(ctx->send_cq);
         return rdma_ret_err(ctx, "ibv_create_cq (send)");
+    }
 
-    ctx->recv_cq = ibv_create_cq(ctx->conn->verbs, 10, NULL, NULL, 0);
+    ctx->recv_cq = ibv_create_cq(ctx->conn->verbs, 10, NULL, ctx->comp_channel, 0);
     if (!ctx->recv_cq)
     {
-        ibv_destroy_cq(ctx->send_cq); // cleanup in caso di errore
+        ibv_destroy_cq(ctx->send_cq);
         return rdma_ret_err(ctx, "ibv_create_cq (recv)");
     }
+
+    // set the recv cq in event mode
+    /*if (ibv_req_notify_cq(ctx->recv_cq, 0))
+    {
+        ibv_destroy_cq(ctx->recv_cq);
+        return rdma_ret_err(ctx, "ibv_req_notify_cq");
+    }*/
 
     struct ibv_qp_init_attr qp_attr = {
         .send_cq = ctx->send_cq,
@@ -175,16 +193,26 @@ int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port)
         return rdma_ret_err(cctx, "ibv_reg_mr");
 
     // CQ + QP
+    cctx->comp_channel = ibv_create_comp_channel(cctx->conn->verbs);
+    if (!cctx->comp_channel)
+        return rdma_ret_err(cctx, "ibv_create_comp_channel");
+
     struct ibv_cq *send_cq = ibv_create_cq(cctx->conn->verbs, 10, NULL, NULL, 0);
     if (!send_cq)
+    {
+        ibv_destroy_cq(cctx->recv_cq);
         return rdma_ret_err(cctx, "ibv_create_cq (send)");
+    }
 
-    struct ibv_cq *recv_cq = ibv_create_cq(cctx->conn->verbs, 10, NULL, NULL, 0);
+    struct ibv_cq *recv_cq = ibv_create_cq(cctx->conn->verbs, 10, NULL, cctx->comp_channel, 0);
     if (!recv_cq)
     {
-        ibv_destroy_cq(send_cq); // cleanup in caso di errore
+        ibv_destroy_cq(send_cq);
         return rdma_ret_err(cctx, "ibv_create_cq (recv)");
     }
+
+    /*if (ibv_req_notify_cq(cctx->recv_cq, 0))
+        return rdma_ret_err(cctx, "ibv_req_notify_cq");*/
 
     cctx->send_cq = send_cq;
     cctx->recv_cq = recv_cq;
@@ -327,6 +355,8 @@ int rdma_context_destroy(rdma_context_t *ctx)
         free(ctx->buffer);
     if (ctx->client_ec)
         rdma_destroy_event_channel(ctx->client_ec);
+    if (ctx->comp_channel)
+        ibv_destroy_comp_channel(ctx->comp_channel);
 
     ctx->conn = NULL;
     ctx->pd = NULL;
@@ -364,6 +394,7 @@ int rdma_context_init(rdma_context_t *ctx)
     ctx->remote_rkey = 0;
     ctx->remote_addr = 0;
     ctx->client_ec = NULL;
+    ctx->comp_channel = NULL;
 
     ctx->ringbuffer_client = NULL;
     ctx->ringbuffer_server = NULL;
@@ -381,6 +412,9 @@ int rdma_context_init(rdma_context_t *ctx)
     atomic_store(&ctx->n_msg_sent, 0);
 
     pthread_mutex_init(&ctx->mtx_test, NULL);
+
+    ctx->time_last_recv = 0;
+    ctx->n_recv_msg = 0;
 
     return 0;
 }
@@ -438,12 +472,7 @@ int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code)
 
 int rdma_send_data_ready(rdma_context_t *ctx)
 {
-    // TODO: count the number of notification sent to notice the disconnection
-    printf("Sending data ready notification\n");
-    if (rdma_send_notification(ctx, RDMA_DATA_READY) != 0)
-        return rdma_ret_err(ctx, "Failed to send notification - rdma_send_data_ready");
-
-    return 0;
+    return rdma_send_notification(ctx, RDMA_DATA_READY);
 }
 
 /** COMMUNICATION */

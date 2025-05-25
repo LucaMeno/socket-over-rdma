@@ -32,6 +32,8 @@ void thread_pool_destroy(thread_pool_t *pool);
 int rdma_manager_get_context_id(rdma_context_manager_t *ctxm, uint32_t remote_ip);
 int rdma_manager_start_polling(rdma_context_manager_t *ctxm, rdma_context_t *ctx);
 int rdma_manager_stop_polling(rdma_context_manager_t *ctxm, rdma_context_t *ctx);
+int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx);
+int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t *ctx, rdma_ringbuffer_t *rb_remote);
 
 // error handling
 int manager_ret_err(rdma_context_t *rdma_ctx, char *msg);
@@ -442,8 +444,51 @@ int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
 
     case RDMA_DATA_READY:
 
-        if (rdma_manager_start_polling(ctxm, ctx) != 0)
-            return manager_ret_err(ctx, "Failed to send data ready notification - rdma_parse_notification");
+        u_int64_t now = get_time_ms();
+
+        // First notification received
+        if (ctx->time_last_recv == 0)
+        {
+            ctx->time_last_recv = now;
+            ctx->n_recv_msg = 0;
+        }
+        // Within threshold window
+        else if (now - ctx->time_last_recv < MAX_TIME_BETWEEN_RECV_TO_TRIGGER_POLLING_MS)
+        {
+            ctx->n_recv_msg++;
+
+            if (ctx->n_recv_msg >= N_OF_RECV_BEFORE_POLLING)
+            {
+                printf("Received enough messages, starting polling...\n");
+
+                if (rdma_manager_start_polling(ctxm, ctx) != 0)
+                    return manager_ret_err(ctx, "Failed to send data ready notification - rdma_parse_notification");
+
+                // Reset tracking after polling
+                ctx->time_last_recv = 0;
+                ctx->n_recv_msg = 0;
+
+                break; // Exit processing, polling started
+            }
+        }
+        // Time threshold exceeded, reset tracking
+        else
+        {
+            ctx->time_last_recv = now;
+            ctx->n_recv_msg = 0;
+        }
+
+        // Consume any available data
+        while (1)
+        {
+            int ret = rdma_manager_consume_ringbuffer(
+                ctxm,
+                ctx,
+                ctx->is_server == TRUE ? ctx->ringbuffer_client : ctx->ringbuffer_server);
+
+            if (ret == 0)
+                break; // No more data
+        }
 
         break;
 
@@ -453,6 +498,72 @@ int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
     }
 
     return 0;
+}
+
+int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t *ctx, rdma_ringbuffer_t *rb_remote)
+{
+    if (rb_remote == NULL || ctxm == NULL || ctx == NULL)
+        return manager_ret_err(ctx, "Invalid arguments - rdma_manager_consume_ringbuffer");
+
+    uint32_t remote_w = atomic_load(&rb_remote->remote_write_index);
+    uint32_t local_r = atomic_load(&rb_remote->local_read_index);
+    if (remote_w != local_r)
+    {
+        // set the local read index to avoid reading the same data again
+        uint32_t start_read_index = local_r;
+        atomic_store(&rb_remote->local_read_index, remote_w);
+
+        uint32_t end_read_index = remote_w;
+
+        int n_msg = end_read_index - start_read_index;
+        // TODO: check if n_msg is negative
+
+        uint32_t idx = start_read_index;
+        while (idx < end_read_index)
+        {
+            reader_thread_arg_t *arg2 = malloc(sizeof(reader_thread_arg_t));
+            if (arg2 == NULL)
+                return manager_ret_err(NULL, "Failed to allocate memory for thread pool arg - rdma_manager_polling_thread");
+
+            arg2->ctxm = ctxm;
+            arg2->ctx = ctx;
+            arg2->start_read_index = idx;
+
+            // calculate the end read index
+            int count = 0;
+            while (idx < end_read_index)
+            {
+                // int iterator = idx % MAX_MSG_BUFFER;
+                int iterator = RING_IDX(idx);
+                rdma_msg_t *msg = &rb_remote->data[iterator];
+
+                if (msg->number_of_slots <= 0)
+                {
+                    free(arg2);
+                    return manager_ret_err(NULL, "Invalid message slot count");
+                }
+
+                // count += msg->number_of_slots;
+                count++;
+                idx += msg->number_of_slots;
+
+                if (count >= MSG_TO_READ_PER_THREAD)
+                    break;
+            }
+
+            arg2->end_read_index = idx;
+
+            if (thread_pool_add(ctxm->pool, read_thread, arg2) != 0)
+            {
+                free(arg2);
+                return manager_ret_err(NULL, "Failed to add task to thread pool - rdma_manager_polling_thread");
+            }
+        }
+
+        return 0; // messages were found and added to the thread pool
+    }
+
+    return 1; // no messages to read
 }
 
 /** BACKGROUND THREAD */
@@ -796,61 +907,16 @@ void *rdma_manager_polling_thread(void *arg)
 
             // since we are polling some buffers, we can test all the buffers
             // check if there are any messages to read
-            uint32_t remote_w = atomic_load(&rb_remote->remote_write_index);
-            uint32_t local_r = atomic_load(&rb_remote->local_read_index);
-            if (remote_w != local_r)
+            int ret = rdma_manager_consume_ringbuffer(ctxm, ctx, rb_remote);
+
+            if (ret < 0)
             {
-                // set the local read index to avoid reading the same data again
-                uint32_t start_read_index = local_r;
-                atomic_store(&rb_remote->local_read_index, remote_w);
-
-                uint32_t end_read_index = remote_w;
-
-                int n_msg = end_read_index - start_read_index;
-                // TODO: check if n_msg is negative
-
-                uint32_t idx = start_read_index;
-                while (idx < end_read_index)
-                {
-                    reader_thread_arg_t *arg2 = malloc(sizeof(reader_thread_arg_t));
-                    if (arg2 == NULL)
-                        return manager_ret_null(NULL, "Failed to allocate memory for thread pool arg - rdma_manager_polling_thread");
-
-                    arg2->ctxm = ctxm;
-                    arg2->ctx = ctx;
-                    arg2->start_read_index = idx;
-
-                    // calculate the end read index
-                    int count = 0;
-                    while (idx < end_read_index)
-                    {
-                        // int iterator = idx % MAX_MSG_BUFFER;
-                        int iterator = RING_IDX(idx);
-                        rdma_msg_t *msg = &rb_remote->data[iterator];
-
-                        if (msg->number_of_slots <= 0)
-                        {
-                            free(arg2);
-                            return manager_ret_null(NULL, "Invalid message slot count");
-                        }
-
-                        // count += msg->number_of_slots;
-                        count++;
-                        idx += msg->number_of_slots;
-
-                        if (count >= MSG_TO_READ_PER_THREAD)
-                            break;
-                    }
-
-                    arg2->end_read_index = idx;
-
-                    if (thread_pool_add(ctxm->pool, read_thread, arg2) != 0)
-                    {
-                        free(arg2);
-                        return manager_ret_null(NULL, "Failed to add task to thread pool - rdma_manager_polling_thread");
-                    }
-                }
-
+                // error occurred while consuming the ring buffer
+                return manager_ret_null(ctx, "Failed to consume ring buffer - rdma_manager_polling_thread");
+            }
+            else if (ret == 0)
+            {
+                // messages were found and added to the thread pool
                 // reset the loop with no messages
                 if (is_actual_ctx_polling == TRUE)
                 {
@@ -860,7 +926,7 @@ void *rdma_manager_polling_thread(void *arg)
                     pthread_mutex_unlock(&ctxm->mtx_polling);
                 }
             }
-            else
+            else // no messages to read
             {
                 // no messages to read, increase the loop with no messages
                 if (is_actual_ctx_polling == TRUE)
@@ -964,7 +1030,7 @@ void *rdma_manager_flush_thread(void *arg)
         }
         // sleep for a while
         struct timespec ts;
-        ts.tv_sec = 0;
+        ts.tv_sec = FLUSH_INTERVAL_MS / 1000;              // seconds
         ts.tv_nsec = (FLUSH_INTERVAL_MS % 1000) * 1000000; // ms -> ns
         nanosleep(&ts, NULL);
     }

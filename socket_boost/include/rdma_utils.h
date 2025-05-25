@@ -136,6 +136,8 @@ struct rdma_context
     uintptr_t remote_addr;                // Remote address
     uint32_t remote_rkey;                 // Remote RKey
 
+    struct ibv_comp_channel *comp_channel; // Completion channel
+
     // Context id
     __u32 remote_ip; // Remote IP
 
@@ -158,6 +160,9 @@ struct rdma_context
 
     uint64_t time_start_polling; // time when the polling started, used to be able to stop the polling thread
     uint32_t loop_with_no_msg;   // number of loops with no messages, used to stop the polling thread if there are no messages for a while
+
+    uint64_t time_last_recv; // time when the last message was sent, used to determine if we should poll
+    uint32_t n_recv_msg;     // number of messages recv operations, used to determine if we should poll
 
     rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server
     rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client

@@ -29,6 +29,10 @@
 #define MAX_LOOP_WITH_NO_MSG 100000       // 100k
 #define POLLING_TIME_LIMIT_MS (1000 * 10) // 10 seconds
 
+// move from event based to polling based
+#define N_OF_RECV_BEFORE_POLLING 3
+#define MAX_TIME_BETWEEN_RECV_TO_TRIGGER_POLLING_MS 1000 // ms
+
 #define FLUSH_INTERVAL_MS 100 // ms
 
 #define N_THREADS_POOL 15
