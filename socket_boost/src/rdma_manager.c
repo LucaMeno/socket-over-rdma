@@ -238,14 +238,6 @@ int rdma_manager_destroy(rdma_context_manager_t *ctxm)
     printf("Stopping threads...\n");
 
     // destroy the threads
-    if (ctxm->notification_thread)
-    {
-        pthread_join(ctxm->notification_thread, NULL);
-        ctxm->notification_thread = 0;
-    }
-
-    printf("Notification thread stopped\n");
-
     if (ctxm->polling_thread)
     {
         pthread_mutex_lock(&ctxm->mtx_polling);
@@ -269,6 +261,14 @@ int rdma_manager_destroy(rdma_context_manager_t *ctxm)
     // destroy the thread pool
     thread_pool_destroy(ctxm->pool);
     ctxm->pool = NULL;
+
+    if (ctxm->notification_thread)
+    {
+        pthread_join(ctxm->notification_thread, NULL);
+        ctxm->notification_thread = 0;
+    }
+
+    printf("Notification thread stopped\n");
 
     printf("Destroying RDMA cotexts...\n");
 
@@ -572,80 +572,121 @@ void *rdma_manager_listen_thread(void *arg)
 {
     rdma_context_manager_t *ctxm = (rdma_context_manager_t *)arg;
     printf("Notification thread running\n");
+    struct timeval tv;
 
     while (ctxm->stop_threads == FALSE)
     {
-        rdma_context_t *ctx = NULL;
-        int j;
-        // listen for notifications
+        fd_set fds;
+        FD_ZERO(&fds);
+        int max_fd = -1;
         for (int i = 0; i < ctxm->ctx_count; i++)
         {
-            ctx = &ctxm->ctxs[i];
-            if (ctx->remote_ip == 0 || ctx->conn == NULL || ctx->recv_cq == NULL)
+            if (ctxm->ctxs[i].recv_cq != NULL && ctxm->ctxs[i].comp_channel != NULL)
             {
-                continue; // context not connected
+                FD_SET(ctxm->ctxs[i].comp_channel->fd, &fds);
+                if (ctxm->ctxs[i].comp_channel->fd > max_fd)
+                    max_fd = ctxm->ctxs[i].comp_channel->fd;
             }
+        }
 
-            struct ibv_wc wc = {};
-            int num_completions = -1;
-            j = 0;
+        if (max_fd < 0)
+            return manager_ret_null(NULL, "No completion channels available - rdma_manager_listen_thread");
 
-            int backoff = 0;
-            while (j++ < N_POLL_PER_CQ)
+        // Set timeout to avoid blocking indefinitely
+        tv.tv_sec = TIME_STOP_SELECT_SEC;
+        tv.tv_usec = 0;
+
+        int activity = select(max_fd + 1, &fds, NULL, NULL, &tv);
+        if (activity == -1)
+        {
+            if (errno == EINTR)
             {
-                num_completions = ibv_poll_cq(ctx->recv_cq, 1, &wc);
-                if (num_completions > 0)
-                    break;
-
-                if (j < BUSY_SPIN_LIMIT)
-                {
-                    _mm_pause(); // Light CPU relaxation
-                }
-                else
-                {
-                    // 1µs, 2µs, 4µs, ...
-                    struct timespec ts;
-                    ts.tv_sec = 0;
-                    ts.tv_nsec = (1 << backoff) * 1000;
-                    nanosleep(&ts, NULL);
-                    if (backoff < 5)
-                        backoff++;
-                }
-            }
-
-            if (ctxm->stop_threads == TRUE)
+                printf("Select interrupted by signal\n");
                 break;
-
-            if (num_completions == 0)
-                continue; // no completion, go to the next context
-
-            if (num_completions < 0)
-                return manager_ret_null(ctx, "Failed to poll CQ (num_completions<0) - rdma_manager_listen_thread");
-
-            if (wc.status != IBV_WC_SUCCESS)
-            {
-                fprintf(stderr, "CQ error: %s (%d)\n", ibv_wc_status_str(wc.status), wc.status);
-                return manager_ret_null(ctx, "Failed to poll CQ - rdma_manager_listen_thread");
             }
+            perror("select error");
+            break;
+        }
 
-            // post another receive work request
-            struct ibv_sge sge = {
-                .addr = (uintptr_t)ctx->buffer, // address of the buffer
-                .length = sizeof(notification_t),
-                .lkey = ctx->mr->lkey};
+        for (int fd = 0; fd <= max_fd; fd++)
+        {
+            if (FD_ISSET(fd, &fds))
+            {
+                // lookup to get the context
+                rdma_context_t *ctx = NULL;
+                for (int i = 0; i < ctxm->ctx_count; i++)
+                {
+                    ctx = &ctxm->ctxs[i];
+                    if (ctx->comp_channel == NULL || ctx->comp_channel->fd != fd)
+                        continue;
+                    break; // found the context for this fd
+                }
 
-            // Prepare ibv_recv_wr with IBV_WR_RECV
-            struct ibv_recv_wr recv_wr = {.wr_id = 0, .sg_list = &sge, .num_sge = 1};
-            struct ibv_recv_wr *bad_wr = NULL;
+                if (ctx == NULL)
+                    return manager_ret_null(NULL, "No context found for fd - rdma_manager_listen_thread");
 
-            // Post receive with ibv_post_recv
-            if (ibv_post_recv(ctx->conn->qp, &recv_wr, &bad_wr) != 0 || bad_wr)
-                return manager_ret_null(ctx, "Failed to post recv - rdma_recv");
+                if (ctx->remote_ip == 0 || ctx->conn == NULL || ctx->recv_cq == NULL)
+                {
+                    fprintf(stderr, "Context not ready for notifications - rdma_manager_listen_thread\n");
+                    break;
+                }
 
-            // process the notification
-            int err = rdma_parse_notification(ctxm, ctx);
-            if (err != 0)
-                return manager_ret_null(ctx, "Failed to receive notification - rdma_manager_listen_thread");
+                struct ibv_cq *ev_cq;
+                void *ev_ctx;
+                if (ibv_get_cq_event(ctx->comp_channel, &ev_cq, &ev_ctx))
+                {
+                    perror("ibv_get_cq_event");
+                    continue;
+                }
+
+                ibv_ack_cq_events(ev_cq, 1);
+
+                if (ibv_req_notify_cq(ctx->recv_cq, 0))
+                {
+                    perror("ibv_req_notify_cq");
+                    continue;
+                }
+
+                struct ibv_wc wc;
+                int num_completions = ibv_poll_cq(ctx->recv_cq, 1, &wc);
+                if (num_completions < 0)
+                {
+                    fprintf(stderr, "Failed to poll CQ: %s\n", strerror(errno));
+                    continue;
+                }
+
+                if (num_completions == 0) // it should not happen, but just in case
+                    continue;
+
+                if (wc.status != IBV_WC_SUCCESS)
+                {
+                    fprintf(stderr, "CQ error: %s (%d)\n", ibv_wc_status_str(wc.status), wc.status);
+                    continue;
+                }
+
+                // repost another receive request
+                struct ibv_sge sge = {
+                    .addr = (uintptr_t)ctx->buffer,
+                    .length = sizeof(notification_t),
+                    .lkey = ctx->mr->lkey};
+
+                struct ibv_recv_wr recv_wr = {
+                    .wr_id = 0,
+                    .sg_list = &sge,
+                    .num_sge = 1,
+                    .next = NULL};
+
+                struct ibv_recv_wr *bad_wr = NULL;
+                if (ibv_post_recv(ctx->conn->qp, &recv_wr, &bad_wr) != 0 || bad_wr)
+                {
+                    fprintf(stderr, "Failed to post recv: %s\n", strerror(errno));
+                    break;
+                }
+
+                int err = rdma_parse_notification(ctxm, ctx);
+                if (err != 0)
+                    return manager_ret_null(ctx, "Failed to receive notification - rdma_manager_listen_thread");
+            }
         }
     }
 
@@ -736,15 +777,20 @@ void *rdma_manager_writer_thread(void *arg)
     // Initialize the file descriptor set
     FD_ZERO(&read_fds);
 
-    for (int i = 0; i < n; i++)
-        if (sk_to_monitor[i].fd >= 0)
-            FD_SET(sk_to_monitor[i].fd, &read_fds);
+    int max_fd = -1;
 
-    // Set the maximum file descriptor
-    int max_fd = sk_to_monitor[0].fd;
     for (int i = 0; i < n; i++)
-        if (sk_to_monitor[i].fd > max_fd)
-            max_fd = sk_to_monitor[i].fd;
+    {
+        if (sk_to_monitor[i].fd >= 0)
+        {
+            FD_SET(sk_to_monitor[i].fd, &read_fds);
+            if (sk_to_monitor[i].fd > max_fd)
+                max_fd = sk_to_monitor[i].fd;
+        }
+    }
+
+    if (max_fd < 0)
+        return manager_ret_null(NULL, "No valid sockets to monitor - rdma_manager_writer_thread");
 
     int k = 1;
     while (atomic_load(&ctxm->stop_threads) == FALSE)
@@ -857,10 +903,17 @@ void *rdma_manager_writer_thread(void *arg)
     }
 
     printf("Writer thread exiting\n");
-    free(param->sk_to_monitor);
-    param->sk_to_monitor = NULL;
-    free(param);
-    param = NULL;
+    if (param->sk_to_monitor != NULL)
+    {
+        free(param->sk_to_monitor);
+        param->sk_to_monitor = NULL;
+    }
+
+    if (param != NULL)
+    {
+        free(param);
+        param = NULL;
+    }
 
     pthread_exit(NULL);
 }
@@ -918,11 +971,12 @@ void *rdma_manager_polling_thread(void *arg)
             {
                 // messages were found and added to the thread pool
                 // reset the loop with no messages
+                u_int64_t now = get_time_ms();
                 if (is_actual_ctx_polling == TRUE)
                 {
                     pthread_mutex_lock(&ctxm->mtx_polling);
                     ctx->loop_with_no_msg = 0;
-                    ctx->time_start_polling = get_time_ms();
+                    ctx->time_start_polling = now;
                     pthread_mutex_unlock(&ctxm->mtx_polling);
                 }
             }
@@ -933,12 +987,12 @@ void *rdma_manager_polling_thread(void *arg)
                 {
                     ctx->loop_with_no_msg++;
                     uint64_t now = get_time_ms();
+
                     if (ctx->loop_with_no_msg >= MAX_LOOP_WITH_NO_MSG &&
                         (now - ctx->time_start_polling) >= POLLING_TIME_LIMIT_MS)
                     {
                         // if the loop with no messages is too high, stop polling
-                        printf("Stopping polling for context %d, loop with no messages: %d, time: %lu ms\n",
-                               i, ctx->loop_with_no_msg, now - ctx->time_start_polling);
+                        printf("Stopping polling for context %d", i);
 
                         // set the polling status to non-polling
                         if (rdma_manager_stop_polling(ctxm, ctx) != 0)
@@ -948,6 +1002,12 @@ void *rdma_manager_polling_thread(void *arg)
                 }
             }
         }
+
+        // sleep for a while
+        struct timespec ts;
+        ts.tv_sec = SLEEP_TIME_BETWEEN_POLLING_MS / 1000;              // seconds
+        ts.tv_nsec = (SLEEP_TIME_BETWEEN_POLLING_MS % 1000) * 1000000; // ms -> ns
+        nanosleep(&ts, NULL);
 
         if (non_polling == ctx_active || ctx_not_active == ctxm->ctx_count)
         {

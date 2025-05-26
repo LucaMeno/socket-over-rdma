@@ -21,13 +21,10 @@
 
 #include "rdma_utils.h"
 
-// polling cq per rdma send/recv
-#define N_POLL_PER_CQ 10000
-#define BUSY_SPIN_LIMIT 1000
-
 // polling buffer for messages
-#define MAX_LOOP_WITH_NO_MSG 100000       // 100k
+#define MAX_LOOP_WITH_NO_MSG 200
 #define POLLING_TIME_LIMIT_MS (1000 * 10) // 10 seconds
+#define SLEEP_TIME_BETWEEN_POLLING_MS 10 // ms
 
 // move from event based to polling based
 #define N_OF_RECV_BEFORE_POLLING 3
@@ -40,6 +37,8 @@
 
 #define INITIAL_CONTEXT_NUMBER 10
 #define N_CONTEXT_REALLOC 5
+
+#define TIME_STOP_SELECT_SEC 10 // 10 seconds
 
 typedef struct task task_t;
 typedef struct thread_pool thread_pool_t;

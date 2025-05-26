@@ -116,7 +116,7 @@ int main()
     printf("Waiting for messages, press Ctrl+C to exit...\n");
     while (!STOP)
     {
-        sleep(1);
+        pause(); // wait for signal
     }
 
     err = sk_destroy(&sk_ctx);

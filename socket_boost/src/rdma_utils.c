@@ -60,11 +60,11 @@ int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel
     }
 
     // set the recv cq in event mode
-    /*if (ibv_req_notify_cq(ctx->recv_cq, 0))
+    if (ibv_req_notify_cq(ctx->recv_cq, 0))
     {
         ibv_destroy_cq(ctx->recv_cq);
         return rdma_ret_err(ctx, "ibv_req_notify_cq");
-    }*/
+    }
 
     struct ibv_qp_init_attr qp_attr = {
         .send_cq = ctx->send_cq,
@@ -197,29 +197,28 @@ int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port)
     if (!cctx->comp_channel)
         return rdma_ret_err(cctx, "ibv_create_comp_channel");
 
-    struct ibv_cq *send_cq = ibv_create_cq(cctx->conn->verbs, 10, NULL, NULL, 0);
-    if (!send_cq)
+    printf("Creating send and receive completion queues\n");
+
+    cctx->send_cq = ibv_create_cq(cctx->conn->verbs, 10, NULL, NULL, 0);
+    if (!cctx->send_cq)
     {
         ibv_destroy_cq(cctx->recv_cq);
         return rdma_ret_err(cctx, "ibv_create_cq (send)");
     }
 
-    struct ibv_cq *recv_cq = ibv_create_cq(cctx->conn->verbs, 10, NULL, cctx->comp_channel, 0);
-    if (!recv_cq)
+    cctx->recv_cq = ibv_create_cq(cctx->conn->verbs, 10, NULL, cctx->comp_channel, 0);
+    if (!cctx->recv_cq)
     {
-        ibv_destroy_cq(send_cq);
+        ibv_destroy_cq(cctx->send_cq);
         return rdma_ret_err(cctx, "ibv_create_cq (recv)");
     }
 
-    /*if (ibv_req_notify_cq(cctx->recv_cq, 0))
-        return rdma_ret_err(cctx, "ibv_req_notify_cq");*/
-
-    cctx->send_cq = send_cq;
-    cctx->recv_cq = recv_cq;
+    if (ibv_req_notify_cq(cctx->recv_cq, 0))
+        return rdma_ret_err(cctx, "ibv_req_notify_cq");
 
     struct ibv_qp_init_attr qp_attr = {
-        .send_cq = send_cq,
-        .recv_cq = recv_cq,
+        .send_cq = cctx->send_cq,
+        .recv_cq = cctx->recv_cq,
         .qp_type = IBV_QPT_RC,
         .cap = {
             .max_send_wr = 10,
@@ -229,8 +228,8 @@ int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port)
 
     if (rdma_create_qp(cctx->conn, cctx->pd, &qp_attr))
     {
-        ibv_destroy_cq(send_cq);
-        ibv_destroy_cq(recv_cq);
+        ibv_destroy_cq(cctx->send_cq);
+        ibv_destroy_cq(cctx->recv_cq);
         return rdma_ret_err(cctx, "rdma_create_qp");
     }
 
