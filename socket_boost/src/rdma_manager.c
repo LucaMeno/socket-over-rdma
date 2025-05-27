@@ -518,6 +518,9 @@ int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t
         int n_msg = end_read_index - start_read_index;
         // TODO: check if n_msg is negative
 
+        // read the data NO THREAD
+        // return rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index);
+
         uint32_t idx = start_read_index;
         while (idx < end_read_index)
         {
@@ -1047,26 +1050,37 @@ void *rdma_manager_flush_thread(void *arg)
             if (atomic_load(&ctx->is_ready) == FALSE || ctx->conn == NULL)
                 continue;
 
-            uint64_t now = get_time_ms();
-
             // check if the threshold need to be updated
             uint32_t n_msg = atomic_load(&ctx->n_msg_sent);
             uint32_t actual_ft = atomic_load(&ctx->flush_threshold);
-            if (n_msg <= USE_MIN_FT_IF_SMALLER_THAN && actual_ft != MIN_FLUSH_THRESHOLD)
+            if (n_msg <= USE_MIN_FT_IF_SMALLER_THAN)
             {
-                atomic_store(&ctx->flush_threshold, MIN_FLUSH_THRESHOLD);
+                if (actual_ft != MIN_FLUSH_THRESHOLD)
+                {
+                    atomic_store(&ctx->flush_threshold, MIN_FLUSH_THRESHOLD);
+                    printf("Low traffic, thrsh: %u\n", MIN_FLUSH_THRESHOLD);
+                }
             }
-            else if (n_msg <= USE_MID_FT_IF_SMALLER_THAN && actual_ft != MIN_FLUSH_THRESHOLD)
+            else if (n_msg <= USE_MID_FT_IF_SMALLER_THAN)
             {
-                atomic_store(&ctx->flush_threshold, MID_FLUSH_THRESHOLD);
+                if (actual_ft != MID_FLUSH_THRESHOLD)
+                {
+                    atomic_store(&ctx->flush_threshold, MID_FLUSH_THRESHOLD);
+                    printf("Medium traffic, thrsh: %u\n", MID_FLUSH_THRESHOLD);
+                }
             }
-            else if (actual_ft != MAX_FLUSH_THRESHOLD)
+            else // USE_MAX_FT_IF_SMALLER_THAN
             {
-                atomic_store(&ctx->flush_threshold, MAX_FLUSH_THRESHOLD);
+                if (actual_ft != MAX_FLUSH_THRESHOLD)
+                {
+                    atomic_store(&ctx->flush_threshold, MAX_FLUSH_THRESHOLD);
+                    printf("High traffic, thrsh: %u\n", MAX_FLUSH_THRESHOLD);
+                }
             }
 
             atomic_store(&ctx->n_msg_sent, 0); // reset the number of messages sent
 
+            uint64_t now = get_time_ms();
             if (now - ctx->last_flush_ns >= FLUSH_INTERVAL_MS)
             {
                 //  post a new work request

@@ -2,8 +2,8 @@
 
 #include "rdma_utils.h"
 
-int COUNT = 0;    // for debugging
-int TX_COUNT = 0; // for debugging
+uint32_t COUNT = 0;    // for debugging
+uint32_t TX_COUNT = 0; // for debugging
 uint32_t TX_SIZE = 0;
 atomic_uint RX_COUNT = 0; // for debugging
 atomic_uint RX_SIZE = 0;  // for debugging
@@ -621,7 +621,7 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
 #ifdef RDMA_DEBUG_FLUSH
     uint32_t msg_to_flush = RING_IDX(actual_w - actual_r);
     TX_COUNT += msg_to_flush;
-    printf("TX_COUNT: %d (+%d), TX_SIZE: %u Thrsh: %u\n",
+    printf("TX_COUNT: %u (+%d), TX_SIZE: %u Thrsh: %u\n",
            TX_COUNT,
            msg_to_flush,
            TX_SIZE,
@@ -669,7 +669,7 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
         COUNT++;
         if (COUNT % 100000 == 0)
         {
-            printf("STUCK %d - local_w: %u, remote_r: %u av_space: %u\n",
+            printf("STUCK %u - local_w: %u, remote_r: %u av_space: %u\n",
                    COUNT, start_w_index, end_w_index, available_space);
         }
     }
