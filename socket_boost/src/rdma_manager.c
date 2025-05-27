@@ -519,8 +519,9 @@ int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t
         // TODO: check if n_msg is negative
 
         // read the data NO THREAD
-        // return rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index);
+        return rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index, TRUE);
 
+        /*int n_threads = 0;
         uint32_t idx = start_read_index;
         while (idx < end_read_index)
         {
@@ -531,6 +532,7 @@ int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t
             arg2->ctxm = ctxm;
             arg2->ctx = ctx;
             arg2->start_read_index = idx;
+            arg2->can_commit = FALSE; // only the last thread can commit
 
             // calculate the end read index
             int count = 0;
@@ -543,11 +545,13 @@ int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t
                 if (msg->number_of_slots <= 0)
                 {
                     free(arg2);
-                    return manager_ret_err(NULL, "Invalid message slot count");
+                    char err_msg[128];
+                    snprintf(err_msg, sizeof(err_msg), "Invalid message slot count: %d - rdma_manager_polling_thread", msg->number_of_slots);
+                    return manager_ret_err(NULL, err_msg);
                 }
 
-                // count += msg->number_of_slots;
-                count++;
+                count += msg->number_of_slots;
+                // count++;
                 idx += msg->number_of_slots;
 
                 if (count >= MSG_TO_READ_PER_THREAD)
@@ -556,12 +560,22 @@ int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t
 
             arg2->end_read_index = idx;
 
+            if (idx >= end_read_index)
+            {
+                // this is the last thread, it can commit the read
+                arg2->can_commit = TRUE;
+            }
+
             if (thread_pool_add(ctxm->pool, read_thread, arg2) != 0)
             {
                 free(arg2);
                 return manager_ret_err(NULL, "Failed to add task to thread pool - rdma_manager_polling_thread");
             }
+
+            n_threads++;
         }
+
+        printf("Added %d threads to read %d messages from ring buffer\n", n_threads, n_msg);*/
 
         return 0; // messages were found and added to the thread pool
     }
@@ -963,54 +977,59 @@ void *rdma_manager_polling_thread(void *arg)
 
             // since we are polling some buffers, we can test all the buffers
             // check if there are any messages to read
-            int ret = rdma_manager_consume_ringbuffer(ctxm, ctx, rb_remote);
+            while (1)
+            {
 
-            if (ret < 0)
-            {
-                // error occurred while consuming the ring buffer
-                return manager_ret_null(ctx, "Failed to consume ring buffer - rdma_manager_polling_thread");
-            }
-            else if (ret == 0)
-            {
-                // messages were found and added to the thread pool
-                // reset the loop with no messages
-                u_int64_t now = get_time_ms();
-                if (is_actual_ctx_polling == TRUE)
+                int ret = rdma_manager_consume_ringbuffer(ctxm, ctx, rb_remote);
+
+                if (ret < 0)
                 {
-                    pthread_mutex_lock(&ctxm->mtx_polling);
-                    ctx->loop_with_no_msg = 0;
-                    ctx->time_start_polling = now;
-                    pthread_mutex_unlock(&ctxm->mtx_polling);
+                    // error occurred while consuming the ring buffer
+                    return manager_ret_null(ctx, "Failed to consume ring buffer - rdma_manager_polling_thread");
                 }
-            }
-            else // no messages to read
-            {
-                // no messages to read, increase the loop with no messages
-                if (is_actual_ctx_polling == TRUE)
+                else if (ret == 0)
                 {
-                    ctx->loop_with_no_msg++;
-                    uint64_t now = get_time_ms();
-
-                    if (ctx->loop_with_no_msg >= MAX_LOOP_WITH_NO_MSG &&
-                        (now - ctx->time_start_polling) >= POLLING_TIME_LIMIT_MS)
+                    // messages were found and added to the thread pool
+                    // reset the loop with no messages
+                    if (is_actual_ctx_polling == TRUE && ctx->loop_with_no_msg > 0)
                     {
-                        // if the loop with no messages is too high, stop polling
-                        printf("Stopping polling for context %d", i);
-
-                        // set the polling status to non-polling
-                        if (rdma_manager_stop_polling(ctxm, ctx) != 0)
-                            return manager_ret_null(ctx, "Failed to set polling status - rdma_manager_polling_thread");
-                        non_polling++;
+                        u_int64_t now = get_time_ms();
+                        pthread_mutex_lock(&ctxm->mtx_polling);
+                        ctx->loop_with_no_msg = 0;
+                        ctx->time_start_polling = now;
+                        pthread_mutex_unlock(&ctxm->mtx_polling);
                     }
+                }
+                else // no messages to read
+                {
+                    // no messages to read, increase the loop with no messages
+                    if (is_actual_ctx_polling == TRUE)
+                    {
+                        ctx->loop_with_no_msg++;
+                        uint64_t now = get_time_ms();
+
+                        if (ctx->loop_with_no_msg >= MAX_LOOP_WITH_NO_MSG &&
+                            (now - ctx->time_start_polling) >= POLLING_TIME_LIMIT_MS)
+                        {
+                            // if the loop with no messages is too high, stop polling
+                            printf("Stopping polling for context %d", i);
+
+                            // set the polling status to non-polling
+                            if (rdma_manager_stop_polling(ctxm, ctx) != 0)
+                                return manager_ret_null(ctx, "Failed to set polling status - rdma_manager_polling_thread");
+                            non_polling++;
+                        }
+                    }
+                    break; // no more messages to read
                 }
             }
         }
 
         // sleep for a while
-        struct timespec ts;
+        /*struct timespec ts;
         ts.tv_sec = SLEEP_TIME_BETWEEN_POLLING_MS / 1000;              // seconds
         ts.tv_nsec = (SLEEP_TIME_BETWEEN_POLLING_MS % 1000) * 1000000; // ms -> ns
-        nanosleep(&ts, NULL);
+        nanosleep(&ts, NULL);*/
 
         if (non_polling == ctx_active || ctx_not_active == ctxm->ctx_count)
         {
@@ -1051,54 +1070,67 @@ void *rdma_manager_flush_thread(void *arg)
                 continue;
 
             // check if the threshold need to be updated
-            uint32_t n_msg = atomic_load(&ctx->n_msg_sent);
+            uint64_t now = get_time_ms();
             uint32_t actual_ft = atomic_load(&ctx->flush_threshold);
-            if (n_msg <= USE_MIN_FT_IF_SMALLER_THAN)
+
+            if (now - ctx->flush_threshold_set_time > MINIMUM_TIME_BETWEEN_FLUSH_CHANGE_MS)
             {
-                if (actual_ft != MIN_FLUSH_THRESHOLD)
+                uint32_t n_msg = atomic_load(&ctx->n_msg_sent);
+                if (n_msg <= USE_MIN_FT_IF_SMALLER_THAN)
                 {
-                    atomic_store(&ctx->flush_threshold, MIN_FLUSH_THRESHOLD);
-                    printf("Low traffic, thrsh: %u\n", MIN_FLUSH_THRESHOLD);
+                    if (actual_ft != MIN_FLUSH_THRESHOLD)
+                    {
+                        atomic_store(&ctx->flush_threshold, MIN_FLUSH_THRESHOLD);
+                        ctx->flush_threshold_set_time = now;
+                        actual_ft = MIN_FLUSH_THRESHOLD;
+                        printf("Low traffic, thrsh: %u\n", MIN_FLUSH_THRESHOLD);
+                    }
                 }
-            }
-            else if (n_msg <= USE_MID_FT_IF_SMALLER_THAN)
-            {
-                if (actual_ft != MID_FLUSH_THRESHOLD)
+                else if (n_msg <= USE_MID_FT_IF_SMALLER_THAN)
                 {
-                    atomic_store(&ctx->flush_threshold, MID_FLUSH_THRESHOLD);
-                    printf("Medium traffic, thrsh: %u\n", MID_FLUSH_THRESHOLD);
+                    if (actual_ft != MID_FLUSH_THRESHOLD)
+                    {
+                        atomic_store(&ctx->flush_threshold, MID_FLUSH_THRESHOLD);
+                        ctx->flush_threshold_set_time = now;
+                        actual_ft = MID_FLUSH_THRESHOLD;
+                        printf("Medium traffic, thrsh: %u\n", MID_FLUSH_THRESHOLD);
+                    }
                 }
-            }
-            else // USE_MAX_FT_IF_SMALLER_THAN
-            {
-                if (actual_ft != MAX_FLUSH_THRESHOLD)
+                else // USE_MAX_FT_IF_SMALLER_THAN
                 {
-                    atomic_store(&ctx->flush_threshold, MAX_FLUSH_THRESHOLD);
-                    printf("High traffic, thrsh: %u\n", MAX_FLUSH_THRESHOLD);
+                    if (actual_ft != MAX_FLUSH_THRESHOLD)
+                    {
+                        atomic_store(&ctx->flush_threshold, MAX_FLUSH_THRESHOLD);
+                        ctx->flush_threshold_set_time = now;
+                        actual_ft = MAX_FLUSH_THRESHOLD;
+                        printf("High traffic, thrsh: %u\n", MAX_FLUSH_THRESHOLD);
+                    }
                 }
             }
 
             atomic_store(&ctx->n_msg_sent, 0); // reset the number of messages sent
 
-            uint64_t now = get_time_ms();
-            if (now - ctx->last_flush_ns >= FLUSH_INTERVAL_MS)
+            if (actual_ft != MAX_FLUSH_THRESHOLD) // if the program is bathcing a lot avoid to flush using time
             {
-                //  post a new work request
-                //  launch a thread
-                flush_thread_arg_t *arg2 = malloc(sizeof(flush_thread_arg_t));
-                if (arg2 == NULL)
-                    return manager_ret_null(NULL, "Failed to allocate memory for thread pool arg - rdma_manager_flush_thread");
-
-                arg2->ctx = ctx;
-
-                // add the task to the thread pool
-                if (thread_pool_add(ctxm->pool, flush_thread, arg2) != 0)
+                if (now - ctx->last_flush_ns >= FLUSH_INTERVAL_MS)
                 {
-                    free(arg);
-                    free(arg2);
-                    arg = NULL;
-                    arg2 = NULL;
-                    return manager_ret_null(NULL, "Failed to add task to thread pool - rdma_manager_polling_thread");
+                    //  post a new work request
+                    //  launch a thread
+                    flush_thread_arg_t *arg2 = malloc(sizeof(flush_thread_arg_t));
+                    if (arg2 == NULL)
+                        return manager_ret_null(NULL, "Failed to allocate memory for thread pool arg - rdma_manager_flush_thread");
+
+                    arg2->ctx = ctx;
+
+                    // add the task to the thread pool
+                    if (thread_pool_add(ctxm->pool, flush_thread, arg2) != 0)
+                    {
+                        free(arg);
+                        free(arg2);
+                        arg = NULL;
+                        arg2 = NULL;
+                        return manager_ret_null(NULL, "Failed to add task to thread pool - rdma_manager_polling_thread");
+                    }
                 }
             }
         }
@@ -1119,7 +1151,7 @@ void read_thread(void *arg)
     if (!param->ctxm || !param->ctx)
         return manager_ret_void(NULL, "Context or context manager is NULL - read_thread");
 
-    if (rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks, param->start_read_index, param->end_read_index) != 0)
+    if (rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks, param->start_read_index, param->end_read_index, param->can_commit) != 0)
         return manager_ret_void(NULL, "Failed to read slice - read_thread");
 
     return;

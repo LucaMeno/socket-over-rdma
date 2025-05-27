@@ -23,8 +23,8 @@
 
 // polling buffer for messages
 #define MAX_LOOP_WITH_NO_MSG 200
-#define POLLING_TIME_LIMIT_MS (1000 * 10) // 10 seconds
-#define SLEEP_TIME_BETWEEN_POLLING_MS 10 // ms
+#define POLLING_TIME_LIMIT_MS (1000 * 100) // 10 seconds
+#define SLEEP_TIME_BETWEEN_POLLING_MS 1    // ms
 
 // move from event based to polling based
 #define N_OF_RECV_BEFORE_POLLING 3
@@ -95,6 +95,7 @@ struct reader_thread_arg
     rdma_context_t *ctx; // context to use
     uint32_t start_read_index;
     uint32_t end_read_index;
+    uint32_t can_commit; // flag to indicate if the read can be committed (only the last thread can commit)
 };
 
 struct flush_thread_arg

@@ -15,6 +15,7 @@
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 #include <stdatomic.h>
+#include "uthash.h"
 
 #include "scap.h"
 #include "sk_utils.h"
@@ -25,17 +26,21 @@
 
 // THRESHOLDS MANAGEMENT
 
-#define MIN_FLUSH_THRESHOLD 16
+#define MIN_FLUSH_THRESHOLD 64
 #define MID_FLUSH_THRESHOLD 256
-#define MAX_FLUSH_THRESHOLD 1024
+#define MAX_FLUSH_THRESHOLD 512
 
 #define USE_MIN_FT_IF_SMALLER_THAN 64   // if the number of messages is smaller than this, use the minimum flush threshold
-#define USE_MID_FT_IF_SMALLER_THAN 512  // if the number of messages is smaller than this, use the mid flush threshold
+#define USE_MID_FT_IF_SMALLER_THAN 128  // if the number of messages is smaller than this, use the mid flush threshold
 #define USE_MAX_FT_IF_SMALLER_THAN 2048 // if the number of messages is smaller than this, use the maximum flush threshold
+
+#define MINIMUM_TIME_BETWEEN_FLUSH_CHANGE_MS 1000 // minimum time between flush threshold changes
 
 // BUFFER CONFIGURATION
 #define MAX_MSG_BUFFER (1024 * 8) // POWER OF 2!!!!!!!!!!!
-#define MAX_PAYLOAD_SIZE (1024 * 8)
+#define MAX_PAYLOAD_SIZE (128 * 1024) // 128 KB
+
+#define MAX_CONTIGUOS_MSG_NUMBER 16 // maximum number of contiguous messages that can be read in a single read operation
 
 // READ
 #define MSG_TO_READ_PER_THREAD 2048
@@ -157,6 +162,7 @@ struct rdma_context
 
     atomic_uint n_msg_sent; // counter for the number of messages sent, used to determinate the threshold for flushing
     atomic_uint flush_threshold;
+    uint64_t flush_threshold_set_time; // time when the flush threshold was set, used to determine if we should change the flush threshold
 
     uint64_t time_start_polling; // time when the polling started, used to be able to stop the polling thread
     uint32_t loop_with_no_msg;   // number of loops with no messages, used to stop the polling thread if there are no messages for a while
@@ -181,7 +187,7 @@ int rdma_context_init(rdma_context_t *ctx);
 
 // COMMUNICATION
 int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_socket);
-int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index);
+int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index, uint32_t can_commit);
 int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer);
 int rdma_send_data_ready(rdma_context_t *ctx);
 

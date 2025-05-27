@@ -409,6 +409,7 @@ int rdma_context_init(rdma_context_t *ctx)
 
     atomic_store(&ctx->flush_threshold, MIN_FLUSH_THRESHOLD);
     atomic_store(&ctx->n_msg_sent, 0);
+    ctx->flush_threshold_set_time = 0;
 
     pthread_mutex_init(&ctx->mtx_test, NULL);
 
@@ -532,7 +533,7 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
     if (pthread_mutex_trylock(&ctx->mtx_flush) != 0)
     {
         // Flush is already in progress
-        printf("Flush already in progress\n");
+        // printf("Flush already in progress\n");
         return 0;
     }
 
@@ -667,7 +668,7 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
 
         sched_yield();
         COUNT++;
-        if (COUNT % 100000 == 0)
+        if (COUNT % 100 == 0)
         {
             printf("STUCK %u - local_w: %u, remote_r: %u av_space: %u\n",
                    COUNT, start_w_index, end_w_index, available_space);
@@ -681,7 +682,11 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
     rdma_msg_t *msg = &ringbuffer->data[start_w_index];
 
     // check if there is enough CONTIGUOUS space to write the message
+    // contiguous space is in indexes notation
     uint32_t contiguous_space = MAX_MSG_BUFFER - start_w_index;
+
+    if (contiguous_space > MAX_CONTIGUOS_MSG_NUMBER)
+        contiguous_space = MAX_CONTIGUOS_MSG_NUMBER;
 
     // leave at least one slot free
     if (contiguous_space > available_space)
@@ -725,7 +730,7 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
 
     msg->number_of_slots = number_of_msg;
 
-    if (msg->msg_size == size_to_read &&    // are there any other messages in the buffer?
+    /*if (msg->msg_size == size_to_read &&    // are there any other messages in the buffer?
         start_w_index > end_w_index &&      // need to wrap around
         contiguous_space < available_space) // this should be always true
     {
@@ -739,6 +744,9 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
 
         // this means that we can try to read other messages to write in the first part of the buffer
         uint32_t contiguous_space_2 = available_space - contiguous_space;
+
+        if (contiguous_space_2 > MAX_CONTIGUOS_MSG_NUMBER)
+            contiguous_space_2 = MAX_CONTIGUOS_MSG_NUMBER;
 
         // write the rest of the message in the first part of the buffer
         rdma_msg_t *msg_2 = &ringbuffer->data[0];
@@ -770,7 +778,7 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
         msg_2->number_of_slots = number_of_msg_2;
 
         number_of_msg += number_of_msg_2;
-    }
+    }*/
 
 skip_second_read:
 
@@ -856,7 +864,7 @@ int rdma_parse_msg(bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *
     return 0;
 }
 
-int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index)
+int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index, uint32_t can_commit)
 {
     if (!ctx)
         return rdma_ret_err(ctx, "Context is NULL - rdma_read_msg");
@@ -884,7 +892,9 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
     {
         int idx = RING_IDX(start_read_index + i);
         rdma_msg_t *msg = &ringbuffer->data[idx];
+        pthread_mutex_lock(&ctx->mtx_rx);
         rdma_parse_msg(bpf_ctx, client_sks, msg);
+        pthread_mutex_unlock(&ctx->mtx_rx);
         i += msg->number_of_slots;
 #ifdef RDMA_DEBUG_READ
         atomic_fetch_add(&RX_COUNT, msg->number_of_slots);
@@ -893,13 +903,12 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
 #endif // RDMA_DEBUG_READ
     }
 
-    pthread_mutex_lock(&ctx->mtx_rx);
-
-    while (original_start_read_index != atomic_load(&ringbuffer->remote_read_index))
+    if (can_commit == FALSE)
     {
-        pthread_cond_wait(&ctx->cond_rx, &ctx->mtx_rx);
+        return 0; // don't update the read index, just read the messages
     }
 
+    // COMMIT the read index
     atomic_store(&ringbuffer->remote_read_index, original_end_read_index);
 
     size_t read_index_offset = (size_t)((char *)ringbuffer - (char *)ctx->buffer) +
@@ -913,8 +922,6 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
                          sizeof(ringbuffer->remote_read_index),
                          TRUE) != 0)
     {
-        pthread_cond_broadcast(&ctx->cond_rx);
-        pthread_mutex_unlock(&ctx->mtx_rx);
         return rdma_ret_err(ctx, "Failed to post read index update");
     }
 
@@ -926,9 +933,6 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
            n,
            (unsigned int)atomic_load(&ringbuffer->remote_read_index));
 #endif // RDMA_DEBUG_READ
-
-    pthread_cond_broadcast(&ctx->cond_rx);
-    pthread_mutex_unlock(&ctx->mtx_rx);
 
     return 0;
 }
