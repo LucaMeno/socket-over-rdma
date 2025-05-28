@@ -26,9 +26,9 @@
 
 // THRESHOLDS MANAGEMENT
 
-#define MIN_FLUSH_THRESHOLD 64
-#define MID_FLUSH_THRESHOLD 256
-#define MAX_FLUSH_THRESHOLD 512
+#define MIN_FLUSH_THRESHOLD 512
+#define MID_FLUSH_THRESHOLD 512
+#define MAX_FLUSH_THRESHOLD 1024
 
 #define USE_MIN_FT_IF_SMALLER_THAN 64   // if the number of messages is smaller than this, use the minimum flush threshold
 #define USE_MID_FT_IF_SMALLER_THAN 128  // if the number of messages is smaller than this, use the mid flush threshold
@@ -40,10 +40,10 @@
 #define MAX_MSG_BUFFER (1024 * 8) // POWER OF 2!!!!!!!!!!!
 #define MAX_PAYLOAD_SIZE (128 * 1024) // 128 KB
 
-#define MAX_CONTIGUOS_MSG_NUMBER 16 // maximum number of contiguous messages that can be read in a single read operation
+#define MAX_CONTIGUOS_MSG_NUMBER 1024 // maximum number of contiguous messages that can be read in a single read operation
 
 // READ
-#define MSG_TO_READ_PER_THREAD 2048
+#define MSG_TO_READ_PER_THREAD 128
 
 // SIZE OF STRUCTURES
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
@@ -190,6 +190,8 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
 int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index, uint32_t can_commit);
 int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer);
 int rdma_send_data_ready(rdma_context_t *ctx);
+
+int rdma_write_msg_extreme(rdma_context_t *ctx, int src_fd, struct sock_id original_socket);
 
 // POLLING
 int rdma_set_polling_status(rdma_context_t *ctx, uint32_t is_polling);

@@ -515,14 +515,49 @@ int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t
 
         uint32_t end_read_index = remote_w;
 
-        int n_msg = end_read_index - start_read_index;
-        // TODO: check if n_msg is negative
+        int n_msg = end_read_index - start_read_index; // TODO: check if n_msg is negative
 
-        // read the data NO THREAD
-        return rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index, TRUE);
+        if (n_msg <= 0)
+            return manager_ret_err(ctx, "No messages to read or invalid message count - rdma_manager_consume_ringbuffer");
 
-        /*int n_threads = 0;
-        uint32_t idx = start_read_index;
+        int n_threads = n_msg / MSG_TO_READ_PER_THREAD;
+        int msg_for_last_thread = n_msg % MSG_TO_READ_PER_THREAD;
+        if (msg_for_last_thread > 0)
+            n_threads++; // if there are messages for the last thread, add it
+
+        if (n_threads <= 0)
+            return manager_ret_err(ctx, "No messages to read - rdma_manager_consume_ringbuffer");
+
+        for (int i = 0; i < n_threads; i++)
+        {
+            reader_thread_arg_t *args = malloc(sizeof(reader_thread_arg_t));
+            if (args == NULL)
+                return manager_ret_err(ctx, "Failed to allocate memory for reader thread arg - rdma_manager_consume_ringbuffer");
+
+            args->ctxm = ctxm;
+            args->ctx = ctx;
+            args->base_read_index = start_read_index; // base read index for the context, used to calculate the real read index
+            args->offset = i;
+            args->can_commit = FALSE;
+            args->n_msg_read = MSG_TO_READ_PER_THREAD;
+
+            if (i == n_threads - 1)
+            {
+                // last thread, it can commit the read
+                args->can_commit = TRUE;
+                args->n_msg_read = msg_for_last_thread; // last thread reads the remaining messages
+            }
+
+            if (thread_pool_add(ctxm->pool, read_thread, args) != 0)
+            {
+                free(args);
+                return manager_ret_err(ctx, "Failed to add task to thread pool - rdma_manager_consume_ringbuffer");
+            }
+        }
+
+        printf("Added %d threads to read %d messages from ring buffer\n", n_threads, n_msg);
+
+        /*uint32_t idx = start_read_index;
         while (idx < end_read_index)
         {
             reader_thread_arg_t *arg2 = malloc(sizeof(reader_thread_arg_t));
@@ -880,26 +915,14 @@ void *rdma_manager_writer_thread(void *arg)
 
                 while (1)
                 {
-                    char dummy;
-                    int test = recv(fd, &dummy, 1, MSG_PEEK);
-                    if (test > 0)
-                    {
-                        // there is data to read
-                        if (rdma_write_msg(ctx, fd, app) != 1)
-                        {
-                            printf("Client disconnected or error occurred - writer_thread\n");
-                            /*FD_CLR(fd, &read_fds);
-                            close(fd);*/
-                            continue;
-                        }
-                    }
-                    else if (test == 0)
+                    int ret = rdma_write_msg_extreme(ctx, fd, app);
+                    if (ret == 0)
                     {
                         printf("0\n");
                         // connection closed
-                        break;
+                        return manager_ret_null(ctx, "Connection closed - rdma_manager_writer_thread");
                     }
-                    else
+                    else if (ret < 0)
                     {
                         if (errno == EAGAIN || errno == EWOULDBLOCK)
                         {
@@ -911,10 +934,11 @@ void *rdma_manager_writer_thread(void *arg)
                             // TODO
                             /*FD_CLR(fd, &read_fds);
                             close(fd);*/
-                            break;
+                            return manager_ret_null(ctx, "Connection closed - rdma_manager_writer_thread");
                         }
                     }
                 }
+                printf("OUT\n");
             }
         }
     }
@@ -1151,7 +1175,11 @@ void read_thread(void *arg)
     if (!param->ctxm || !param->ctx)
         return manager_ret_void(NULL, "Context or context manager is NULL - read_thread");
 
-    if (rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks, param->start_read_index, param->end_read_index, param->can_commit) != 0)
+    // calculate the real read index
+    uint32_t start_read_index = param->base_read_index + (param->offset * MSG_TO_READ_PER_THREAD);
+    uint32_t end_read_index = start_read_index + param->n_msg_read;
+
+    if (rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks, start_read_index, end_read_index, param->can_commit) != 0)
         return manager_ret_void(NULL, "Failed to read slice - read_thread");
 
     return;

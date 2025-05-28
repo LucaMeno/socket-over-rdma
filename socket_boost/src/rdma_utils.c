@@ -633,6 +633,79 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
     return 0;
 }
 
+int rdma_write_msg_extreme(rdma_context_t *ctx, int src_fd, struct sock_id original_socket)
+{
+
+    if (!ctx)
+        return rdma_ret_err(ctx, "Context is NULL - rdma_write_msg");
+
+    rdma_ringbuffer_t *ringbuffer = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
+
+    if (!ringbuffer)
+        return rdma_ret_err(ctx, "Ringbuffer is NULL - rdma_write_msg");
+
+    uint32_t start_w_index, end_w_index, available_space;
+    uint32_t num_msg_written = 0;
+
+    while (1)
+    { // wait until there is enough space in the ringbuffer
+        while (1)
+        {
+            start_w_index = atomic_load(&ringbuffer->local_write_index);
+            end_w_index = atomic_load(&ringbuffer->remote_read_index);
+
+            uint32_t used = start_w_index - end_w_index; // wrap-around safe
+            available_space = MAX_MSG_BUFFER - used - 1;
+
+            if (available_space >= 1)
+                break;
+
+            sched_yield();
+            COUNT++;
+            if (COUNT % 100000 == 0)
+            {
+                printf("STUCK %u - local_w: %u, remote_r: %u av_space: %u\n",
+                       COUNT, start_w_index, end_w_index, available_space);
+            }
+        }
+
+        // modulo the indexes
+        start_w_index = RING_IDX(start_w_index);
+        end_w_index = RING_IDX(end_w_index);
+
+        rdma_msg_t *msg = &ringbuffer->data[start_w_index];
+
+        msg->msg_size = recv(src_fd, msg->msg, MAX_PAYLOAD_SIZE, 0);
+        if ((int)msg->msg_size <= 0)
+        {
+            return msg->msg_size;
+        }
+
+#ifdef RDMA_DEBUG_FLUSH
+        TX_SIZE += msg->msg_size;
+#endif // RDMA_DEBUG_FLUSH
+
+        msg->msg_flags = 0;
+        msg->original_sk_id = original_socket;
+        msg->number_of_slots = 1;
+
+        atomic_fetch_add(&ctx->n_msg_sent, 1);
+        atomic_fetch_add(&ringbuffer->local_write_index, 1);
+
+        num_msg_written++;
+        if (num_msg_written >= ctx->flush_threshold)
+        {
+            // flush the buffer
+            if (rdma_flush_buffer(ctx, ringbuffer) != 0)
+                return rdma_ret_err(ctx, "Failed to flush buffer - rdma_write_msg");
+
+            num_msg_written = 0; // reset the counter
+        }
+    }
+
+    return 1;
+}
+
 int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_socket)
 {
 #ifdef RDMA_DEBUG_WRITE_IN_MSG
@@ -646,159 +719,118 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
     if (!ctx)
         return rdma_ret_err(ctx, "Context is NULL - rdma_write_msg");
 
-    pthread_mutex_lock(&ctx->mtx_tx);
-
     rdma_ringbuffer_t *ringbuffer = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
 
     if (!ringbuffer)
         return rdma_ret_err(ctx, "Ringbuffer is NULL - rdma_write_msg");
 
     uint32_t start_w_index, end_w_index, available_space;
+    uint32_t num_msg_written = 0;
 
     while (1)
-    {
-        start_w_index = atomic_load(&ringbuffer->local_write_index);
-        end_w_index = atomic_load(&ringbuffer->remote_read_index);
-
-        uint32_t used = start_w_index - end_w_index; // wrap-around safe
-        available_space = MAX_MSG_BUFFER - used - 1;
-
-        if (available_space >= 1)
-            break;
-
-        sched_yield();
-        COUNT++;
-        if (COUNT % 100 == 0)
+    { // wait until there is enough space in the ringbuffer
+        while (1)
         {
-            printf("STUCK %u - local_w: %u, remote_r: %u av_space: %u\n",
-                   COUNT, start_w_index, end_w_index, available_space);
+            start_w_index = atomic_load(&ringbuffer->local_write_index);
+            end_w_index = atomic_load(&ringbuffer->remote_read_index);
+
+            uint32_t used = start_w_index - end_w_index; // wrap-around safe
+            available_space = MAX_MSG_BUFFER - used - 1;
+
+            if (available_space >= 1)
+                break;
+
+            sched_yield();
+            COUNT++;
+            if (COUNT % 100000 == 0)
+            {
+                printf("STUCK %u - local_w: %u, remote_r: %u av_space: %u\n",
+                       COUNT, start_w_index, end_w_index, available_space);
+            }
         }
-    }
 
-    // modulo the indexes
-    start_w_index &= (MAX_MSG_BUFFER - 1); // start_w_index %= MAX_MSG_BUFFER;
-    end_w_index &= (MAX_MSG_BUFFER - 1);
+        // modulo the indexes
+        start_w_index = RING_IDX(start_w_index);
+        end_w_index = RING_IDX(end_w_index);
 
-    rdma_msg_t *msg = &ringbuffer->data[start_w_index];
+        rdma_msg_t *msg = &ringbuffer->data[start_w_index];
 
-    // check if there is enough CONTIGUOUS space to write the message
-    // contiguous space is in indexes notation
-    uint32_t contiguous_space = MAX_MSG_BUFFER - start_w_index;
+        // check if there is enough CONTIGUOUS space to write the message
+        // contiguous space is in indexes notation
+        /*uint32_t contiguous_space = MAX_MSG_BUFFER - start_w_index;
 
-    if (contiguous_space > MAX_CONTIGUOS_MSG_NUMBER)
-        contiguous_space = MAX_CONTIGUOS_MSG_NUMBER;
+        if (contiguous_space > MAX_CONTIGUOS_MSG_NUMBER)
+            contiguous_space = MAX_CONTIGUOS_MSG_NUMBER;
 
-    // leave at least one slot free
-    if (contiguous_space > available_space)
-        contiguous_space = available_space;
+        // leave at least one slot free
+        if (contiguous_space > available_space)
+            contiguous_space = available_space;
 
-    if (contiguous_space == 0)
-    {
-        pthread_mutex_unlock(&ctx->mtx_tx);
-        return rdma_ret_err(ctx, "No contiguous space");
-    }
+        if (contiguous_space == 0)
+        {
+            return rdma_ret_err(ctx, "No contiguous space");
+        }
 
-    uint32_t size_to_read = ((contiguous_space - 1) * sizeof(rdma_msg_t)) + MAX_PAYLOAD_SIZE;
+        uint32_t size_to_read = ((contiguous_space - 1) * sizeof(rdma_msg_t)) + MAX_PAYLOAD_SIZE;*/
 
-    msg->msg_size = recv(src_fd, msg->msg, size_to_read, 0);
-    if (msg->msg_size <= 0)
-    {
-        pthread_mutex_unlock(&ctx->mtx_tx);
-        return msg->msg_size;
-    }
+        msg->msg_size = recv(src_fd, msg->msg, MAX_PAYLOAD_SIZE, 0);
+        if ((int)msg->msg_size <= 0)
+        {
+            return msg->msg_size;
+        }
 
 #ifdef RDMA_DEBUG_FLUSH
-    TX_SIZE += msg->msg_size;
+        TX_SIZE += msg->msg_size;
 #endif // RDMA_DEBUG_FLUSH
 
-    msg->msg_flags = 0;
-    msg->original_sk_id = original_socket;
+        msg->msg_flags = 0;
+        msg->original_sk_id = original_socket;
 
-    uint32_t number_of_msg = 0;
+        /*uint32_t number_of_msg = 0;
 
-    if (msg->msg_size > MAX_PAYLOAD_SIZE)
-    {
-        number_of_msg = (((msg->msg_size - MAX_PAYLOAD_SIZE) +
-                          sizeof(rdma_msg_t) - 1) /
-                         sizeof(rdma_msg_t)) +
-                        1; // +1 for the header
-    }
-    else
-    {
-        number_of_msg = 1;
-    }
-
-    msg->number_of_slots = number_of_msg;
-
-    /*if (msg->msg_size == size_to_read &&    // are there any other messages in the buffer?
-        start_w_index > end_w_index &&      // need to wrap around
-        contiguous_space < available_space) // this should be always true
-    {
-        // check if there is something to read
-        char dummy;
-        int test = recv(src_fd, &dummy, 1, MSG_PEEK);
-        if (test <= 0)
+        if (msg->msg_size > MAX_PAYLOAD_SIZE)
         {
-            goto skip_second_read;
-        }
-
-        // this means that we can try to read other messages to write in the first part of the buffer
-        uint32_t contiguous_space_2 = available_space - contiguous_space;
-
-        if (contiguous_space_2 > MAX_CONTIGUOS_MSG_NUMBER)
-            contiguous_space_2 = MAX_CONTIGUOS_MSG_NUMBER;
-
-        // write the rest of the message in the first part of the buffer
-        rdma_msg_t *msg_2 = &ringbuffer->data[0];
-
-        size_to_read = ((contiguous_space_2 - 1) * sizeof(rdma_msg_t)) + MAX_PAYLOAD_SIZE;
-
-        msg_2->msg_size = recv(src_fd, msg_2->msg, size_to_read, 0);
-        if (msg_2->msg_size <= 0)
-            return msg_2->msg_size;
-
-        TX_SIZE += msg_2->msg_size;
-
-        msg_2->msg_flags = 0;
-        msg_2->original_sk_id = original_socket;
-
-        // update the number of messages
-        uint32_t number_of_msg_2 = 0;
-        if (msg_2->msg_size > MAX_PAYLOAD_SIZE)
-        {
-            number_of_msg_2 = (((msg_2->msg_size - MAX_PAYLOAD_SIZE) +
-                                sizeof(rdma_msg_t) - 1) /
-                               sizeof(rdma_msg_t)) +
-                              1; // +1 for the header
+            number_of_msg = (((msg->msg_size - MAX_PAYLOAD_SIZE) +
+                              sizeof(rdma_msg_t) - 1) /
+                             sizeof(rdma_msg_t)) +
+                            1; // +1 for the header
         }
         else
         {
-            number_of_msg_2 = 1;
+            number_of_msg = 1;
+        }*/
+
+        msg->number_of_slots = 1;
+
+        /*printf("Msg size: %u, number of slots: %u\n",
+               msg->msg_size, msg->number_of_slots);*/
+
+        atomic_fetch_add(&ctx->n_msg_sent, 1);
+
+        // update the local write index
+        atomic_fetch_add(&ringbuffer->local_write_index, 1);
+
+        num_msg_written++;
+        if (num_msg_written >= 128)
+        {
+            // flush the buffer
+            if (rdma_flush_buffer(ctx, ringbuffer) != 0)
+                return rdma_ret_err(ctx, "Failed to flush buffer - rdma_write_msg");
+
+            num_msg_written = 0; // reset the counter
         }
-        msg_2->number_of_slots = number_of_msg_2;
 
-        number_of_msg += number_of_msg_2;
-    }*/
+        /*uint32_t actual_index = RING_IDX(atomic_load(&ringbuffer->local_write_index));
+        uint32_t last_flush_index = RING_IDX(atomic_load(&ringbuffer->local_read_index));
 
-skip_second_read:
+        uint32_t msg_to_flush = RING_IDX(actual_index - last_flush_index);
 
-    atomic_fetch_add(&ctx->n_msg_sent, number_of_msg);
-
-    // update the local write index
-    atomic_fetch_add(&ringbuffer->local_write_index, number_of_msg);
-
-    uint32_t actual_index = atomic_load(&ringbuffer->local_write_index) % MAX_MSG_BUFFER;
-    uint32_t last_flush_index = atomic_load(&ringbuffer->local_read_index) % MAX_MSG_BUFFER;
-
-    uint32_t msg_to_flush = (actual_index - last_flush_index) & (MAX_MSG_BUFFER - 1);
-
-    pthread_mutex_unlock(&ctx->mtx_tx);
-
-    if (msg_to_flush >= atomic_load(&ctx->flush_threshold))
-    {
-        // flush the buffer
-        if (rdma_flush_buffer(ctx, ringbuffer) != 0)
-            return rdma_ret_err(ctx, "Failed to flush buffer - rdma_write_msg");
+        if (msg_to_flush >= atomic_load(&ctx->flush_threshold))
+        {
+            // flush the buffer
+            if (rdma_flush_buffer(ctx, ringbuffer) != 0)
+                return rdma_ret_err(ctx, "Failed to flush buffer - rdma_write_msg");
+        }*/
     }
 
     return 1;
