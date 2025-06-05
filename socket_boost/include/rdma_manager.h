@@ -27,12 +27,12 @@
 #define SLEEP_TIME_BETWEEN_POLLING_MS 1    // ms
 
 // move from event based to polling based
-#define N_OF_RECV_BEFORE_POLLING 3
+#define N_OF_RECV_BEFORE_POLLING 1
 #define MAX_TIME_BETWEEN_RECV_TO_TRIGGER_POLLING_MS 1000 // ms
 
 #define FLUSH_INTERVAL_MS 100 // ms
 
-#define N_THREADS_POOL 15
+#define N_THREADS_POOL 16
 #define N_WRITER_THREADS NUMBER_OF_SOCKETS // 1 thread per proxy socket
 
 #define INITIAL_CONTEXT_NUMBER 10
@@ -96,10 +96,10 @@ struct reader_thread_arg
     uint32_t start_read_index;
     uint32_t end_read_index;
 
-    uint32_t can_commit;      // flag to indicate if the read can be committed (only the last thread can commit)
-    uint32_t base_read_index; // base read index for the context, used to calculate the real read index
-    uint32_t offset;          // offset for the read index, used to calculate the real read index
-    uint32_t n_msg_read;      // number of messages read by this thread
+    //uint32_t can_commit;      // flag to indicate if the read can be committed (only the last thread can commit)
+    //uint32_t base_read_index; // base read index for the context, used to calculate the real read index
+    //uint32_t offset;          // offset for the read index, used to calculate the real read index
+    //uint32_t n_msg_read;      // number of messages read by this thread
 };
 
 struct flush_thread_arg

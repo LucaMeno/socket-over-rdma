@@ -9,8 +9,9 @@
 #define RDMA_PORT 7471
 #define RDMA_DEBUG_SR // sedn/recv
 // #define RDMA_DEBUG_WRITE
-//#define RDMA_DEBUG_FLUSH
-//#define RDMA_DEBUG_READ
+#define RDMA_DEBUG_FLUSH
+#define RDMA_DEBUG_READ
+#define RDMA_DEBUG_INTERVAL 100
 // #define RDMA_DEBUG_PARSE_MSG
 // #define RDMA_DEBUG_WRITE_IN_MSG
 

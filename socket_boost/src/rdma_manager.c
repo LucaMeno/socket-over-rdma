@@ -500,6 +500,9 @@ int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
     return 0;
 }
 
+reader_thread_arg_t preallocated_args[1000];
+uint32_t preallocated_args_index = 0;
+
 int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t *ctx, rdma_ringbuffer_t *rb_remote)
 {
     if (rb_remote == NULL || ctxm == NULL || ctx == NULL)
@@ -507,115 +510,38 @@ int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t
 
     uint32_t remote_w = atomic_load(&rb_remote->remote_write_index);
     uint32_t local_r = atomic_load(&rb_remote->local_read_index);
+
     if (remote_w != local_r)
     {
         // set the local read index to avoid reading the same data again
         uint32_t start_read_index = local_r;
-        atomic_store(&rb_remote->local_read_index, remote_w);
-
         uint32_t end_read_index = remote_w;
 
-        int n_msg = end_read_index - start_read_index; // TODO: check if n_msg is negative
+        atomic_store(&rb_remote->local_read_index, remote_w);
 
-        if (n_msg <= 0)
-            return manager_ret_err(ctx, "No messages to read or invalid message count - rdma_manager_consume_ringbuffer");
+        /*reader_thread_arg_t *arg = &preallocated_args[preallocated_args_index++];
+        if (preallocated_args_index >= 1000)
+            preallocated_args_index = 0; // reset the index to avoid overflow
 
-        int n_threads = n_msg / MSG_TO_READ_PER_THREAD;
-        int msg_for_last_thread = n_msg % MSG_TO_READ_PER_THREAD;
-        if (msg_for_last_thread > 0)
-            n_threads++; // if there are messages for the last thread, add it
+        arg->ctxm = ctxm;
+        arg->ctx = ctx;
+        arg->start_read_index = start_read_index;
+        arg->end_read_index = end_read_index;
 
-        if (n_threads <= 0)
-            return manager_ret_err(ctx, "No messages to read - rdma_manager_consume_ringbuffer");
+        // add the task to the thread pool
+        if (thread_pool_add(ctxm->pool, read_thread, arg) != 0)
+            return manager_ret_err(ctx, "Failed to add task to thread pool - rdma_manager_consume_ringbuffer");*/
 
-        for (int i = 0; i < n_threads; i++)
-        {
-            reader_thread_arg_t *args = malloc(sizeof(reader_thread_arg_t));
-            if (args == NULL)
-                return manager_ret_err(ctx, "Failed to allocate memory for reader thread arg - rdma_manager_consume_ringbuffer");
+        // update the remote index
+        if (rdma_update_remote_read_idx(ctx, rb_remote, end_read_index) != 0)
+            return manager_ret_err(NULL, "Error while updating the index");
 
-            args->ctxm = ctxm;
-            args->ctx = ctx;
-            args->base_read_index = start_read_index; // base read index for the context, used to calculate the real read index
-            args->offset = i;
-            args->can_commit = FALSE;
-            args->n_msg_read = MSG_TO_READ_PER_THREAD;
-
-            if (i == n_threads - 1)
-            {
-                // last thread, it can commit the read
-                args->can_commit = TRUE;
-                args->n_msg_read = msg_for_last_thread; // last thread reads the remaining messages
-            }
-
-            if (thread_pool_add(ctxm->pool, read_thread, args) != 0)
-            {
-                free(args);
-                return manager_ret_err(ctx, "Failed to add task to thread pool - rdma_manager_consume_ringbuffer");
-            }
-        }
-
-        printf("Added %d threads to read %d messages from ring buffer\n", n_threads, n_msg);
-
-        /*uint32_t idx = start_read_index;
-        while (idx < end_read_index)
-        {
-            reader_thread_arg_t *arg2 = malloc(sizeof(reader_thread_arg_t));
-            if (arg2 == NULL)
-                return manager_ret_err(NULL, "Failed to allocate memory for thread pool arg - rdma_manager_polling_thread");
-
-            arg2->ctxm = ctxm;
-            arg2->ctx = ctx;
-            arg2->start_read_index = idx;
-            arg2->can_commit = FALSE; // only the last thread can commit
-
-            // calculate the end read index
-            int count = 0;
-            while (idx < end_read_index)
-            {
-                // int iterator = idx % MAX_MSG_BUFFER;
-                int iterator = RING_IDX(idx);
-                rdma_msg_t *msg = &rb_remote->data[iterator];
-
-                if (msg->number_of_slots <= 0)
-                {
-                    free(arg2);
-                    char err_msg[128];
-                    snprintf(err_msg, sizeof(err_msg), "Invalid message slot count: %d - rdma_manager_polling_thread", msg->number_of_slots);
-                    return manager_ret_err(NULL, err_msg);
-                }
-
-                count += msg->number_of_slots;
-                // count++;
-                idx += msg->number_of_slots;
-
-                if (count >= MSG_TO_READ_PER_THREAD)
-                    break;
-            }
-
-            arg2->end_read_index = idx;
-
-            if (idx >= end_read_index)
-            {
-                // this is the last thread, it can commit the read
-                arg2->can_commit = TRUE;
-            }
-
-            if (thread_pool_add(ctxm->pool, read_thread, arg2) != 0)
-            {
-                free(arg2);
-                return manager_ret_err(NULL, "Failed to add task to thread pool - rdma_manager_polling_thread");
-            }
-
-            n_threads++;
-        }
-
-        printf("Added %d threads to read %d messages from ring buffer\n", n_threads, n_msg);*/
-
-        return 0; // messages were found and added to the thread pool
+        return rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index, FALSE);
     }
-
-    return 1; // no messages to read
+    else
+    {
+        return 1; // no messages to rea
+    }
 }
 
 /** BACKGROUND THREAD */
@@ -915,7 +841,7 @@ void *rdma_manager_writer_thread(void *arg)
 
                 while (1)
                 {
-                    int ret = rdma_write_msg_extreme(ctx, fd, app);
+                    int ret = rdma_write_msg(ctx, fd, app);
                     if (ret == 0)
                     {
                         printf("0\n");
@@ -938,7 +864,7 @@ void *rdma_manager_writer_thread(void *arg)
                         }
                     }
                 }
-                printf("OUT\n");
+                // printf("OUT\n");
             }
         }
     }
@@ -987,7 +913,22 @@ void *rdma_manager_polling_thread(void *arg)
                 continue; // context not ready, skip it
             }
 
-            int is_actual_ctx_polling = TRUE;
+            while (1)
+            {
+                int ret = rdma_manager_consume_ringbuffer(ctxm, ctx, ctx->is_server ? ctx->ringbuffer_client : ctx->ringbuffer_server);
+                if (ret < 0)
+                {
+                    // error occurred while consuming the ring buffer
+                    return manager_ret_null(ctx, "Failed to consume ring buffer - rdma_manager_polling_thread");
+                }
+                else if (ret == 1)
+                {
+                    // no msg to read
+                    break;
+                }
+            }
+
+            /*int is_actual_ctx_polling = TRUE;
             ctx_active++;
             rb_local = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
             rb_remote = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
@@ -1001,9 +942,11 @@ void *rdma_manager_polling_thread(void *arg)
 
             // since we are polling some buffers, we can test all the buffers
             // check if there are any messages to read
+
+            int ret_zero = FALSE;
+
             while (1)
             {
-
                 int ret = rdma_manager_consume_ringbuffer(ctxm, ctx, rb_remote);
 
                 if (ret < 0)
@@ -1013,16 +956,7 @@ void *rdma_manager_polling_thread(void *arg)
                 }
                 else if (ret == 0)
                 {
-                    // messages were found and added to the thread pool
-                    // reset the loop with no messages
-                    if (is_actual_ctx_polling == TRUE && ctx->loop_with_no_msg > 0)
-                    {
-                        u_int64_t now = get_time_ms();
-                        pthread_mutex_lock(&ctxm->mtx_polling);
-                        ctx->loop_with_no_msg = 0;
-                        ctx->time_start_polling = now;
-                        pthread_mutex_unlock(&ctxm->mtx_polling);
-                    }
+                    ret_zero = TRUE; // messages were found and added to the thread pool
                 }
                 else // no messages to read
                 {
@@ -1047,6 +981,20 @@ void *rdma_manager_polling_thread(void *arg)
                     break; // no more messages to read
                 }
             }
+
+            if (ret_zero == TRUE)
+            {
+                // messages were found and added to the thread pool
+                // reset the loop with no messages
+                if (is_actual_ctx_polling == TRUE && ctx->loop_with_no_msg > 0)
+                {
+                    u_int64_t now = get_time_ms();
+                    pthread_mutex_lock(&ctxm->mtx_polling);
+                    ctx->loop_with_no_msg = 0;
+                    ctx->time_start_polling = now;
+                    pthread_mutex_unlock(&ctxm->mtx_polling);
+                }
+            }*/
         }
 
         // sleep for a while
@@ -1055,7 +1003,7 @@ void *rdma_manager_polling_thread(void *arg)
         ts.tv_nsec = (SLEEP_TIME_BETWEEN_POLLING_MS % 1000) * 1000000; // ms -> ns
         nanosleep(&ts, NULL);*/
 
-        if (non_polling == ctx_active || ctx_not_active == ctxm->ctx_count)
+        /*if (non_polling == ctx_active || ctx_not_active == ctxm->ctx_count)
         {
             // all buffers are non-polling, stop the thread
             printf("All buffers are non-polling, wait on CV\n");
@@ -1070,7 +1018,7 @@ void *rdma_manager_polling_thread(void *arg)
 
         non_polling = 0;
         ctx_active = 0;
-        ctx_not_active = 0;
+        ctx_not_active = 0;*/
     }
 
     return NULL;
@@ -1175,11 +1123,7 @@ void read_thread(void *arg)
     if (!param->ctxm || !param->ctx)
         return manager_ret_void(NULL, "Context or context manager is NULL - read_thread");
 
-    // calculate the real read index
-    uint32_t start_read_index = param->base_read_index + (param->offset * MSG_TO_READ_PER_THREAD);
-    uint32_t end_read_index = start_read_index + param->n_msg_read;
-
-    if (rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks, start_read_index, end_read_index, param->can_commit) != 0)
+    if (rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks, param->start_read_index, param->end_read_index, FALSE) != 0)
         return manager_ret_void(NULL, "Failed to read slice - read_thread");
 
     return;
@@ -1231,7 +1175,7 @@ void *worker(void *arg)
         if (task) // execute the task
         {
             task->function(task->arg);
-            free(task->arg);
+            // free(task->arg); // TODO: memory leak?
             task->arg = NULL;
             free(task);
             task = NULL;

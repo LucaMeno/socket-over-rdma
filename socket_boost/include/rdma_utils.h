@@ -20,15 +20,16 @@
 #include "scap.h"
 #include "sk_utils.h"
 #include "config.h"
+#include "uthash.h"
 
 #define UNUSED(x) (void)(x)
 #define RING_IDX(i) ((i) & (MAX_MSG_BUFFER - 1))
 
 // THRESHOLDS MANAGEMENT
 
-#define MIN_FLUSH_THRESHOLD 512
-#define MID_FLUSH_THRESHOLD 512
-#define MAX_FLUSH_THRESHOLD 1024
+#define MIN_FLUSH_THRESHOLD 32
+#define MID_FLUSH_THRESHOLD 64
+#define MAX_FLUSH_THRESHOLD 128
 
 #define USE_MIN_FT_IF_SMALLER_THAN 64   // if the number of messages is smaller than this, use the minimum flush threshold
 #define USE_MID_FT_IF_SMALLER_THAN 128  // if the number of messages is smaller than this, use the mid flush threshold
@@ -37,10 +38,10 @@
 #define MINIMUM_TIME_BETWEEN_FLUSH_CHANGE_MS 1000 // minimum time between flush threshold changes
 
 // BUFFER CONFIGURATION
-#define MAX_MSG_BUFFER (1024 * 8) // POWER OF 2!!!!!!!!!!!
+#define MAX_MSG_BUFFER (1024 * 8)     // POWER OF 2!!!!!!!!!!!
 #define MAX_PAYLOAD_SIZE (128 * 1024) // 128 KB
 
-#define MAX_CONTIGUOS_MSG_NUMBER 1024 // maximum number of contiguous messages that can be read in a single read operation
+#define MAX_CONTIGUOS_MSG_NUMBER 256 // maximum number of contiguous messages that can be read in a single read operation
 
 // READ
 #define MSG_TO_READ_PER_THREAD 128
@@ -56,6 +57,7 @@ typedef struct rdma_ringbuffer rdma_ringbuffer_t;
 typedef struct rdma_flag rdma_flag_t;
 typedef struct rdma_context rdma_context_t;
 typedef struct rdma_meta_info rdma_meta_info_t;
+typedef struct app_to_proxy_sk app_to_proxy_sk_t;
 
 struct rdma_meta_info
 {
@@ -126,6 +128,13 @@ struct rdma_ringbuffer
     rdma_msg_t data[MAX_MSG_BUFFER];
 };
 
+struct app_to_proxy_sk
+{
+    struct sock_id app_sk_id;
+    struct sock_id proxy_sk_id; // id of the proxy socket
+    UT_hash_handle hh;          // makes this structure hashable
+};
+
 struct rdma_context
 {
     // RDMA
@@ -172,6 +181,8 @@ struct rdma_context
 
     rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server
     rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
+
+    app_to_proxy_sk_t app_to_proxy_sks; // Hash table of app to proxy sockets
 };
 
 /** SETUP CONTEXT */
@@ -190,8 +201,9 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
 int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index, uint32_t can_commit);
 int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer);
 int rdma_send_data_ready(rdma_context_t *ctx);
+int rdma_update_remote_read_idx(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t r_idx);
 
-int rdma_write_msg_extreme(rdma_context_t *ctx, int src_fd, struct sock_id original_socket);
+int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_socket);
 
 // POLLING
 int rdma_set_polling_status(rdma_context_t *ctx, uint32_t is_polling);
