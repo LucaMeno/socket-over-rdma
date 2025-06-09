@@ -18,6 +18,7 @@ add_executable(scap
     src/sk_utils.c
     src/rdma_utils.c
     src/rdma_manager.c
+    src/hashmap.c
 )
 
 # === BPF ===
@@ -29,7 +30,7 @@ file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/obj)
 
 add_custom_command(
     OUTPUT ${BPF_OBJ}
-    COMMAND clang -g -O2 -target bpf -Iinclude -c ${CMAKE_SOURCE_DIR}/src/scap.bpf.c -o ${BPF_OBJ}
+    COMMAND clang -g -O2 -target bpf -I${CMAKE_SOURCE_DIR}/include -c ${CMAKE_SOURCE_DIR}/src/scap.bpf.c -o ${BPF_OBJ}
     DEPENDS ${CMAKE_SOURCE_DIR}/src/scap.bpf.c
 )
 

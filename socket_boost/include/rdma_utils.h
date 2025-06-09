@@ -15,12 +15,11 @@
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 #include <stdatomic.h>
-#include "uthash.h"
 
 #include "scap.h"
 #include "sk_utils.h"
 #include "config.h"
-#include "uthash.h"
+#include "hashmap.h"
 
 #define UNUSED(x) (void)(x)
 #define RING_IDX(i) ((i) & (MAX_MSG_BUFFER - 1))
@@ -68,7 +67,6 @@ typedef struct rdma_ringbuffer rdma_ringbuffer_t;
 typedef struct rdma_flag rdma_flag_t;
 typedef struct rdma_context rdma_context_t;
 typedef struct rdma_meta_info rdma_meta_info_t;
-typedef struct app_to_proxy_sk app_to_proxy_sk_t;
 
 struct rdma_meta_info
 {
@@ -139,12 +137,7 @@ struct rdma_ringbuffer
     rdma_msg_t data[MAX_MSG_BUFFER];
 };
 
-struct app_to_proxy_sk
-{
-    struct sock_id app_sk_id;
-    struct sock_id proxy_sk_id; // id of the proxy socket
-    UT_hash_handle hh;          // makes this structure hashable
-};
+
 
 struct rdma_context
 {
@@ -193,14 +186,7 @@ struct rdma_context
     rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server
     rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
 
-    app_to_proxy_sk_t app_to_proxy_sks; // Hash table of app to proxy sockets
-};
-
-struct sock_hash_entry
-{
-    struct sock_id key;
-    int value;
-    UT_hash_handle hh;
+    sock_hash_entry_t **app_to_proxy_sks; // Hash table of app to proxy sockets (HEAD)
 };
 
 /** SETUP CONTEXT */

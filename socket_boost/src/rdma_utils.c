@@ -25,7 +25,7 @@ struct proxy_sk *rdma_get_a_p_association(rdma_context_t *ctx, struct sock_id ap
 int rdma_ret_err(rdma_context_t *rdma_ctx, char *msg);
 
 // COMMUNICATION
-int rdma_parse_msg(bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *msg);
+int rdma_parse_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *msg);
 
 /** CLIENT - SERVER */
 
@@ -428,6 +428,8 @@ int rdma_context_init(rdma_context_t *ctx)
     ctx->time_last_recv = 0;
     ctx->n_recv_msg = 0;
 
+    ctx->app_to_proxy_sks = NULL;
+
     return 0;
 }
 
@@ -691,10 +693,12 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
     return 1;
 }
 
-int rdma_parse_msg(bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *msg)
+int rdma_parse_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *msg)
 {
     // retrive the proxy_fd
-    int fd = bpf_get_proxy_fd_from_app_sk(bpf_ctx, msg->original_sk_id);
+    // int fd = bpf_get_proxy_fd_from_app_sk(bpf_ctx, msg->original_sk_id);
+    sock_hash_entry_t *entry = find_hash_entry(ctx->app_to_proxy_sks, msg->original_sk_id);
+    int fd = (entry != NULL) ? entry->proxy_fd : -1;
     if (fd > 0)
     {
         send(fd, msg->msg, msg->msg_size, 0);
@@ -721,7 +725,7 @@ int rdma_parse_msg(bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *
                proxy_sk_id.dip, proxy_sk_id.dport);
 #endif // RDMA_DEBUG_PARSE_MSG
 
-        // find the original socket in the list
+        // find the original socket in the lists
         int i = 0;
         for (; i < NUMBER_OF_SOCKETS; i++)
         {
@@ -731,7 +735,10 @@ int rdma_parse_msg(bpf_context_t *bpf_ctx, client_sk_t *client_sks, rdma_msg_t *
                 client_sks[i].sk_id.dport == proxy_sk_id.dport)
             {
                 // update the map with the new socket
-                bpf_add_app_sk_to_proxy_fd(bpf_ctx, msg->original_sk_id, client_sks[i].fd);
+                // bpf_add_app_sk_to_proxy_fd(bpf_ctx, msg->original_sk_id, client_sks[i].fd);
+
+                add_or_update_hash_entry(ctx->app_to_proxy_sks,
+                                          msg->original_sk_id, client_sks[i].fd);
 
                 // found the socket
                 send(client_sks[i].fd, msg->msg, msg->msg_size, 0);
@@ -799,7 +806,7 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
     {
         int idx = RING_IDX(start_read_index + i);
         rdma_msg_t *msg = &ringbuffer->data[idx];
-        rdma_parse_msg(bpf_ctx, client_sks, msg);
+        rdma_parse_msg(ctx, bpf_ctx, client_sks, msg);
         i += msg->number_of_slots;
 
 #ifdef RDMA_DEBUG_READ

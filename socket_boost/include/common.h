@@ -4,6 +4,9 @@
 
 // #include "vmlinux.h"
 
+typedef uint32_t __u32;
+typedef uint16_t __u16;
+
 // key structure for the sockmap
 struct sock_id
 {
