@@ -27,7 +27,7 @@
 #define SLEEP_TIME_BETWEEN_POLLING_MS 1    // ms
 
 // move from event based to polling based
-#define N_OF_RECV_BEFORE_POLLING 1
+#define N_OF_RECV_BEFORE_POLLING 3
 #define MAX_TIME_BETWEEN_RECV_TO_TRIGGER_POLLING_MS 1000 // ms
 
 #define FLUSH_INTERVAL_MS 100 // ms

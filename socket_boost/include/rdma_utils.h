@@ -27,7 +27,11 @@
 
 // THRESHOLDS MANAGEMENT
 
-#define MIN_FLUSH_THRESHOLD 32
+// #define AUTOSCALE_FLUSH_THRESHOLD
+
+#ifdef AUTOSCALE_FLUSH_THRESHOLD
+
+#define MIN_FLUSH_THRESHOLD 16 // minimum flush threshold also the default flush threshold
 #define MID_FLUSH_THRESHOLD 64
 #define MAX_FLUSH_THRESHOLD 128
 
@@ -37,11 +41,18 @@
 
 #define MINIMUM_TIME_BETWEEN_FLUSH_CHANGE_MS 1000 // minimum time between flush threshold changes
 
+#else
+
+#define THRESHOLD_NOT_AUTOSCALER 64
+
+#endif // AUTOSCALE_FLUSH_THRESHOLD
+
 // BUFFER CONFIGURATION
-#define MAX_MSG_BUFFER (1024 * 8)     // POWER OF 2!!!!!!!!!!!
+#define MAX_MSG_BUFFER (1024 * 8) // POWER OF 2!!!!!!!!!!!
+
 #define MAX_PAYLOAD_SIZE (128 * 1024) // 128 KB
 
-#define MAX_CONTIGUOS_MSG_NUMBER 256 // maximum number of contiguous messages that can be read in a single read operation
+#define MAX_CONTIGUOS_MSG_NUMBER 1 // maximum number of contiguous messages that can be read in a single read operation
 
 // READ
 #define MSG_TO_READ_PER_THREAD 128
@@ -185,6 +196,13 @@ struct rdma_context
     app_to_proxy_sk_t app_to_proxy_sks; // Hash table of app to proxy sockets
 };
 
+struct sock_hash_entry
+{
+    struct sock_id key;
+    int value;
+    UT_hash_handle hh;
+};
+
 /** SETUP CONTEXT */
 
 // CLIENT - SERVER
@@ -198,7 +216,7 @@ int rdma_context_init(rdma_context_t *ctx);
 
 // COMMUNICATION
 int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_socket);
-int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index, uint32_t can_commit);
+int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index);
 int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer);
 int rdma_send_data_ready(rdma_context_t *ctx);
 int rdma_update_remote_read_idx(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t r_idx);

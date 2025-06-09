@@ -131,6 +131,12 @@ int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port, client_s
     pthread_cond_init(&ctxm->cond_polling, NULL);
     ctxm->is_polling_thread_running = FALSE;
 
+    printf("Configuration:\n");
+    printf(" RDMA port: %u\n", ctxm->rdma_port);
+    printf(" MAX_PAYLOAD_SIZE: %ukB\n", MAX_PAYLOAD_SIZE / 1024);
+    printf(" MAX_MSG_BUFFER: %uk\n", MAX_MSG_BUFFER / 1024);
+    printf(" THRESHOLD: %u\n", THRESHOLD_NOT_AUTOSCALER);
+
     return 0;
 }
 
@@ -444,7 +450,10 @@ int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
 
     case RDMA_DATA_READY:
 
-        u_int64_t now = get_time_ms();
+        if (rdma_manager_start_polling(ctxm, ctx) != 0)
+            return manager_ret_err(ctx, "Failed to send data ready notification - rdma_parse_notification");
+
+        /*u_int64_t now = get_time_ms();
 
         // First notification received
         if (ctx->time_last_recv == 0)
@@ -490,7 +499,7 @@ int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
                 break; // No more data
         }
 
-        break;
+        break;*/
 
     default:
         printf("Unknown notification code\n");
@@ -499,9 +508,6 @@ int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
 
     return 0;
 }
-
-reader_thread_arg_t preallocated_args[1000];
-uint32_t preallocated_args_index = 0;
 
 int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t *ctx, rdma_ringbuffer_t *rb_remote)
 {
@@ -519,28 +525,15 @@ int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t
 
         atomic_store(&rb_remote->local_read_index, remote_w);
 
-        /*reader_thread_arg_t *arg = &preallocated_args[preallocated_args_index++];
-        if (preallocated_args_index >= 1000)
-            preallocated_args_index = 0; // reset the index to avoid overflow
-
-        arg->ctxm = ctxm;
-        arg->ctx = ctx;
-        arg->start_read_index = start_read_index;
-        arg->end_read_index = end_read_index;
-
-        // add the task to the thread pool
-        if (thread_pool_add(ctxm->pool, read_thread, arg) != 0)
-            return manager_ret_err(ctx, "Failed to add task to thread pool - rdma_manager_consume_ringbuffer");*/
-
         // update the remote index
         if (rdma_update_remote_read_idx(ctx, rb_remote, end_read_index) != 0)
             return manager_ret_err(NULL, "Error while updating the index");
 
-        return rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index, FALSE);
+        return rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index);
     }
     else
     {
-        return 1; // no messages to rea
+        return 1; // no messages to read
     }
 }
 
@@ -864,7 +857,7 @@ void *rdma_manager_writer_thread(void *arg)
                         }
                     }
                 }
-                // printf("OUT\n");
+                //printf("OUT\n");
             }
         }
     }
@@ -900,6 +893,14 @@ void *rdma_manager_polling_thread(void *arg)
     rdma_ringbuffer_t *rb_local = NULL;
     rdma_ringbuffer_t *rb_remote = NULL;
     rdma_context_t *ctx = NULL;
+
+    // TODO: remove
+    pthread_mutex_lock(&ctxm->mtx_polling);
+    ctxm->is_polling_thread_running = FALSE;
+    while (ctxm->is_polling_thread_running == FALSE && ctxm->stop_threads == FALSE)
+        pthread_cond_wait(&ctxm->cond_polling, &ctxm->mtx_polling);
+    pthread_mutex_unlock(&ctxm->mtx_polling);
+
     while (ctxm->stop_threads == FALSE)
     {
         for (i = 0; i < ctxm->ctx_count; i++)
@@ -1043,6 +1044,9 @@ void *rdma_manager_flush_thread(void *arg)
 
             // check if the threshold need to be updated
             uint64_t now = get_time_ms();
+
+#ifdef AUTOSCALE_FLUSH_THRESHOLD
+            uint64_t now = get_time_ms();
             uint32_t actual_ft = atomic_load(&ctx->flush_threshold);
 
             if (now - ctx->flush_threshold_set_time > MINIMUM_TIME_BETWEEN_FLUSH_CHANGE_MS)
@@ -1082,35 +1086,32 @@ void *rdma_manager_flush_thread(void *arg)
 
             atomic_store(&ctx->n_msg_sent, 0); // reset the number of messages sent
 
-            if (actual_ft != MAX_FLUSH_THRESHOLD) // if the program is bathcing a lot avoid to flush using time
+            if (actual_ft == MAX_FLUSH_THRESHOLD) // if the program is bathcing a lot avoid to flush using time
             {
-                if (now - ctx->last_flush_ns >= FLUSH_INTERVAL_MS)
+                continue;
+            }
+#endif // AUTOSCALE_FLUSH_THRESHOLD
+
+            uint32_t msg_sent = atomic_load(&ctx->n_msg_sent);
+
+            if (msg_sent >= ctx->flush_threshold ||
+                (now - ctx->last_flush_ns >= FLUSH_INTERVAL_MS) && msg_sent > 0)
+            {
+                printf("Flushing context %d, messages sent: %u, threshold: %u\n", i, msg_sent, ctx->flush_threshold);
+                ctx->last_flush_ns = now;          // update the last flush time
+                atomic_store(&ctx->n_msg_sent, 0); // reset the number of messages sent
+
+                if (rdma_flush_buffer(ctx, ctx->is_server ? ctx->ringbuffer_server : ctx->ringbuffer_client) != 0)
                 {
-                    //  post a new work request
-                    //  launch a thread
-                    flush_thread_arg_t *arg2 = malloc(sizeof(flush_thread_arg_t));
-                    if (arg2 == NULL)
-                        return manager_ret_null(NULL, "Failed to allocate memory for thread pool arg - rdma_manager_flush_thread");
-
-                    arg2->ctx = ctx;
-
-                    // add the task to the thread pool
-                    if (thread_pool_add(ctxm->pool, flush_thread, arg2) != 0)
-                    {
-                        free(arg);
-                        free(arg2);
-                        arg = NULL;
-                        arg2 = NULL;
-                        return manager_ret_null(NULL, "Failed to add task to thread pool - rdma_manager_polling_thread");
-                    }
+                    return manager_ret_null(ctx, "Failed to flush buffer - rdma_manager_flush_thread");
                 }
             }
         }
         // sleep for a while
-        struct timespec ts;
+        /*struct timespec ts;
         ts.tv_sec = FLUSH_INTERVAL_MS / 1000;              // seconds
         ts.tv_nsec = (FLUSH_INTERVAL_MS % 1000) * 1000000; // ms -> ns
-        nanosleep(&ts, NULL);
+        nanosleep(&ts, NULL);*/
     }
 }
 
@@ -1123,7 +1124,7 @@ void read_thread(void *arg)
     if (!param->ctxm || !param->ctx)
         return manager_ret_void(NULL, "Context or context manager is NULL - read_thread");
 
-    if (rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks, param->start_read_index, param->end_read_index, FALSE) != 0)
+    if (rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks, param->start_read_index, param->end_read_index) != 0)
         return manager_ret_void(NULL, "Failed to read slice - read_thread");
 
     return;
