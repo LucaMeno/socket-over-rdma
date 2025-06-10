@@ -13,7 +13,7 @@
 #include "config.h"
 
 #define CGROUP_PATH "/sys/fs/cgroup"
-#define PATH_TO_BPF_OBJ_FILE "build/obj/scap.bpf.o"
+#define PATH_TO_BPF_OBJ_FILE "obj/scap.bpf.o"
 
 #define POOL_RB_INTERVAL 100 // milliseconds
 

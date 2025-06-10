@@ -20,6 +20,7 @@
 #include "sk_utils.h"
 #include "config.h"
 #include "hashmap.h"
+#include "log_utils.h"
 
 #define UNUSED(x) (void)(x)
 #define RING_IDX(i) ((i) & (MAX_MSG_BUFFER - 1))
@@ -137,8 +138,6 @@ struct rdma_ringbuffer
     rdma_msg_t data[MAX_MSG_BUFFER];
 };
 
-
-
 struct rdma_context
 {
     // RDMA
@@ -186,7 +185,8 @@ struct rdma_context
     rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server
     rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
 
-    sock_hash_entry_t **app_to_proxy_sks; // Hash table of app to proxy sockets (HEAD)
+    sockid_fd_entry_t **hash_fd_sk_2; // Hash table of app to proxy sockets (HEAD)
+    sockid_fd_entry_t *hash_fs_sk_1;
 };
 
 /** SETUP CONTEXT */

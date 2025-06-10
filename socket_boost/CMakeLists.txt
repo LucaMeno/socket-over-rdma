@@ -19,6 +19,7 @@ add_executable(scap
     src/rdma_utils.c
     src/rdma_manager.c
     src/hashmap.c
+    src/log_utils.c
 )
 
 # === BPF ===
@@ -53,8 +54,9 @@ target_link_libraries(server bpf rdmacm ibverbs)
 # === PUSH MODIFICATIONS ===
 add_custom_target(push
     COMMAND rsync -avz --delete ${CMAKE_BINARY_DIR}/bin poli-server:/home/$ENV{USER}/poli/socket-over-rdma
+    COMMAND rsync -avz --delete ${CMAKE_BINARY_DIR}/obj poli-server:/home/$ENV{USER}/poli/socket-over-rdma
     DEPENDS scap client server
 )
 
 # === CLEANUP ===
-set_directory_properties(PROPERTIES ADDITIONAL_MAKE_CLEAN_FILES "${CMAKE_BINARY_DIR}/obj")
+set_directory_properties(PROPERTIES ADDITIONAL_MAKE_CLEAN_FILES "${CMAKE_BINARY_DIR}/bin/*;${CMAKE_BINARY_DIR}/obj/*")

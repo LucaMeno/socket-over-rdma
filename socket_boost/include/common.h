@@ -7,6 +7,8 @@
 typedef uint32_t __u32;
 typedef uint16_t __u16;
 
+typedef struct sock_id sock_id_t;
+
 // key structure for the sockmap
 struct sock_id
 {

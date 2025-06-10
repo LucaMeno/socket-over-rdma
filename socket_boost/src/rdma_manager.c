@@ -36,9 +36,10 @@ int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx);
 int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t *ctx, rdma_ringbuffer_t *rb_remote);
 
 // error handling
-int manager_ret_err(rdma_context_t *rdma_ctx, char *msg);
-void manager_ret_void(rdma_context_t *rdma_ctx, char *msg);
-void *manager_ret_null(rdma_context_t *rdma_ctx, char *msg);
+int manager_err_int(rdma_context_t *rdma_ctx, char *msg);
+void manager_err_void(rdma_context_t *rdma_ctx, char *msg);
+void *manager_err_null(rdma_context_t *rdma_ctx, char *msg);
+void manager_on_error(rdma_context_t *rdma_ctx, char *msg);
 
 /** SETUP */
 
@@ -46,20 +47,20 @@ int rdma_manager_run(rdma_context_manager_t *ctxm, uint16_t srv_port, bpf_contex
 {
     // init the maanger
     if (rdma_manager_init(ctxm, srv_port, proxy_sks, bpf_ctx) != 0)
-        return manager_ret_err(NULL, "Failed to init rdma manager - rdma_manager_run");
+        return manager_err_int(NULL, "Failed to init rdma manager - rdma_manager_run");
 
     // start the server thread
     // get the listener
     if (rdma_manager_server_setup(ctxm))
-        return manager_ret_err(NULL, "Failed to setup server - rdma_manager_run");
+        return manager_err_int(NULL, "Failed to setup server - rdma_manager_run");
 
     if (ctxm->listener == NULL)
-        return manager_ret_err(NULL, "Failed to setup listener - rdma_manager_run");
+        return manager_err_int(NULL, "Failed to setup listener - rdma_manager_run");
 
     // start the server thread
     pthread_t thread;
     if (pthread_create(&thread, NULL, rdma_manager_server_thread, ctxm) != 0)
-        return manager_ret_err(NULL, "Failed to create thread - rdma_manager_start_server");
+        return manager_err_int(NULL, "Failed to create thread - rdma_manager_start_server");
     ctxm->server_thread = thread;
 
     printf("Listener created\n");
@@ -67,7 +68,7 @@ int rdma_manager_run(rdma_context_manager_t *ctxm, uint16_t srv_port, bpf_contex
     // start the writer threads
     writer_thread_arg_t *writer_arg = malloc(N_WRITER_THREADS * sizeof(writer_thread_arg_t));
     if (writer_arg == NULL)
-        return manager_ret_err(NULL, "Failed to allocate memory for writer thread arg - rdma_manager_start_server");
+        return manager_err_int(NULL, "Failed to allocate memory for writer thread arg - rdma_manager_start_server");
 
     int n_fd_per_thread = NUMBER_OF_SOCKETS / N_WRITER_THREADS;
     int n_fd_remaining = NUMBER_OF_SOCKETS % N_WRITER_THREADS;
@@ -87,7 +88,7 @@ int rdma_manager_run(rdma_context_manager_t *ctxm, uint16_t srv_port, bpf_contex
         writer_arg[i].sk_to_monitor = malloc(n_fd * sizeof(client_sk_t));
 
         if (writer_arg[i].sk_to_monitor == NULL)
-            return manager_ret_err(NULL, "Failed to allocate memory for writer thread arg - rdma_manager_start_server");
+            return manager_err_int(NULL, "Failed to allocate memory for writer thread arg - rdma_manager_start_server");
 
         for (int k = 0; k < n_fd; k++)
         {
@@ -97,7 +98,7 @@ int rdma_manager_run(rdma_context_manager_t *ctxm, uint16_t srv_port, bpf_contex
 
         pthread_t thread;
         if (pthread_create(&thread, NULL, rdma_manager_writer_thread, &writer_arg[i]) != 0)
-            return manager_ret_err(NULL, "Failed to create thread - rdma_manager_start_server");
+            return manager_err_int(NULL, "Failed to create thread - rdma_manager_start_server");
         ctxm->writer_thread[i] = thread;
     }
 
@@ -108,7 +109,7 @@ int rdma_manager_init(rdma_context_manager_t *ctxm, uint16_t rdma_port, client_s
 {
     ctxm->ctxs = malloc(INITIAL_CONTEXT_NUMBER * sizeof(rdma_context_t));
     if (ctxm->ctxs == NULL)
-        return manager_ret_err(NULL, "Failed to allocate memory for contexts - rdma_manager_init");
+        return manager_err_int(NULL, "Failed to allocate memory for contexts - rdma_manager_init");
 
     for (int i = 0; i < INITIAL_CONTEXT_NUMBER; i++)
         rdma_context_init(&ctxm->ctxs[i]);
@@ -148,7 +149,7 @@ int rdma_manager_launch_background_threads(rdma_context_manager_t *ctxm)
         // create a thread to listen for notifications
         pthread_t thread;
         if (pthread_create(&thread, NULL, rdma_manager_listen_thread, ctxm) != 0)
-            return manager_ret_err(NULL, "Failed to create thread - rdma_manager_connect");
+            return manager_err_int(NULL, "Failed to create thread - rdma_manager_connect");
         ctxm->notification_thread = thread;
     }
 
@@ -158,7 +159,7 @@ int rdma_manager_launch_background_threads(rdma_context_manager_t *ctxm)
         // create a thread to flush the buffer
         pthread_t thread;
         if (pthread_create(&thread, NULL, rdma_manager_flush_thread, ctxm) != 0)
-            return manager_ret_err(NULL, "Failed to create thread - rdma_manager_connect");
+            return manager_err_int(NULL, "Failed to create thread - rdma_manager_connect");
         ctxm->flush_thread = thread;
     }
 
@@ -167,7 +168,7 @@ int rdma_manager_launch_background_threads(rdma_context_manager_t *ctxm)
     {
         pthread_t thread;
         if (pthread_create(&thread, NULL, rdma_manager_polling_thread, ctxm) != 0)
-            return manager_ret_err(NULL, "Failed to create thread - rdma_manager_connect");
+            return manager_err_int(NULL, "Failed to create thread - rdma_manager_connect");
         ctxm->polling_thread = thread;
     }
 
@@ -183,7 +184,7 @@ int rdma_manager_connect(rdma_context_manager_t *ctxm, struct sock_id original_s
     {
         ctx_id = rdma_manager_get_free_context_id(ctxm);
         if (ctx_id < 0)
-            return manager_ret_err(NULL, "Failed to get free context - rdma_manager_connect");
+            return manager_err_int(NULL, "Failed to get free context - rdma_manager_connect");
 
         // init the new context
         rdma_context_init(&ctxm->ctxs[ctx_id]);
@@ -191,13 +192,13 @@ int rdma_manager_connect(rdma_context_manager_t *ctxm, struct sock_id original_s
 
         // since the context is new, we need to connect to the corresponding server
         if (rdma_client_setup(&ctxm->ctxs[ctx_id], original_socket.dip, ctxm->rdma_port) != 0)
-            return manager_ret_err(NULL, "Failed to setup client - rdma_manager_connect");
+            return manager_err_int(NULL, "Failed to setup client - rdma_manager_connect");
 
         if (rdma_client_connect(&ctxm->ctxs[ctx_id]) != 0)
-            return manager_ret_err(NULL, "Failed to connect client - rdma_manager_connect");
+            return manager_err_int(NULL, "Failed to connect client - rdma_manager_connect");
 
         if (rdma_manager_launch_background_threads(ctxm) != 0)
-            return manager_ret_err(NULL, "Failed to launch background threads - rdma_manager_connect");
+            return manager_err_int(NULL, "Failed to launch background threads - rdma_manager_connect");
     }
     return 0;
 }
@@ -214,22 +215,22 @@ int rdma_manager_server_setup(rdma_context_manager_t *ctxm)
     snprintf(port, sizeof(port), "%u", ctxm->rdma_port);
 
     if (getaddrinfo(NULL, port, &hints, &res))
-        return manager_ret_err(NULL, "getaddrinfo");
+        return manager_err_int(NULL, "getaddrinfo");
 
     struct rdma_event_channel *ec = rdma_create_event_channel();
     if (!ec)
-        return manager_ret_err(NULL, "rdma_create_event_channel");
+        return manager_err_int(NULL, "rdma_create_event_channel");
 
     struct rdma_cm_id *listener;
     if (rdma_create_id(ec, &listener, NULL, RDMA_PS_TCP))
-        return manager_ret_err(NULL, "rdma_create_id");
+        return manager_err_int(NULL, "rdma_create_id");
 
     if (rdma_bind_addr(listener, res->ai_addr))
-        return manager_ret_err(NULL, "rdma_bind_addr");
+        return manager_err_int(NULL, "rdma_bind_addr");
     freeaddrinfo(res);
 
     if (rdma_listen(listener, 10))
-        return manager_ret_err(NULL, "rdma_listen");
+        return manager_err_int(NULL, "rdma_listen");
 
     ctxm->server_ec = ec;
     ctxm->listener = listener;
@@ -329,14 +330,14 @@ int rdma_manager_get_free_context_id(rdma_context_manager_t *ctxm)
 
     rdma_context_t *new_ctxs = realloc(ctxm->ctxs, new_count * sizeof(rdma_context_t));
     if (new_ctxs == NULL)
-        return manager_ret_err(NULL, "Failed to realloc context array - rdma_manager_get_free_context_id");
+        return manager_err_int(NULL, "Failed to realloc context array - rdma_manager_get_free_context_id");
 
     ctxm->ctxs = new_ctxs;
     ctxm->ctx_count = new_count;
 
     // init the new contexts
     if (rdma_context_init(&ctxm->ctxs[free_ctx_id]) != 0)
-        return manager_ret_err(NULL, "Failed to setup context - rdma_manager_get_free_context_id");
+        return manager_err_int(NULL, "Failed to setup context - rdma_manager_get_free_context_id");
 }
 
 int rdma_manager_get_context_id(rdma_context_manager_t *ctxm, uint32_t remote_ip)
@@ -360,7 +361,7 @@ int rdma_manager_start_polling(rdma_context_manager_t *ctxm, rdma_context_t *ctx
 
     // set the polling status
     if (rdma_set_polling_status(ctx, RING_BUFFER_POLLING) != 0)
-        return manager_ret_err(ctx, "Failed to send data ready notification - rdma_manager_start_polling");
+        return manager_err_int(ctx, "Failed to send data ready notification - rdma_manager_start_polling");
 
     // set the time when polling started
 
@@ -386,7 +387,7 @@ int rdma_manager_stop_polling(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
 
     // reset the polling status
     if (rdma_set_polling_status(ctx, FALSE) != 0)
-        return manager_ret_err(ctx, "Failed to stop polling - rdma_manager_stop_polling");
+        return manager_err_int(ctx, "Failed to stop polling - rdma_manager_stop_polling");
 
     return 0;
 }
@@ -451,7 +452,7 @@ int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
     case RDMA_DATA_READY:
 
         if (rdma_manager_start_polling(ctxm, ctx) != 0)
-            return manager_ret_err(ctx, "Failed to send data ready notification - rdma_parse_notification");
+            return manager_err_int(ctx, "Failed to send data ready notification - rdma_parse_notification");
 
         /*u_int64_t now = get_time_ms();
 
@@ -471,7 +472,7 @@ int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
                 printf("Received enough messages, starting polling...\n");
 
                 if (rdma_manager_start_polling(ctxm, ctx) != 0)
-                    return manager_ret_err(ctx, "Failed to send data ready notification - rdma_parse_notification");
+                    return manager_err_int(ctx, "Failed to send data ready notification - rdma_parse_notification");
 
                 // Reset tracking after polling
                 ctx->time_last_recv = 0;
@@ -512,7 +513,7 @@ int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
 int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t *ctx, rdma_ringbuffer_t *rb_remote)
 {
     if (rb_remote == NULL || ctxm == NULL || ctx == NULL)
-        return manager_ret_err(ctx, "Invalid arguments - rdma_manager_consume_ringbuffer");
+        return manager_err_int(ctx, "Invalid arguments - rdma_manager_consume_ringbuffer");
 
     uint32_t remote_w = atomic_load(&rb_remote->remote_write_index);
     uint32_t local_r = atomic_load(&rb_remote->local_read_index);
@@ -527,7 +528,7 @@ int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t
 
         // update the remote index
         if (rdma_update_remote_read_idx(ctx, rb_remote, end_read_index) != 0)
-            return manager_ret_err(NULL, "Error while updating the index");
+            return manager_err_int(NULL, "Error while updating the index");
 
         return rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index);
     }
@@ -561,7 +562,7 @@ void *rdma_manager_listen_thread(void *arg)
         }
 
         if (max_fd < 0)
-            return manager_ret_null(NULL, "No completion channels available - rdma_manager_listen_thread");
+            return manager_err_null(NULL, "No completion channels available - rdma_manager_listen_thread");
 
         // Set timeout to avoid blocking indefinitely
         tv.tv_sec = TIME_STOP_SELECT_SEC;
@@ -594,7 +595,7 @@ void *rdma_manager_listen_thread(void *arg)
                 }
 
                 if (ctx == NULL)
-                    return manager_ret_null(NULL, "No context found for fd - rdma_manager_listen_thread");
+                    return manager_err_null(NULL, "No context found for fd - rdma_manager_listen_thread");
 
                 if (ctx->remote_ip == 0 || ctx->conn == NULL || ctx->recv_cq == NULL)
                 {
@@ -656,7 +657,7 @@ void *rdma_manager_listen_thread(void *arg)
 
                 int err = rdma_parse_notification(ctxm, ctx);
                 if (err != 0)
-                    return manager_ret_null(ctx, "Failed to receive notification - rdma_manager_listen_thread");
+                    return manager_err_null(ctx, "Failed to receive notification - rdma_manager_listen_thread");
             }
         }
     }
@@ -703,12 +704,12 @@ void *rdma_manager_server_thread(void *arg)
             // add new context
             int free_ctx_id = rdma_manager_get_free_context_id(manager);
             if (free_ctx_id < 0)
-                return manager_ret_null(NULL, "Failed to get free context - rdma_manager_server_thread");
+                return manager_err_null(NULL, "Failed to get free context - rdma_manager_server_thread");
 
             rdma_context_t *client_ctx = &manager->ctxs[free_ctx_id];
 
             if (rdma_context_init(client_ctx) != 0)
-                return manager_ret_null(NULL, "Failed to setup context - rdma_manager_server_thread");
+                return manager_err_null(NULL, "Failed to setup context - rdma_manager_server_thread");
 
             client_ctx->conn = event->id;
             client_ctx->is_server = TRUE;
@@ -718,10 +719,10 @@ void *rdma_manager_server_thread(void *arg)
             rdma_ack_cm_event(event);
 
             if (rdma_server_handle_new_client(client_ctx, manager->server_ec) != 0)
-                return manager_ret_null(NULL, "Failed to handle new client - rdma_manager_server_thread");
+                return manager_err_null(NULL, "Failed to handle new client - rdma_manager_server_thread");
 
             if (rdma_manager_launch_background_threads(manager) != 0)
-                return manager_ret_null(NULL, "Failed to launch background threads - rdma_manager_server_thread");
+                return manager_err_null(NULL, "Failed to launch background threads - rdma_manager_server_thread");
         }
         else
         {
@@ -740,7 +741,7 @@ void *rdma_manager_writer_thread(void *arg)
     int n = param->n;
 
     if (sk_to_monitor == NULL || n <= 0 || ctxm == NULL)
-        return manager_ret_null(NULL, "Invalid arguments - rdma_manager_writer_thread");
+        return manager_err_null(NULL, "Invalid arguments - rdma_manager_writer_thread");
 
     fd_set read_fds, temp_fds;
     ssize_t bytes_received;
@@ -761,7 +762,7 @@ void *rdma_manager_writer_thread(void *arg)
     }
 
     if (max_fd < 0)
-        return manager_ret_null(NULL, "No valid sockets to monitor - rdma_manager_writer_thread");
+        return manager_err_null(NULL, "No valid sockets to monitor - rdma_manager_writer_thread");
 
     int k = 1;
     while (atomic_load(&ctxm->stop_threads) == FALSE)
@@ -786,7 +787,7 @@ void *rdma_manager_writer_thread(void *arg)
             if (FD_ISSET(fd, &temp_fds))
             {
                 // printf(".");
-                //  retrieve the proxy socket id
+                //  retrieve the proxy socket id 
                 int j = 0;
                 for (; j < n; j++)
                     if (sk_to_monitor[j].fd == fd)
@@ -839,7 +840,7 @@ void *rdma_manager_writer_thread(void *arg)
                     {
                         printf("0\n");
                         // connection closed
-                        return manager_ret_null(ctx, "Connection closed - rdma_manager_writer_thread");
+                        return manager_err_null(ctx, "Connection closed - rdma_manager_writer_thread");
                     }
                     else if (ret < 0)
                     {
@@ -853,11 +854,11 @@ void *rdma_manager_writer_thread(void *arg)
                             // TODO
                             /*FD_CLR(fd, &read_fds);
                             close(fd);*/
-                            return manager_ret_null(ctx, "Connection closed - rdma_manager_writer_thread");
+                            return manager_err_null(ctx, "Connection closed - rdma_manager_writer_thread");
                         }
                     }
                 }
-                //printf("OUT\n");
+                // printf("OUT\n");
             }
         }
     }
@@ -884,7 +885,7 @@ void *rdma_manager_polling_thread(void *arg)
 
     rdma_context_manager_t *ctxm = (rdma_context_manager_t *)arg;
     if (ctxm == NULL)
-        return manager_ret_null(NULL, "Context manager is NULL - rdma_manager_polling_thread");
+        return manager_err_null(NULL, "Context manager is NULL - rdma_manager_polling_thread");
 
     int i;
     int non_polling = 0;
@@ -920,7 +921,7 @@ void *rdma_manager_polling_thread(void *arg)
                 if (ret < 0)
                 {
                     // error occurred while consuming the ring buffer
-                    return manager_ret_null(ctx, "Failed to consume ring buffer - rdma_manager_polling_thread");
+                    return manager_err_null(ctx, "Failed to consume ring buffer - rdma_manager_polling_thread");
                 }
                 else if (ret == 1)
                 {
@@ -953,7 +954,7 @@ void *rdma_manager_polling_thread(void *arg)
                 if (ret < 0)
                 {
                     // error occurred while consuming the ring buffer
-                    return manager_ret_null(ctx, "Failed to consume ring buffer - rdma_manager_polling_thread");
+                    return manager_err_null(ctx, "Failed to consume ring buffer - rdma_manager_polling_thread");
                 }
                 else if (ret == 0)
                 {
@@ -975,7 +976,7 @@ void *rdma_manager_polling_thread(void *arg)
 
                             // set the polling status to non-polling
                             if (rdma_manager_stop_polling(ctxm, ctx) != 0)
-                                return manager_ret_null(ctx, "Failed to set polling status - rdma_manager_polling_thread");
+                                return manager_err_null(ctx, "Failed to set polling status - rdma_manager_polling_thread");
                             non_polling++;
                         }
                     }
@@ -1032,7 +1033,7 @@ void *rdma_manager_flush_thread(void *arg)
     rdma_context_manager_t *ctxm = (rdma_context_manager_t *)arg;
 
     if (!ctxm)
-        return manager_ret_null(NULL, "Context manager is NULL - rdma_manager_polling_thread");
+        return manager_err_null(NULL, "Context manager is NULL - rdma_manager_polling_thread");
 
     while (ctxm->stop_threads == FALSE)
     {
@@ -1097,13 +1098,13 @@ void *rdma_manager_flush_thread(void *arg)
             if (msg_sent >= ctx->flush_threshold ||
                 (now - ctx->last_flush_ns >= FLUSH_INTERVAL_MS) && msg_sent > 0)
             {
-                printf("Flushing context %d, messages sent: %u, threshold: %u\n", i, msg_sent, ctx->flush_threshold);
+                //printf("Flushing context %d, messages sent: %u, threshold: %u\n", i, msg_sent, ctx->flush_threshold);
                 ctx->last_flush_ns = now;          // update the last flush time
                 atomic_store(&ctx->n_msg_sent, 0); // reset the number of messages sent
 
                 if (rdma_flush_buffer(ctx, ctx->is_server ? ctx->ringbuffer_server : ctx->ringbuffer_client) != 0)
                 {
-                    return manager_ret_null(ctx, "Failed to flush buffer - rdma_manager_flush_thread");
+                    return manager_err_null(ctx, "Failed to flush buffer - rdma_manager_flush_thread");
                 }
             }
         }
@@ -1122,10 +1123,10 @@ void read_thread(void *arg)
     reader_thread_arg_t *param = (reader_thread_arg_t *)arg;
 
     if (!param->ctxm || !param->ctx)
-        return manager_ret_void(NULL, "Context or context manager is NULL - read_thread");
+        return manager_err_void(NULL, "Context or context manager is NULL - read_thread");
 
     if (rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks, param->start_read_index, param->end_read_index) != 0)
-        return manager_ret_void(NULL, "Failed to read slice - read_thread");
+        return manager_err_void(NULL, "Failed to read slice - read_thread");
 
     return;
 }
@@ -1135,15 +1136,15 @@ void flush_thread(void *arg)
     flush_thread_arg_t *param = (flush_thread_arg_t *)arg;
 
     if (!param->ctx)
-        return manager_ret_void(NULL, "Context is NULL - flush_thread");
+        return manager_err_void(NULL, "Context is NULL - flush_thread");
 
     // read the data from the remote buffer
     rdma_ringbuffer_t *rb = (param->ctx->is_server == TRUE) ? param->ctx->ringbuffer_server : param->ctx->ringbuffer_client;
     if (rb == NULL)
-        return manager_ret_void(NULL, "Ring buffer is NULL - flush_thread");
+        return manager_err_void(NULL, "Ring buffer is NULL - flush_thread");
 
     if (rdma_flush_buffer(param->ctx, rb) != 0)
-        return manager_ret_void(NULL, "Failed to flush - flush_thread");
+        return manager_err_void(NULL, "Failed to flush - flush_thread");
 
     return;
 }
@@ -1273,35 +1274,31 @@ void thread_pool_destroy(thread_pool_t *pool)
 
 /** ERROR */
 
-int manager_ret_err(rdma_context_t *rdma_ctx, char *msg)
+void manager_on_error(rdma_context_t *rdma_ctx, char *msg)
 {
-    fprintf(stderr, "ERROR: %s\n", msg);
-    if (rdma_ctx)
+    if (rdma_ctx != NULL)
     {
-        /*printf("Cleaning up RMDA...\n");
-        rdma_context_destroy(rdma_ctx);*/
+        // printf("Cleaning up RMDA...\n");
+        // rdma_context_destroy(rdma_ctx);
     }
+    log_error("RDMA MANAGER ERROR: %s", msg);
+    return;
+}
+
+int manager_err_int(rdma_context_t *rdma_ctx, char *msg)
+{
+    manager_on_error(rdma_ctx, msg);
     return -1;
 }
 
-void *manager_ret_null(rdma_context_t *rdma_ctx, char *msg)
+void *manager_err_null(rdma_context_t *rdma_ctx, char *msg)
 {
-    fprintf(stderr, "ERROR: %s\n", msg);
-    if (rdma_ctx)
-    {
-        /*printf("Cleaning up RMDA...\n");
-        rdma_context_destroy(rdma_ctx);*/
-    }
+    manager_on_error(rdma_ctx, msg);
     return NULL;
 }
 
-void manager_ret_void(rdma_context_t *rdma_ctx, char *msg)
+void manager_err_void(rdma_context_t *rdma_ctx, char *msg)
 {
-    fprintf(stderr, "ERROR: %s\n", msg);
-    if (rdma_ctx)
-    {
-        /*printf("Cleaning up RMDA...\n");
-        rdma_context_destroy(rdma_ctx);*/
-    }
+    manager_on_error(rdma_ctx, msg);
     return;
 }
