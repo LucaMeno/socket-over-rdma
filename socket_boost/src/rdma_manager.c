@@ -14,8 +14,8 @@ void *rdma_manager_flush_thread(void *arg);
 void *rdma_manager_writer_thread(void *arg);
 
 // WORKER THREADS
-void read_thread(void *arg);
-void flush_thread(void *arg);
+void flush_thread_master_worker(void *arg);
+void flush_thread_worker(void *arg);
 
 // CLIENT - SERVER
 int rdma_manager_server_setup(rdma_context_manager_t *ctxm);
@@ -453,6 +453,7 @@ int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
 
         if (rdma_manager_start_polling(ctxm, ctx) != 0)
             return manager_err_int(ctx, "Failed to send data ready notification - rdma_parse_notification");
+        break;
 
         /*u_int64_t now = get_time_ms();
 
@@ -515,27 +516,62 @@ int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t
     if (rb_remote == NULL || ctxm == NULL || ctx == NULL)
         return manager_err_int(ctx, "Invalid arguments - rdma_manager_consume_ringbuffer");
 
-    uint32_t remote_w = atomic_load(&rb_remote->remote_write_index);
-    uint32_t local_r = atomic_load(&rb_remote->local_read_index);
-
-    if (remote_w != local_r)
+    while (1)
     {
-        // set the local read index to avoid reading the same data again
-        uint32_t start_read_index = local_r;
-        uint32_t end_read_index = remote_w;
+        uint32_t remote_w = atomic_load(&rb_remote->remote_write_index);
+        uint32_t local_r = atomic_load(&rb_remote->local_read_index);
 
-        atomic_store(&rb_remote->local_read_index, remote_w);
+        if (remote_w != local_r)
+        {
+            // set the local read index to avoid reading the same data again
+            uint32_t start_read_index = local_r;
+            uint32_t end_read_index = remote_w;
 
-        // update the remote index
-        if (rdma_update_remote_read_idx(ctx, rb_remote, end_read_index) != 0)
-            return manager_err_int(NULL, "Error while updating the index");
+            atomic_store(&rb_remote->local_read_index, remote_w);
 
-        return rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index);
+            // update the remote index
+            if (rdma_update_remote_read_idx(ctx, rb_remote, end_read_index) != 0)
+                return manager_err_int(NULL, "Error while updating the index");
+
+            if (rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index) != 0)
+                return manager_err_int(ctx, "Error while reading messages - rdma_manager_consume_ringbuffer");
+
+            /*if (rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index) != 0)
+                return manager_err_int(ctx, "Error while reading messages - rdma_manager_consume_ringbuffer");
+            // update the remote index
+            return rdma_update_remote_read_idx(ctx, rb_remote, end_read_index);*/
+        }
+        else
+        {
+            return 1; // no messages to read
+        }
     }
-    else
+}
+
+int rdma_manager_flush_buffer(rdma_context_manager_t *ctxm, rdma_context_t *ctx, rdma_ringbuffer_t *rb)
+{
+    // create the flush thread argument
+    flush_thread_arg_t *flush_arg = malloc(sizeof(flush_thread_arg_t));
+    if (!flush_arg)
+        return manager_err_int(ctx, "Failed to allocate memory for flush thread argument - rdma_manager_flush_thread");
+
+    flush_arg->ctx = ctx;
+    flush_arg->start_idx = atomic_load(&rb->local_read_index);
+    flush_arg->end_idx = atomic_load(&rb->local_write_index);
+    flush_arg->ringbuffer = rb;
+
+    atomic_store(&rb->local_read_index, atomic_load(&rb->local_write_index)); // reset the local read index
+
+    ctx->last_flush_ms = get_time_ms();
+
+    // add the flush thread to the thread pool
+    if (thread_pool_add(ctxm->pool, flush_thread_worker, flush_arg) != 0)
     {
-        return 1; // no messages to read
+        free(flush_arg);
+        return manager_err_int(ctx, "Failed to add flush thread to the pool - rdma_manager_flush_thread");
     }
+
+    return 0;
 }
 
 /** BACKGROUND THREAD */
@@ -787,7 +823,7 @@ void *rdma_manager_writer_thread(void *arg)
             if (FD_ISSET(fd, &temp_fds))
             {
                 // printf(".");
-                //  retrieve the proxy socket id 
+                //  retrieve the proxy socket id
                 int j = 0;
                 for (; j < n; j++)
                     if (sk_to_monitor[j].fd == fd)
@@ -1043,10 +1079,16 @@ void *rdma_manager_flush_thread(void *arg)
             if (atomic_load(&ctx->is_ready) == FALSE || ctx->conn == NULL)
                 continue;
 
-            // check if the threshold need to be updated
-            uint64_t now = get_time_ms();
+            uint32_t is_flushing_thread_running = atomic_load(&ctx->is_flush_thread_running);
+            if (is_flushing_thread_running == TRUE)
+            {
+                // flush thread is already running, skip this context
+                continue;
+            }
 
 #ifdef AUTOSCALE_FLUSH_THRESHOLD
+
+            // check if the threshold need to be updated
             uint64_t now = get_time_ms();
             uint32_t actual_ft = atomic_load(&ctx->flush_threshold);
 
@@ -1094,57 +1136,111 @@ void *rdma_manager_flush_thread(void *arg)
 #endif // AUTOSCALE_FLUSH_THRESHOLD
 
             uint32_t msg_sent = atomic_load(&ctx->n_msg_sent);
+            uint32_t counter = 0;
+            rdma_ringbuffer_t *rb = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
 
-            if (msg_sent >= ctx->flush_threshold ||
-                (now - ctx->last_flush_ns >= FLUSH_INTERVAL_MS) && msg_sent > 0)
+            while (1)
             {
-                //printf("Flushing context %d, messages sent: %u, threshold: %u\n", i, msg_sent, ctx->flush_threshold);
-                ctx->last_flush_ns = now;          // update the last flush time
-                atomic_store(&ctx->n_msg_sent, 0); // reset the number of messages sent
+                uint64_t now = get_time_ms();
 
-                if (rdma_flush_buffer(ctx, ctx->is_server ? ctx->ringbuffer_server : ctx->ringbuffer_client) != 0)
+                if (msg_sent >= ctx->flush_threshold ||
+                    ((now - ctx->last_flush_ms >= FLUSH_INTERVAL_MS) && msg_sent > 0))
                 {
-                    return manager_err_null(ctx, "Failed to flush buffer - rdma_manager_flush_thread");
+                    atomic_store(&ctx->n_msg_sent, 0); // reset the number of messages sent
+                    rdma_manager_flush_buffer(ctxm, ctx, rb);
                 }
+
+                msg_sent = atomic_load(&ctx->n_msg_sent);
+                if (msg_sent == 0)
+                {
+                    // no messages to flush, break the loop
+                    break;
+                }
+
+                /*if (counter++ == MAX_COUNT_BEFORE_LAUNCH_FLUSH_THREAD)
+                {
+                    printf("Launching flush thread for context %d\n", i);
+
+                    atomic_store(&ctx->is_flush_thread_running, TRUE); // set the flush thread running flag
+
+                    // launch the flush thread
+                    flus_thread_master_arg_t *flush_master_arg = malloc(sizeof(flus_thread_master_arg_t));
+                    if (!flush_master_arg)
+                        return manager_err_null(ctx, "Failed to allocate memory for flush thread argument - rdma_manager_flush_thread");
+
+                    flush_master_arg->ctx = ctx;
+                    flush_master_arg->ringbuffer = rb;
+                    flush_master_arg->ctxm = ctxm;
+
+                    if (thread_pool_add(ctxm->pool, flush_thread_master_worker, flush_master_arg) != 0)
+                    {
+                        free(flush_master_arg);
+                        return manager_err_null(ctx, "Failed to add flush thread to the pool - rdma_manager_flush_thread");
+                    }
+
+                    break; // exit the loop, the flush thread will handle the flushing
+                }*/
             }
         }
-        // sleep for a while
-        /*struct timespec ts;
-        ts.tv_sec = FLUSH_INTERVAL_MS / 1000;              // seconds
-        ts.tv_nsec = (FLUSH_INTERVAL_MS % 1000) * 1000000; // ms -> ns
-        nanosleep(&ts, NULL);*/
     }
 }
 
 /** POOL THREAD */
 
-void read_thread(void *arg)
+/*void flush_thread_master_worker(void *arg)
 {
-    reader_thread_arg_t *param = (reader_thread_arg_t *)arg;
+    flus_thread_master_arg_t *param = (flus_thread_master_arg_t *)arg;
+    rdma_context_manager_t *ctxm = param->ctxm;
+    rdma_context_t *ctx = param->ctx;
+    rdma_ringbuffer_t *rb = param->ringbuffer;
 
-    if (!param->ctxm || !param->ctx)
-        return manager_err_void(NULL, "Context or context manager is NULL - read_thread");
+    uint64_t start_time = get_time_ms();
 
-    if (rdma_read_msg(param->ctx, param->ctxm->bpf_ctx, param->ctxm->client_sks, param->start_read_index, param->end_read_index) != 0)
-        return manager_err_void(NULL, "Failed to read slice - read_thread");
+    if (!ctx || !rb || !ctxm)
+        return manager_err_void(NULL, "Invalid arguments - flush_thread_master_worker");
 
-    return;
-}
+    uint32_t msg_sent = atomic_load(&ctx->n_msg_sent);
+    while (1)
+    {
+        uint64_t now = get_time_ms();
 
-void flush_thread(void *arg)
-{
+        if (msg_sent >= ctx->flush_threshold ||
+            ((now - ctx->last_flush_ms >= FLUSH_INTERVAL_MS) && msg_sent > 0))
+        {
+            start_time = get_time_ms();
+            now = start_time;                  // reset the start time
+            atomic_store(&ctx->n_msg_sent, 0); // reset the number of messages sent
+            rdma_manager_flush_buffer(ctxm, ctx, rb);
+        }
+
+        msg_sent = atomic_load(&ctx->n_msg_sent);
+        if (msg_sent == 0 && (now - start_time >= FLUSH_TIMEOUT_MS))
+        {
+            // no messages to flush, break the loop
+            printf("Flush thread timeout, return\n");
+            break; // exit the loop, no more messages to flush
+        }
+
+        if (ctxm->stop_threads == TRUE)
+        {
+            printf("Flush thread stopped by main thread\n");
+            break; // exit the loop, the main thread is stopping
+        }
+    }
+
+    atomic_store(&ctx->is_flush_thread_running, FALSE); // reset the flush thread running flag
+    return;                                             // exit the thread
+}*/
+
+void flush_thread_worker(void *arg)
+{  
     flush_thread_arg_t *param = (flush_thread_arg_t *)arg;
 
-    if (!param->ctx)
-        return manager_err_void(NULL, "Context is NULL - flush_thread");
+    if (!param->ctx || !param->ringbuffer)
+        return manager_err_void(NULL, "Context is NULL - flush_thread_worker");
 
-    // read the data from the remote buffer
-    rdma_ringbuffer_t *rb = (param->ctx->is_server == TRUE) ? param->ctx->ringbuffer_server : param->ctx->ringbuffer_client;
-    if (rb == NULL)
-        return manager_err_void(NULL, "Ring buffer is NULL - flush_thread");
-
-    if (rdma_flush_buffer(param->ctx, rb) != 0)
-        return manager_err_void(NULL, "Failed to flush - flush_thread");
+    if (rdma_flush_buffer_2(param->ctx, param->ringbuffer, param->start_idx, param->end_idx) != 0)
+        return manager_err_void(NULL, "Failed to flush - flush_thread_worker");
 
     return;
 }

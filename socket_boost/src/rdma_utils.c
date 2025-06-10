@@ -373,12 +373,8 @@ int rdma_context_destroy(rdma_context_t *ctx)
     pthread_mutex_destroy(&ctx->mtx_tx);
     pthread_cond_destroy(&ctx->cond_tx);
 
-    pthread_mutex_destroy(&ctx->mtx_rx);
-    pthread_cond_destroy(&ctx->cond_rx);
-
-    pthread_mutex_destroy(&ctx->mtx_flush);
-
-    pthread_mutex_destroy(&ctx->mtx_test);
+    pthread_mutex_destroy(&ctx->mtx_commit_flush);
+    pthread_cond_destroy(&ctx->cond_commit_flush);
 
     return 0;
 }
@@ -405,11 +401,10 @@ int rdma_context_init(rdma_context_t *ctx)
     pthread_mutex_init(&ctx->mtx_tx, NULL);
     pthread_cond_init(&ctx->cond_tx, NULL);
 
-    pthread_mutex_init(&ctx->mtx_rx, NULL);
-    pthread_cond_init(&ctx->cond_rx, NULL);
-
-    ctx->last_flush_ns = 0;
-    pthread_mutex_init(&ctx->mtx_flush, NULL);
+    ctx->last_flush_ms = 0;
+    ctx->is_flushing = FALSE;
+    pthread_mutex_init(&ctx->mtx_commit_flush, NULL);
+    pthread_cond_init(&ctx->cond_commit_flush, NULL);
 
 #ifdef AUTOSCALE_FLUSH_THRESHOLD
     atomic_store(&ctx->flush_threshold, MIN_FLUSH_THRESHOLD);
@@ -420,13 +415,17 @@ int rdma_context_init(rdma_context_t *ctx)
     atomic_store(&ctx->n_msg_sent, 0);
     ctx->flush_threshold_set_time = 0;
 
-    pthread_mutex_init(&ctx->mtx_test, NULL);
-
     ctx->time_last_recv = 0;
     ctx->n_recv_msg = 0;
 
     ctx->hash_fs_sk_1 = NULL;
     ctx->hash_fd_sk_2 = &ctx->hash_fs_sk_1;
+
+    ctx->fulsh_index ^= ctx->fulsh_index; // reset the flush index
+
+    pthread_mutex_init(&ctx->mtx, NULL);
+
+    atomic_store(&ctx->is_flush_thread_running, FALSE);
 
     return 0;
 }
@@ -537,13 +536,95 @@ int rdma_post_write_(rdma_context_t *ctx, uintptr_t remote_addr, uintptr_t local
     return 0;
 }
 
+int rdma_flush_buffer_2(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t start_idx, uint32_t end_idx)
+{
+    if (!ctx || !ringbuffer)
+        return rdma_err_int(ctx, "Context or rb is NULL - rdma_flush_buffer");
+
+    uint32_t w_idx = RING_IDX(end_idx);   // local write index
+    uint32_t r_idx = RING_IDX(start_idx); // remote read index
+
+        pthread_mutex_lock(&ctx->mtx_commit_flush);
+    // Wait until the previous flush is committed
+    while (atomic_load(&ringbuffer->remote_write_index) != start_idx)
+    {
+        pthread_cond_wait(&ctx->cond_commit_flush, &ctx->mtx_commit_flush);
+    }
+
+    if (r_idx > w_idx)
+    {
+        // wrap-around
+        uintptr_t batch_start = (uintptr_t)&ringbuffer->data[r_idx];
+        size_t batch_size = (MAX_MSG_BUFFER - r_idx) * sizeof(rdma_msg_t);
+
+        uintptr_t remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
+
+        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE) != 0)
+        {
+            return rdma_err_int(ctx, "Failed to post data batch - first write");
+        }
+
+        batch_start = (uintptr_t)&ringbuffer->data[0];
+        batch_size = w_idx * sizeof(rdma_msg_t);
+
+        remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
+
+        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE) != 0)
+        {
+            return rdma_err_int(ctx, "Failed to post data batch - second write");
+        }
+    }
+    else
+    {
+        // normal case
+        uintptr_t batch_start = (uintptr_t)&ringbuffer->data[r_idx];
+        size_t batch_size = (w_idx - r_idx) * sizeof(rdma_msg_t);
+
+        uintptr_t remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
+
+        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE) != 0)
+        {
+            return rdma_err_int(ctx, "Failed to post data batch");
+        }
+    }
+
+    // calculate the offset
+    size_t write_index_offset = (size_t)((char *)ringbuffer - (char *)ctx->buffer) +
+                                offsetof(rdma_ringbuffer_t, remote_write_index);
+
+    uintptr_t remote_addr_write_index = ctx->remote_addr + write_index_offset;
+
+    rdma_ringbuffer_t *peer_rb = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
+
+    // Critical region to update the write index
+
+
+
+    // Update the write index
+    atomic_store(&ringbuffer->remote_write_index, end_idx);
+    if (rdma_post_write_(ctx, remote_addr_write_index,
+                         (uintptr_t)(ctx->buffer + write_index_offset),
+                         sizeof(ringbuffer->remote_write_index), TRUE) != 0)
+    {
+        return rdma_err_int(ctx, "Failed to post write index");
+    }
+
+    if (!(atomic_load(&peer_rb->flags.flags) & RING_BUFFER_POLLING))
+        rdma_send_data_ready(ctx);
+
+    pthread_cond_broadcast(&ctx->cond_commit_flush);
+    pthread_mutex_unlock(&ctx->mtx_commit_flush);
+
+    return 0;
+}
+
+/*
 int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
 {
     if (!ctx || !ringbuffer)
         return rdma_err_int(ctx, "Context or rb is NULL - rdma_flush_buffer");
 
     uint32_t actual_w = atomic_load(&ringbuffer->local_write_index);
-    uint32_t actual_r = atomic_load(&ringbuffer->local_read_index);
     uint32_t remote_r = atomic_load(&ringbuffer->remote_read_index);
 
     uint32_t w_idx = RING_IDX(actual_w);
@@ -557,7 +638,7 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
 
         uintptr_t remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
 
-        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, FALSE) != 0)
+        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE) != 0)
         {
             return rdma_err_int(ctx, "Failed to post data batch - first write");
         }
@@ -567,7 +648,7 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
 
         remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
 
-        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, FALSE) != 0)
+        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE) != 0)
         {
             return rdma_err_int(ctx, "Failed to post data batch - second write");
         }
@@ -580,7 +661,7 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
 
         uintptr_t remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
 
-        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, FALSE) != 0)
+        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE) != 0)
         {
             return rdma_err_int(ctx, "Failed to post data batch");
         }
@@ -609,9 +690,10 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
     // update the local read index
     atomic_store(&ringbuffer->local_read_index, actual_w);
 
-    ctx->last_flush_ns = get_time_ms();
+    ctx->last_flush_ms = get_time_ms();
 
 #ifdef RDMA_DEBUG_FLUSH
+    uint32_t actual_r = atomic_load(&ringbuffer->local_read_index);
     uint32_t msg_to_flush = RING_IDX(actual_w - actual_r);
     TX_COUNT += msg_to_flush;
     TX_N_FLUSH += 1;
@@ -627,7 +709,7 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
 
     return 0;
 }
-
+*/
 int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_socket)
 {
     if (!ctx)
@@ -642,6 +724,7 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
 
     while (1)
     { // wait until there is enough space in the ringbuffer
+        int c = 0;
         while (1)
         {
             start_w_index = atomic_load(&ringbuffer->local_write_index);
@@ -653,12 +736,16 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
             if (available_space >= 1)
                 break;
 
-            sched_yield();
+            struct timespec ts;
+            ts.tv_sec = 0;
+            ts.tv_nsec = (TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
+            nanosleep(&ts, NULL);
             COUNT++;
-            if (COUNT % 1000000 == 0)
+
+            if (COUNT % 100 == 0)
             {
-                printf("STUCK %u - local_w: %u, remote_r: %u av_space: %u\n",
-                       COUNT, start_w_index, end_w_index, available_space);
+                printf("No space in the ringbuffer, waiting... %d - %d\n", COUNT, c);
+                c++;
             }
         }
 
@@ -683,9 +770,7 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
         msg->number_of_slots = 1;
 
         atomic_fetch_add(&ctx->n_msg_sent, 1);
-        // atomic_fetch_add(&ringbuffer->local_write_index, 1);
-
-        ringbuffer->local_write_index++;
+        atomic_fetch_add(&ringbuffer->local_write_index, 1);
     }
 
     return 1;
@@ -883,7 +968,7 @@ int rdma_set_polling_status(rdma_context_t *ctx, uint32_t is_polling)
     if (rdma_post_write_(ctx, remote_addr,
                          (uintptr_t)(ctx->buffer + offset),
                          sizeof(ringbuffer->flags.flags),
-                         FALSE) != 0)
+                         TRUE) != 0)
         return rdma_err_int(ctx, "Failed to post write - rdma_set_polling_status");
 
     printf("Updating REMOTE polling status: %u\n",

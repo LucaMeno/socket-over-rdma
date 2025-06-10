@@ -43,7 +43,7 @@
 
 #else
 
-#define THRESHOLD_NOT_AUTOSCALER 64
+#define THRESHOLD_NOT_AUTOSCALER 256
 
 #endif // AUTOSCALE_FLUSH_THRESHOLD
 
@@ -52,7 +52,7 @@
 
 #define MAX_PAYLOAD_SIZE (128 * 1024) // 128 KB
 
-#define MAX_CONTIGUOS_MSG_NUMBER 1 // maximum number of contiguous messages that can be read in a single read operation
+#define TIME_TO_WAIT_IF_NO_SPACE_MS 10
 
 // READ
 #define MSG_TO_READ_PER_THREAD 128
@@ -110,7 +110,7 @@ enum ring_buffer_flags
     RING_BUFFER_FULL = 0x01,
     RING_BUFFER_EMPTY = 0x02,
     RING_BUFFER_POLLING = 0x04,
-    RING_BUFFER_CAN_POLLING = 0x08,
+    RING_BUFFER_CAN_POLLING = 0x08
 };
 
 enum msg_flags
@@ -164,17 +164,19 @@ struct rdma_context
     pthread_mutex_t mtx_tx; // used to wait for the context to be ready
     pthread_cond_t cond_tx; // used to signal the context is ready
 
-    pthread_mutex_t mtx_rx; // to protect the read operations
-    pthread_cond_t cond_rx; // used to protect the commit of the read operations (update remote read index)
+    uint64_t last_flush_ms; // last time the buffer was flushed, used to avoid flushing too often
+    atomic_uint is_flushing;
 
-    uint64_t last_flush_ns;    // last time the buffer was flushed, used to avoid flushing too often
-    pthread_mutex_t mtx_flush; // to protect the flush operations
+    atomic_uint is_flush_thread_running; // TRUE if the flush thread is running, used to avoid multiple flush threads
 
-    pthread_mutex_t mtx_test; // mutex for testing purposes DEBUG
+    pthread_mutex_t mtx_commit_flush; // used to commit the flush operation
+    pthread_cond_t cond_commit_flush; // used to signal the flush operation is committed
 
     atomic_uint n_msg_sent; // counter for the number of messages sent, used to determinate the threshold for flushing
     atomic_uint flush_threshold;
     uint64_t flush_threshold_set_time; // time when the flush threshold was set, used to determine if we should change the flush threshold
+    uint32_t fulsh_index;
+    pthread_mutex_t mtx;
 
     uint64_t time_start_polling; // time when the polling started, used to be able to stop the polling thread
     uint32_t loop_with_no_msg;   // number of loops with no messages, used to stop the polling thread if there are no messages for a while
@@ -206,8 +208,7 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
 int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer);
 int rdma_send_data_ready(rdma_context_t *ctx);
 int rdma_update_remote_read_idx(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t r_idx);
-
-int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_socket);
+int rdma_flush_buffer_2(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t start_idx, uint32_t end_idx);
 
 // POLLING
 int rdma_set_polling_status(rdma_context_t *ctx, uint32_t is_polling);
