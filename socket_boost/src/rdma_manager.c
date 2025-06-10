@@ -453,6 +453,7 @@ int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
 
         if (rdma_manager_start_polling(ctxm, ctx) != 0)
             return manager_err_int(ctx, "Failed to send data ready notification - rdma_parse_notification");
+        break;
 
         /*u_int64_t now = get_time_ms();
 
@@ -787,7 +788,7 @@ void *rdma_manager_writer_thread(void *arg)
             if (FD_ISSET(fd, &temp_fds))
             {
                 // printf(".");
-                //  retrieve the proxy socket id 
+                //  retrieve the proxy socket id
                 int j = 0;
                 for (; j < n; j++)
                     if (sk_to_monitor[j].fd == fd)
@@ -1044,7 +1045,6 @@ void *rdma_manager_flush_thread(void *arg)
                 continue;
 
             // check if the threshold need to be updated
-            uint64_t now = get_time_ms();
 
 #ifdef AUTOSCALE_FLUSH_THRESHOLD
             uint64_t now = get_time_ms();
@@ -1095,24 +1095,30 @@ void *rdma_manager_flush_thread(void *arg)
 
             uint32_t msg_sent = atomic_load(&ctx->n_msg_sent);
 
-            if (msg_sent >= ctx->flush_threshold ||
-                (now - ctx->last_flush_ns >= FLUSH_INTERVAL_MS) && msg_sent > 0)
+            while (1)
             {
-                //printf("Flushing context %d, messages sent: %u, threshold: %u\n", i, msg_sent, ctx->flush_threshold);
-                ctx->last_flush_ns = now;          // update the last flush time
-                atomic_store(&ctx->n_msg_sent, 0); // reset the number of messages sent
-
-                if (rdma_flush_buffer(ctx, ctx->is_server ? ctx->ringbuffer_server : ctx->ringbuffer_client) != 0)
+                uint64_t now = get_time_ms();
+                if (msg_sent >= ctx->flush_threshold ||
+                    ((now - ctx->last_flush_ns >= FLUSH_INTERVAL_MS) && msg_sent > 0))
                 {
-                    return manager_err_null(ctx, "Failed to flush buffer - rdma_manager_flush_thread");
+                    printf("Flushing context %d, messages sent: %u, threshold: %u\n", i, msg_sent, ctx->flush_threshold);
+                    ctx->last_flush_ns = now;          // update the last flush time
+                    atomic_store(&ctx->n_msg_sent, 0); // reset the number of messages sent
+
+                    if (rdma_flush_buffer(ctx, ctx->is_server ? ctx->ringbuffer_server : ctx->ringbuffer_client) != 0)
+                    {
+                        return manager_err_null(ctx, "Failed to flush buffer - rdma_manager_flush_thread");
+                    }
+                }
+
+                msg_sent = atomic_load(&ctx->n_msg_sent);
+                if (msg_sent == 0)
+                {
+                    // no messages to flush, break the loop
+                    break;
                 }
             }
         }
-        // sleep for a while
-        /*struct timespec ts;
-        ts.tv_sec = FLUSH_INTERVAL_MS / 1000;              // seconds
-        ts.tv_nsec = (FLUSH_INTERVAL_MS % 1000) * 1000000; // ms -> ns
-        nanosleep(&ts, NULL);*/
     }
 }
 

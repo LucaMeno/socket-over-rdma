@@ -373,13 +373,6 @@ int rdma_context_destroy(rdma_context_t *ctx)
     pthread_mutex_destroy(&ctx->mtx_tx);
     pthread_cond_destroy(&ctx->cond_tx);
 
-    pthread_mutex_destroy(&ctx->mtx_rx);
-    pthread_cond_destroy(&ctx->cond_rx);
-
-    pthread_mutex_destroy(&ctx->mtx_flush);
-
-    pthread_mutex_destroy(&ctx->mtx_test);
-
     return 0;
 }
 
@@ -405,11 +398,8 @@ int rdma_context_init(rdma_context_t *ctx)
     pthread_mutex_init(&ctx->mtx_tx, NULL);
     pthread_cond_init(&ctx->cond_tx, NULL);
 
-    pthread_mutex_init(&ctx->mtx_rx, NULL);
-    pthread_cond_init(&ctx->cond_rx, NULL);
-
     ctx->last_flush_ns = 0;
-    pthread_mutex_init(&ctx->mtx_flush, NULL);
+    ctx->is_flushing = FALSE;
 
 #ifdef AUTOSCALE_FLUSH_THRESHOLD
     atomic_store(&ctx->flush_threshold, MIN_FLUSH_THRESHOLD);
@@ -419,8 +409,6 @@ int rdma_context_init(rdma_context_t *ctx)
 
     atomic_store(&ctx->n_msg_sent, 0);
     ctx->flush_threshold_set_time = 0;
-
-    pthread_mutex_init(&ctx->mtx_test, NULL);
 
     ctx->time_last_recv = 0;
     ctx->n_recv_msg = 0;
@@ -642,6 +630,7 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
 
     while (1)
     { // wait until there is enough space in the ringbuffer
+        int c = 0;
         while (1)
         {
             start_w_index = atomic_load(&ringbuffer->local_write_index);
@@ -653,13 +642,16 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
             if (available_space >= 1)
                 break;
 
-            sched_yield();
-            COUNT++;
-            if (COUNT % 1000000 == 0)
+            /*struct timespec ts;
+            ts.tv_sec = 0;
+            ts.tv_nsec = (SLEEP_TIME_WHEN_NO_SPACE_MS) * 1000000; // ms -> ns
+            nanosleep(&ts, NULL);
+            c++;
+
+            if (c > 0)
             {
-                printf("STUCK %u - local_w: %u, remote_r: %u av_space: %u\n",
-                       COUNT, start_w_index, end_w_index, available_space);
-            }
+               printf("No space in the ringbuffer, waiting... %d\n", c);
+            }*/
         }
 
         // modulo the indexes

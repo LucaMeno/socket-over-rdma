@@ -38,7 +38,7 @@
 #define INITIAL_CONTEXT_NUMBER 10
 #define N_CONTEXT_REALLOC 5
 
-#define TIME_STOP_SELECT_SEC 10 // 10 seconds
+#define TIME_STOP_SELECT_SEC 5 // 10 seconds
 
 typedef struct task task_t;
 typedef struct thread_pool thread_pool_t;
@@ -95,11 +95,6 @@ struct reader_thread_arg
     rdma_context_t *ctx; // context to use
     uint32_t start_read_index;
     uint32_t end_read_index;
-
-    //uint32_t can_commit;      // flag to indicate if the read can be committed (only the last thread can commit)
-    //uint32_t base_read_index; // base read index for the context, used to calculate the real read index
-    //uint32_t offset;          // offset for the read index, used to calculate the real read index
-    //uint32_t n_msg_read;      // number of messages read by this thread
 };
 
 struct flush_thread_arg

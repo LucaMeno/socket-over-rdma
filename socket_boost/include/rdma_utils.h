@@ -52,8 +52,6 @@
 
 #define MAX_PAYLOAD_SIZE (128 * 1024) // 128 KB
 
-#define MAX_CONTIGUOS_MSG_NUMBER 1 // maximum number of contiguous messages that can be read in a single read operation
-
 // READ
 #define MSG_TO_READ_PER_THREAD 128
 
@@ -110,7 +108,7 @@ enum ring_buffer_flags
     RING_BUFFER_FULL = 0x01,
     RING_BUFFER_EMPTY = 0x02,
     RING_BUFFER_POLLING = 0x04,
-    RING_BUFFER_CAN_POLLING = 0x08,
+    RING_BUFFER_CAN_POLLING = 0x08
 };
 
 enum msg_flags
@@ -164,13 +162,8 @@ struct rdma_context
     pthread_mutex_t mtx_tx; // used to wait for the context to be ready
     pthread_cond_t cond_tx; // used to signal the context is ready
 
-    pthread_mutex_t mtx_rx; // to protect the read operations
-    pthread_cond_t cond_rx; // used to protect the commit of the read operations (update remote read index)
-
-    uint64_t last_flush_ns;    // last time the buffer was flushed, used to avoid flushing too often
-    pthread_mutex_t mtx_flush; // to protect the flush operations
-
-    pthread_mutex_t mtx_test; // mutex for testing purposes DEBUG
+    uint64_t last_flush_ns; // last time the buffer was flushed, used to avoid flushing too often
+    atomic_uint is_flushing;
 
     atomic_uint n_msg_sent; // counter for the number of messages sent, used to determinate the threshold for flushing
     atomic_uint flush_threshold;
