@@ -167,6 +167,8 @@ struct rdma_context
     uint64_t last_flush_ns; // last time the buffer was flushed, used to avoid flushing too often
     atomic_uint is_flushing;
 
+    atomic_uint is_flush_thread_running; // TRUE if the flush thread is running, used to avoid multiple flush threads
+
     pthread_mutex_t mtx_commit_flush; // used to commit the flush operation
     pthread_cond_t cond_commit_flush; // used to signal the flush operation is committed
 

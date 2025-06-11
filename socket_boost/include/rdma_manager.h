@@ -26,6 +26,10 @@
 #define POLLING_TIME_LIMIT_MS (1000 * 100) // 10 seconds
 #define SLEEP_TIME_BETWEEN_POLLING_MS 1    // ms
 
+#define MAX_COUNT_BEFORE_LAUNCH_FLUSH_THREAD 5
+
+#define FLUSH_TIMEOUT_MS 1000
+
 // move from event based to polling based
 #define N_OF_RECV_BEFORE_POLLING 3
 #define MAX_TIME_BETWEEN_RECV_TO_TRIGGER_POLLING_MS 1000 // ms
@@ -46,6 +50,7 @@ typedef struct rdma_context_manager rdma_context_manager_t;
 typedef struct writer_thread_arg writer_thread_arg_t;
 typedef struct reader_thread_arg reader_thread_arg_t;
 typedef struct flush_thread_arg flush_thread_arg_t;
+typedef struct flus_thread_master_arg flus_thread_master_arg_t;
 
 struct thread_pool
 {
@@ -103,6 +108,12 @@ struct flush_thread_arg
     uint32_t start_idx;
     uint32_t end_idx; // range of the ring buffer to flush
     rdma_ringbuffer_t *ringbuffer; // ring buffer to flush
+};
+
+struct flus_thread_master_arg {
+    rdma_context_manager_t *ctxm;
+    rdma_context_t *ctx;
+    rdma_ringbuffer_t *ringbuffer;
 };
 
 struct task

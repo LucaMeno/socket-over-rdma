@@ -425,6 +425,8 @@ int rdma_context_init(rdma_context_t *ctx)
 
     pthread_mutex_init(&ctx->mtx, NULL);
 
+    atomic_store(&ctx->is_flush_thread_running, FALSE);
+
     return 0;
 }
 
@@ -618,12 +620,6 @@ int rdma_flush_buffer_2(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint
 
 int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
 {
-    uint32_t old_value = atomic_exchange(&ctx->is_flushing, TRUE);
-    if (old_value == TRUE)
-    {
-        // already flushing, return
-        return 0;
-    }
 
     if (!ctx || !ringbuffer)
         return rdma_err_int(ctx, "Context or rb is NULL - rdma_flush_buffer");
@@ -711,8 +707,6 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
     }
 #endif // RDMA_DEBUG_FLUSH
 
-    // reset the is_flushing flag
-    atomic_store(&ctx->is_flushing, FALSE);
     return 0;
 }
 
