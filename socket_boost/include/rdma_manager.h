@@ -102,6 +102,7 @@ struct flush_thread_arg
     rdma_context_t *ctx; // context to use
     uint32_t start_idx;
     uint32_t end_idx; // range of the ring buffer to flush
+    rdma_ringbuffer_t *ringbuffer; // ring buffer to flush
 };
 
 struct task

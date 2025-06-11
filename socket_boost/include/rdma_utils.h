@@ -43,7 +43,7 @@
 
 #else
 
-#define THRESHOLD_NOT_AUTOSCALER 64
+#define THRESHOLD_NOT_AUTOSCALER 256
 
 #endif // AUTOSCALE_FLUSH_THRESHOLD
 
@@ -173,6 +173,8 @@ struct rdma_context
     atomic_uint n_msg_sent; // counter for the number of messages sent, used to determinate the threshold for flushing
     atomic_uint flush_threshold;
     uint64_t flush_threshold_set_time; // time when the flush threshold was set, used to determine if we should change the flush threshold
+    uint32_t fulsh_index;
+    pthread_mutex_t mtx;
 
     uint64_t time_start_polling; // time when the polling started, used to be able to stop the polling thread
     uint32_t loop_with_no_msg;   // number of loops with no messages, used to stop the polling thread if there are no messages for a while
@@ -204,8 +206,7 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
 int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer);
 int rdma_send_data_ready(rdma_context_t *ctx);
 int rdma_update_remote_read_idx(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t r_idx);
-
-int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_socket);
+int rdma_flush_buffer_2(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t start_idx, uint32_t end_idx);
 
 // POLLING
 int rdma_set_polling_status(rdma_context_t *ctx, uint32_t is_polling);

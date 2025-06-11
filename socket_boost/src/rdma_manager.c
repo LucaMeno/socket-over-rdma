@@ -1053,9 +1053,9 @@ void *rdma_manager_flush_thread(void *arg)
             if (atomic_load(&ctx->is_ready) == FALSE || ctx->conn == NULL)
                 continue;
 
-            // check if the threshold need to be updated
-
 #ifdef AUTOSCALE_FLUSH_THRESHOLD
+
+            // check if the threshold need to be updated
             uint64_t now = get_time_ms();
             uint32_t actual_ft = atomic_load(&ctx->flush_threshold);
 
@@ -1107,6 +1107,7 @@ void *rdma_manager_flush_thread(void *arg)
             while (1)
             {
                 uint64_t now = get_time_ms();
+                rdma_ringbuffer_t *rb = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
 
                 if (msg_sent >= ctx->flush_threshold ||
                     ((now - ctx->last_flush_ns >= FLUSH_INTERVAL_MS) && msg_sent > 0))
@@ -1120,7 +1121,7 @@ void *rdma_manager_flush_thread(void *arg)
                         return manager_err_null(ctx, "Failed to flush buffer - rdma_manager_flush_thread");
                     }*/
 
-                    ctx->last_flush_ns = now;          // update the last flush time
+                    //printf("Flushing context %d, messages sent: %u, threshold: %u\n", i, msg_sent, ctx->flush_threshold);
                     atomic_store(&ctx->n_msg_sent, 0); // reset the number of messages sent
 
                     // create the flush thread argument
@@ -1129,6 +1130,11 @@ void *rdma_manager_flush_thread(void *arg)
                         return manager_err_null(ctx, "Failed to allocate memory for flush thread argument - rdma_manager_flush_thread");
 
                     flush_arg->ctx = ctx;
+                    flush_arg->start_idx = atomic_load(&rb->local_read_index);
+                    flush_arg->end_idx = atomic_load(&rb->local_write_index);
+                    flush_arg->ringbuffer = rb;
+
+                    atomic_store(&rb->local_read_index, atomic_load(&rb->local_write_index)); // reset the local read index
 
                     // add the flush thread to the thread pool
                     if (thread_pool_add(ctxm->pool, flush_thread, flush_arg) != 0)
@@ -1168,17 +1174,12 @@ void flush_thread(void *arg)
 {
     flush_thread_arg_t *param = (flush_thread_arg_t *)arg;
 
-    if (!param->ctx)
+    if (!param->ctx || !param->ringbuffer)
         return manager_err_void(NULL, "Context is NULL - flush_thread");
 
-    // read the data from the remote buffer
-    rdma_ringbuffer_t *rb = (param->ctx->is_server == TRUE) ? param->ctx->ringbuffer_server : param->ctx->ringbuffer_client;
-    if (rb == NULL)
-        return manager_err_void(NULL, "Ring buffer is NULL - flush_thread");
+    // printf("FT\n");s
 
-    // printf("FT\n");
-
-    if (rdma_flush_buffer(param->ctx, rb) != 0)
+    if (rdma_flush_buffer_2(param->ctx, param->ringbuffer, param->start_idx, param->end_idx) != 0)
         return manager_err_void(NULL, "Failed to flush - flush_thread");
 
     return;
