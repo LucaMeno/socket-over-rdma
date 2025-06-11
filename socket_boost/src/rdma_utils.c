@@ -373,6 +373,9 @@ int rdma_context_destroy(rdma_context_t *ctx)
     pthread_mutex_destroy(&ctx->mtx_tx);
     pthread_cond_destroy(&ctx->cond_tx);
 
+    pthread_mutex_destroy(&ctx->mtx_commit_flush);
+    pthread_cond_destroy(&ctx->cond_commit_flush);
+
     return 0;
 }
 
@@ -400,6 +403,8 @@ int rdma_context_init(rdma_context_t *ctx)
 
     ctx->last_flush_ns = 0;
     ctx->is_flushing = FALSE;
+    pthread_mutex_init(&ctx->mtx_commit_flush, NULL);
+    pthread_cond_init(&ctx->cond_commit_flush, NULL);
 
 #ifdef AUTOSCALE_FLUSH_THRESHOLD
     atomic_store(&ctx->flush_threshold, MIN_FLUSH_THRESHOLD);
@@ -525,13 +530,103 @@ int rdma_post_write_(rdma_context_t *ctx, uintptr_t remote_addr, uintptr_t local
     return 0;
 }
 
-int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
+int rdma_flush_buffer_2(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t start_idx, uint32_t end_idx)
 {
     if (!ctx || !ringbuffer)
         return rdma_err_int(ctx, "Context or rb is NULL - rdma_flush_buffer");
 
+    uint32_t actual_w = end_idx; // end_idx is the actual write index
+
+    uint32_t w_idx = RING_IDX(end_idx);   // local write index
+    uint32_t r_idx = RING_IDX(start_idx); // remote read index
+
+    if (r_idx > w_idx)
+    {
+        // wrap-around
+        uintptr_t batch_start = (uintptr_t)&ringbuffer->data[r_idx];
+        size_t batch_size = (MAX_MSG_BUFFER - r_idx) * sizeof(rdma_msg_t);
+
+        uintptr_t remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
+
+        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, FALSE) != 0)
+        {
+            return rdma_err_int(ctx, "Failed to post data batch - first write");
+        }
+
+        batch_start = (uintptr_t)&ringbuffer->data[0];
+        batch_size = w_idx * sizeof(rdma_msg_t);
+
+        remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
+
+        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, FALSE) != 0)
+        {
+            return rdma_err_int(ctx, "Failed to post data batch - second write");
+        }
+    }
+    else
+    {
+        // normal case
+        uintptr_t batch_start = (uintptr_t)&ringbuffer->data[r_idx];
+        size_t batch_size = (w_idx - r_idx) * sizeof(rdma_msg_t);
+
+        uintptr_t remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
+
+        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, FALSE) != 0)
+        {
+            return rdma_err_int(ctx, "Failed to post data batch");
+        }
+    }
+
+    // calculate the offset
+    size_t write_index_offset = (size_t)((char *)ringbuffer - (char *)ctx->buffer) +
+                                offsetof(rdma_ringbuffer_t, remote_write_index);
+
+    uintptr_t remote_addr_write_index = ctx->remote_addr + write_index_offset;
+
+    // Critical region to update the write index
+
+    pthread_mutex_lock(&ctx->mtx_commit_flush);
+    // Wait until the previous flush is committed
+    while (atomic_load(&ringbuffer->remote_read_index) != actual_w)
+    {
+        pthread_cond_wait(&ctx->cond_commit_flush, &ctx->mtx_commit_flush);
+    }
+
+    // Update the write index
+    atomic_store(&ringbuffer->remote_write_index, actual_w);
+    if (rdma_post_write_(ctx, remote_addr_write_index,
+                         (uintptr_t)(ctx->buffer + write_index_offset),
+                         sizeof(ringbuffer->remote_write_index), TRUE) != 0)
+    {
+        return rdma_err_int(ctx, "Failed to post write index");
+    }
+
+    ctx->last_flush_ns = get_time_ms();
+
+    pthread_cond_broadcast(&ctx->cond_commit_flush);
+    pthread_mutex_unlock(&ctx->mtx_commit_flush);
+
+    rdma_ringbuffer_t *peer_rb = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
+
+    if (!(atomic_load(&peer_rb->flags.flags) & RING_BUFFER_POLLING))
+        rdma_send_data_ready(ctx);
+
+    return 0;
+}
+
+int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
+{
+    uint32_t old_value = atomic_exchange(&ctx->is_flushing, TRUE);
+    if (old_value == TRUE)
+    {
+        // already flushing, return
+        return 0;
+    }
+
+    if (!ctx || !ringbuffer)
+        return rdma_err_int(ctx, "Context or rb is NULL - rdma_flush_buffer");
+
     uint32_t actual_w = atomic_load(&ringbuffer->local_write_index);
-    uint32_t actual_r = atomic_load(&ringbuffer->local_read_index);
     uint32_t remote_r = atomic_load(&ringbuffer->remote_read_index);
 
     uint32_t w_idx = RING_IDX(actual_w);
@@ -600,6 +695,7 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
     ctx->last_flush_ns = get_time_ms();
 
 #ifdef RDMA_DEBUG_FLUSH
+    uint32_t actual_r = atomic_load(&ringbuffer->local_read_index);
     uint32_t msg_to_flush = RING_IDX(actual_w - actual_r);
     TX_COUNT += msg_to_flush;
     TX_N_FLUSH += 1;
@@ -613,6 +709,8 @@ int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
     }
 #endif // RDMA_DEBUG_FLUSH
 
+    // reset the is_flushing flag
+    atomic_store(&ctx->is_flushing, FALSE);
     return 0;
 }
 
@@ -630,7 +728,6 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
 
     while (1)
     { // wait until there is enough space in the ringbuffer
-        int c = 0;
         while (1)
         {
             start_w_index = atomic_load(&ringbuffer->local_write_index);
@@ -642,16 +739,16 @@ int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_sock
             if (available_space >= 1)
                 break;
 
-            /*struct timespec ts;
+            struct timespec ts;
             ts.tv_sec = 0;
-            ts.tv_nsec = (SLEEP_TIME_WHEN_NO_SPACE_MS) * 1000000; // ms -> ns
+            ts.tv_nsec = (TIME_TO_WAIT_IF_NO_SPACE_MS /* ms */) * 1000000; // ms -> ns
             nanosleep(&ts, NULL);
-            c++;
+            COUNT++;
 
-            if (c > 0)
+            if (COUNT % 100)
             {
-               printf("No space in the ringbuffer, waiting... %d\n", c);
-            }*/
+                printf("No space in the ringbuffer, waiting... %d\n", COUNT);
+            }
         }
 
         // modulo the indexes

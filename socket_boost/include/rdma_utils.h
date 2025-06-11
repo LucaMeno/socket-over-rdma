@@ -52,6 +52,8 @@
 
 #define MAX_PAYLOAD_SIZE (128 * 1024) // 128 KB
 
+#define TIME_TO_WAIT_IF_NO_SPACE_MS 10
+
 // READ
 #define MSG_TO_READ_PER_THREAD 128
 
@@ -164,6 +166,9 @@ struct rdma_context
 
     uint64_t last_flush_ns; // last time the buffer was flushed, used to avoid flushing too often
     atomic_uint is_flushing;
+
+    pthread_mutex_t mtx_commit_flush; // used to commit the flush operation
+    pthread_cond_t cond_commit_flush; // used to signal the flush operation is committed
 
     atomic_uint n_msg_sent; // counter for the number of messages sent, used to determinate the threshold for flushing
     atomic_uint flush_threshold;
