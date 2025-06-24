@@ -74,7 +74,7 @@ int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel
         .send_cq = ctx->send_cq,
         .recv_cq = ctx->recv_cq,
         .cap = {
-            .max_send_wr = 10,
+            .max_send_wr = 128,
             .max_recv_wr = 10,
             .max_send_sge = 1,
             .max_recv_sge = 1},
@@ -225,7 +225,7 @@ int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port)
         .recv_cq = cctx->recv_cq,
         .qp_type = IBV_QPT_RC,
         .cap = {
-            .max_send_wr = 10,
+            .max_send_wr = 128,
             .max_recv_wr = 10,
             .max_send_sge = 10,
             .max_recv_sge = 10}};
@@ -544,13 +544,6 @@ int rdma_flush_buffer_2(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint
     uint32_t w_idx = RING_IDX(end_idx);   // local write index
     uint32_t r_idx = RING_IDX(start_idx); // remote read index
 
-        pthread_mutex_lock(&ctx->mtx_commit_flush);
-    // Wait until the previous flush is committed
-    while (atomic_load(&ringbuffer->remote_write_index) != start_idx)
-    {
-        pthread_cond_wait(&ctx->cond_commit_flush, &ctx->mtx_commit_flush);
-    }
-
     if (r_idx > w_idx)
     {
         // wrap-around
@@ -597,8 +590,12 @@ int rdma_flush_buffer_2(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint
     rdma_ringbuffer_t *peer_rb = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
 
     // Critical region to update the write index
-
-
+    pthread_mutex_lock(&ctx->mtx_commit_flush);
+    // Wait until the previous flush is committed
+    while (atomic_load(&ringbuffer->remote_write_index) != start_idx)
+    {
+        pthread_cond_wait(&ctx->cond_commit_flush, &ctx->mtx_commit_flush);
+    }
 
     // Update the write index
     atomic_store(&ringbuffer->remote_write_index, end_idx);

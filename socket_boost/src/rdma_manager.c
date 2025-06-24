@@ -530,16 +530,16 @@ int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t
             atomic_store(&rb_remote->local_read_index, remote_w);
 
             // update the remote index
-            if (rdma_update_remote_read_idx(ctx, rb_remote, end_read_index) != 0)
+            /*if (rdma_update_remote_read_idx(ctx, rb_remote, end_read_index) != 0)
                 return manager_err_int(NULL, "Error while updating the index");
 
             if (rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index) != 0)
-                return manager_err_int(ctx, "Error while reading messages - rdma_manager_consume_ringbuffer");
+                return manager_err_int(ctx, "Error while reading messages - rdma_manager_consume_ringbuffer");*/
 
-            /*if (rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index) != 0)
+            if (rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index) != 0)
                 return manager_err_int(ctx, "Error while reading messages - rdma_manager_consume_ringbuffer");
             // update the remote index
-            return rdma_update_remote_read_idx(ctx, rb_remote, end_read_index);*/
+            return rdma_update_remote_read_idx(ctx, rb_remote, end_read_index);
         }
         else
         {
@@ -1146,6 +1146,7 @@ void *rdma_manager_flush_thread(void *arg)
                 if (msg_sent >= ctx->flush_threshold ||
                     ((now - ctx->last_flush_ms >= FLUSH_INTERVAL_MS) && msg_sent > 0))
                 {
+                    //printf("Flushing context %d, messages sent: %u\n", i, msg_sent);
                     atomic_store(&ctx->n_msg_sent, 0); // reset the number of messages sent
                     rdma_manager_flush_buffer(ctxm, ctx, rb);
                 }

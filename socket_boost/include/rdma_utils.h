@@ -57,6 +57,8 @@
 // READ
 #define MSG_TO_READ_PER_THREAD 128
 
+#define NUMBER_OF_QP 4
+
 // SIZE OF STRUCTURES
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
@@ -145,13 +147,14 @@ struct rdma_context
     struct rdma_cm_id *conn;              // Connection ID
     struct ibv_pd *pd;                    // Protection Domain
     struct ibv_mr *mr;                    // Memory Region
-    struct ibv_qp *qp;                    // Queue Pair
-    struct ibv_cq *send_cq;               // send completion queue
-    struct ibv_cq *recv_cq;               // recv completion queue
-    void *buffer;                         // Buffer to send
-    size_t buffer_size;                   // Size of the buffer
-    uintptr_t remote_addr;                // Remote address
-    uint32_t remote_rkey;                 // Remote RKey
+    // struct ibv_qp *qp;                    // Queue Pair
+    struct ibv_qp *qps[NUMBER_OF_QP]; // Array of Queue Pairs for multiple QPs
+    struct ibv_cq *send_cq;           // send completion queue
+    struct ibv_cq *recv_cq;           // recv completion queue
+    void *buffer;                     // Buffer to send
+    size_t buffer_size;               // Size of the buffer
+    uintptr_t remote_addr;            // Remote address
+    uint32_t remote_rkey;             // Remote RKey
 
     struct ibv_comp_channel *comp_channel; // Completion channel
 
