@@ -1,25 +1,22 @@
 cmake_minimum_required(VERSION 3.18)
-project(socket_boost C)
+project(socket_boost CXX)
 
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -O2")
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O2")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-include_directories(include)
+include_directories(include_cpp)
 link_libraries(bpf rdmacm ibverbs)
 
 # === MAIN PROGRAM ===
 
 add_executable(scap
-    src/main.c
-    src/scap.c
-    src/sk_utils.c
-    src/rdma_utils.c
-    src/rdma_manager.c
-    src/hashmap.c
-    src/log_utils.c
+    src_cpp/main.cpp
+    src_cpp/SocketMng.cpp
+    src_cpp/BpfMng.cpp
+    src_cpp/
 )
 
 # === BPF ===
@@ -42,14 +39,6 @@ add_custom_command(
 )
 
 add_custom_target(bpf_gen ALL DEPENDS ${SKEL_HDR})
-
-# === TEST ===
-
-add_executable(client tests/socket/client.c)
-add_executable(server tests/socket/server.c)
-
-target_link_libraries(client bpf rdmacm ibverbs)
-target_link_libraries(server bpf rdmacm ibverbs)
 
 # === PUSH MODIFICATIONS ===
 add_custom_target(push
