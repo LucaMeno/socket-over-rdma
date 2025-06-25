@@ -54,10 +54,8 @@
 
 #define TIME_TO_WAIT_IF_NO_SPACE_MS 10
 
-// READ
-#define MSG_TO_READ_PER_THREAD 128
-
-#define NUMBER_OF_QP 4
+#define QP_NUMBER 4
+#define DEFAULT_QP_INDEX 0 // default queue pair index for operations
 
 // SIZE OF STRUCTURES
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
@@ -148,13 +146,14 @@ struct rdma_context
     struct ibv_pd *pd;                    // Protection Domain
     struct ibv_mr *mr;                    // Memory Region
     // struct ibv_qp *qp;                    // Queue Pair
-    struct ibv_qp *qps[NUMBER_OF_QP]; // Array of Queue Pairs for multiple QPs
-    struct ibv_cq *send_cq;           // send completion queue
-    struct ibv_cq *recv_cq;           // recv completion queue
-    void *buffer;                     // Buffer to send
-    size_t buffer_size;               // Size of the buffer
-    uintptr_t remote_addr;            // Remote address
-    uint32_t remote_rkey;             // Remote RKey
+    struct ibv_qp *qps[QP_NUMBER];      // Queue Pairs for different operations
+    struct ibv_cq *send_cqs[QP_NUMBER]; // send completion queue
+
+    struct ibv_cq *recv_cq; // recv completion queue
+    void *buffer;           // Buffer to send
+    size_t buffer_size;     // Size of the buffer
+    uintptr_t remote_addr;  // Remote address
+    uint32_t remote_rkey;   // Remote RKey
 
     struct ibv_comp_channel *comp_channel; // Completion channel
 
@@ -192,6 +191,9 @@ struct rdma_context
 
     sockid_fd_entry_t **hash_fd_sk_2; // Hash table of app to proxy sockets (HEAD)
     sockid_fd_entry_t *hash_fs_sk_1;
+
+    int qp_index_counter;         // Counter for queue pair index, used to round-robin the queue pairs
+    pthread_mutex_t mtx_qp_index; // Mutex to protect the qp_index_counter
 };
 
 /** SETUP CONTEXT */
@@ -208,10 +210,9 @@ int rdma_context_init(rdma_context_t *ctx);
 // COMMUNICATION
 int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_socket);
 int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index);
-int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer);
 int rdma_send_data_ready(rdma_context_t *ctx);
-int rdma_update_remote_read_idx(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t r_idx);
-int rdma_flush_buffer_2(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t start_idx, uint32_t end_idx);
+int rdma_update_remote_read_idx(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t r_idx, int qp_index);
+int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t start_idx, uint32_t end_idx, int qp_index);
 
 // POLLING
 int rdma_set_polling_status(rdma_context_t *ctx, uint32_t is_polling);
@@ -219,5 +220,6 @@ int rdma_set_polling_status(rdma_context_t *ctx, uint32_t is_polling);
 // UTILS
 const char *get_op_name(rdma_communication_code_t code);
 uint64_t get_time_ms();
+int get_available_qp_index(rdma_context_t *ctx);
 
 #endif // RDMA_UTILS_H

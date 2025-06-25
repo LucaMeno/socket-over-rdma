@@ -15,7 +15,9 @@ uint32_t RX_N_RECV = 0;   // for debugging
 
 // UTILS
 int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code);
-int rdma_poll_cq_send(rdma_context_t *ctx);
+int rdma_poll_cq_send(rdma_context_t *ctx, int qp_index);
+int rdma_param_setup(rdma_context_t *ctx);
+int rdma_post_write_(rdma_context_t *ctx, uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, int signaled, int qp_index);
 
 // ERROR HANDLING
 int rdma_err_int(rdma_context_t *rdma_ctx, char *msg);
@@ -26,7 +28,7 @@ int rdma_parse_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *cli
 
 /** CLIENT - SERVER */
 
-int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel *server_ec)
+int rdma_param_setup(rdma_context_t *ctx)
 {
     ctx->pd = ibv_alloc_pd(ctx->conn->verbs);
     if (!ctx->pd)
@@ -49,17 +51,21 @@ int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel
     if (!ctx->comp_channel)
         return rdma_err_int(ctx, "ibv_create_comp_channel");
 
-    ctx->send_cq = ibv_create_cq(ctx->conn->verbs, 10, NULL, NULL, 0);
-    if (!ctx->send_cq)
+    // create send completion queues for each QP
+    for (int i = 0; i < QP_NUMBER; i++)
     {
-        ibv_destroy_cq(ctx->send_cq);
-        return rdma_err_int(ctx, "ibv_create_cq (send)");
+        ctx->send_cqs[i] = ibv_create_cq(ctx->conn->verbs, 10, NULL, NULL, 0);
+        if (!ctx->send_cqs[i])
+        {
+            ibv_destroy_cq(ctx->send_cqs[i]);
+            return rdma_err_int(ctx, "ibv_create_cq (send)");
+        }
     }
 
+    // single recv cq for all operations
     ctx->recv_cq = ibv_create_cq(ctx->conn->verbs, 10, NULL, ctx->comp_channel, 0);
     if (!ctx->recv_cq)
     {
-        ibv_destroy_cq(ctx->send_cq);
         return rdma_err_int(ctx, "ibv_create_cq (recv)");
     }
 
@@ -70,22 +76,41 @@ int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel
         return rdma_err_int(ctx, "ibv_req_notify_cq");
     }
 
-    struct ibv_qp_init_attr qp_attr = {
-        .send_cq = ctx->send_cq,
-        .recv_cq = ctx->recv_cq,
-        .cap = {
-            .max_send_wr = 128,
-            .max_recv_wr = 10,
-            .max_send_sge = 1,
-            .max_recv_sge = 1},
-        .qp_type = IBV_QPT_RC};
+    for (int i = 0; i < QP_NUMBER; i++)
+    {
+        struct ibv_qp_init_attr qp_attr = {
+            .send_cq = ctx->send_cqs[i],
+            .recv_cq = ctx->recv_cq,
+            .cap = {
+                .max_send_wr = 128,
+                .max_recv_wr = 10,
+                .max_send_sge = 1,
+                .max_recv_sge = 1},
+            .qp_type = IBV_QPT_RC};
 
-    if (rdma_create_qp(ctx->conn, ctx->pd, &qp_attr))
+        ctx->qps[i] = ibv_create_qp(ctx->pd, &qp_attr);
+        if (!ctx->qps[i])
+        {
+            return rdma_err_int(ctx, "ibv_create_qp");
+        }
+    }
+
+    /*if (rdma_create_qp(ctx->conn, ctx->pd, &qp_attr))
     {
         ibv_destroy_cq(ctx->send_cq);
         ibv_destroy_cq(ctx->recv_cq);
         return rdma_err_int(ctx, "rdma_create_qp");
-    }
+    }*/
+
+    printf("RDMA parameters set up successfully.\n");
+    return 0;
+}
+
+int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel *server_ec)
+{
+    // setup rdma parameters
+    if (rdma_param_setup(ctx) != 0)
+        return rdma_err_int(ctx, "rdma_param_setup");
 
     // Post a receive work request to receive the remote address and rkey
     struct ibv_sge sge = {
@@ -95,7 +120,7 @@ int rdma_server_handle_new_client(rdma_context_t *ctx, struct rdma_event_channel
 
     struct ibv_recv_wr recv_wr = {.wr_id = 0, .sg_list = &sge, .num_sge = 1};
     struct ibv_recv_wr *bad_wr;
-    ibv_post_recv(ctx->conn->qp, &recv_wr, &bad_wr);
+    ibv_post_recv(ctx->qps[DEFAULT_QP_INDEX], &recv_wr, &bad_wr);
 
     // Accept the connection and send the remote address and rkey
     rdma_meta_info_t info = {
@@ -179,63 +204,8 @@ int rdma_client_setup(rdma_context_t *cctx, uint32_t ip, uint16_t port)
 
     rdma_ack_cm_event(event);
 
-    // PD, buffer, MR
-    cctx->pd = ibv_alloc_pd(cctx->conn->verbs);
-    if (!cctx->pd)
-        return rdma_err_int(cctx, "ibv_alloc_pd");
-
-    cctx->buffer = malloc(MR_SIZE);
-    if (!cctx->buffer)
-        return rdma_err_int(cctx, "malloc buffer");
-
-    cctx->buffer_size = MR_SIZE;
-
-    cctx->mr = ibv_reg_mr(cctx->pd, cctx->buffer, MR_SIZE,
-                          IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
-
-    if (!cctx->mr)
-        return rdma_err_int(cctx, "ibv_reg_mr");
-
-    // CQ + QP
-    cctx->comp_channel = ibv_create_comp_channel(cctx->conn->verbs);
-    if (!cctx->comp_channel)
-        return rdma_err_int(cctx, "ibv_create_comp_channel");
-
-    printf("Creating send and receive completion queues\n");
-
-    cctx->send_cq = ibv_create_cq(cctx->conn->verbs, 10, NULL, NULL, 0);
-    if (!cctx->send_cq)
-    {
-        ibv_destroy_cq(cctx->recv_cq);
-        return rdma_err_int(cctx, "ibv_create_cq (send)");
-    }
-
-    cctx->recv_cq = ibv_create_cq(cctx->conn->verbs, 10, NULL, cctx->comp_channel, 0);
-    if (!cctx->recv_cq)
-    {
-        ibv_destroy_cq(cctx->send_cq);
-        return rdma_err_int(cctx, "ibv_create_cq (recv)");
-    }
-
-    if (ibv_req_notify_cq(cctx->recv_cq, 0))
-        return rdma_err_int(cctx, "ibv_req_notify_cq");
-
-    struct ibv_qp_init_attr qp_attr = {
-        .send_cq = cctx->send_cq,
-        .recv_cq = cctx->recv_cq,
-        .qp_type = IBV_QPT_RC,
-        .cap = {
-            .max_send_wr = 128,
-            .max_recv_wr = 10,
-            .max_send_sge = 10,
-            .max_recv_sge = 10}};
-
-    if (rdma_create_qp(cctx->conn, cctx->pd, &qp_attr))
-    {
-        ibv_destroy_cq(cctx->send_cq);
-        ibv_destroy_cq(cctx->recv_cq);
-        return rdma_err_int(cctx, "rdma_create_qp");
-    }
+    if (rdma_param_setup(cctx) != 0)
+        return rdma_err_int(cctx, "rdma_param_setup - rdma_client_setup");
 
     printf("Client connecting to %s:%u\n", ip_str, port);
 
@@ -286,10 +256,10 @@ int rdma_client_connect(rdma_context_t *cctx)
         .send_flags = IBV_SEND_SIGNALED};
 
     struct ibv_send_wr *bad_wr;
-    if (ibv_post_send(cctx->conn->qp, &send_wr, &bad_wr))
+    if (ibv_post_send(cctx->qps[DEFAULT_QP_INDEX], &send_wr, &bad_wr))
         return rdma_err_int(cctx, "ibv_post_send");
 
-    if (rdma_poll_cq_send(cctx))
+    if (rdma_poll_cq_send(cctx, DEFAULT_QP_INDEX))
         return rdma_err_int(cctx, "rdma_poll_cq_send");
 
     // post a receive work request to receive the notification
@@ -304,7 +274,7 @@ int rdma_client_connect(rdma_context_t *cctx)
         .num_sge = 1};
     struct ibv_recv_wr *bad_wr2 = NULL;
 
-    if (ibv_post_recv(cctx->conn->qp, &recv_wr, &bad_wr2) != 0 || bad_wr2)
+    if (ibv_post_recv(cctx->qps[DEFAULT_QP_INDEX], &recv_wr, &bad_wr2) != 0 || bad_wr2)
     {
         fprintf(stderr, "Failed to post initial recv\n");
     }
@@ -326,7 +296,6 @@ int rdma_client_connect(rdma_context_t *cctx)
     atomic_store(&cctx->ringbuffer_client->local_write_index, 0);
     atomic_store(&cctx->ringbuffer_client->flags.flags, 0);
 
-    // sleep(1);
     pthread_mutex_lock(&cctx->mtx_tx);
     atomic_store(&cctx->is_ready, TRUE);
     pthread_cond_signal(&cctx->cond_tx);
@@ -346,8 +315,6 @@ int rdma_context_destroy(rdma_context_t *ctx)
         rdma_destroy_qp(ctx->conn);
         rdma_destroy_id(ctx->conn);
     }
-    if (ctx->send_cq)
-        ibv_destroy_cq(ctx->send_cq);
     if (ctx->recv_cq)
         ibv_destroy_cq(ctx->recv_cq);
     if (ctx->mr)
@@ -361,6 +328,13 @@ int rdma_context_destroy(rdma_context_t *ctx)
     if (ctx->comp_channel)
         ibv_destroy_comp_channel(ctx->comp_channel);
 
+    for (int i = 0; i < QP_NUMBER; i++)
+    {
+        if (ctx->send_cqs[i])
+            ibv_destroy_cq(ctx->send_cqs[i]);
+        if (ctx->qps[i])
+            ibv_destroy_qp(ctx->qps[i]);
+    }
     ctx->conn = NULL;
     ctx->pd = NULL;
     ctx->mr = NULL;
@@ -376,6 +350,8 @@ int rdma_context_destroy(rdma_context_t *ctx)
     pthread_mutex_destroy(&ctx->mtx_commit_flush);
     pthread_cond_destroy(&ctx->cond_commit_flush);
 
+    pthread_mutex_destroy(&ctx->mtx_qp_index);
+
     return 0;
 }
 
@@ -388,8 +364,12 @@ int rdma_context_init(rdma_context_t *ctx)
     ctx->conn = NULL;
     ctx->pd = NULL;
     ctx->mr = NULL;
+    for (int i = 0; i < QP_NUMBER; i++)
+    {
+        ctx->qps[i] = NULL;
+        ctx->send_cqs[i] = NULL;
+    }
     ctx->recv_cq = NULL;
-    ctx->send_cq = NULL;
     ctx->remote_rkey = 0;
     ctx->remote_addr = 0;
     ctx->client_ec = NULL;
@@ -427,6 +407,9 @@ int rdma_context_init(rdma_context_t *ctx)
 
     atomic_store(&ctx->is_flush_thread_running, FALSE);
 
+    ctx->qp_index_counter = 0; // reset the qp index counter
+    pthread_mutex_init(&ctx->mtx_qp_index, NULL);
+
     return 0;
 }
 
@@ -459,11 +442,11 @@ int rdma_send_notification(rdma_context_t *ctx, rdma_communication_code_t code)
 
     // Post send with ibv_post_send
     struct ibv_send_wr *bad_send_wr;
-    if (ibv_post_send(ctx->conn->qp, &send_wr, &bad_send_wr) != 0) // Post the send work request
+    if (ibv_post_send(ctx->qps[DEFAULT_QP_INDEX], &send_wr, &bad_send_wr) != 0) // Post the send work request
         return rdma_err_int(ctx, "Failed to post send - rdma_send_notification");
 
     // Poll the completion queue
-    if (rdma_poll_cq_send(ctx) != 0)
+    if (rdma_poll_cq_send(ctx, DEFAULT_QP_INDEX) != 0)
         return rdma_err_int(ctx, "Failed to poll CQ - rdma_send_notification");
 
 #ifdef RDMA_DEBUG_SR
@@ -488,7 +471,7 @@ int rdma_send_data_ready(rdma_context_t *ctx)
 
 /** COMMUNICATION */
 
-int rdma_post_write_(rdma_context_t *ctx, uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, int signaled)
+int rdma_post_write_(rdma_context_t *ctx, uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, int signaled, int qp_index)
 {
     struct ibv_send_wr send_wr_data = {};
     struct ibv_sge sge_data;
@@ -518,7 +501,7 @@ int rdma_post_write_(rdma_context_t *ctx, uintptr_t remote_addr, uintptr_t local
 
     // Poll the completion queue
     if (signaled == TRUE)
-        if (rdma_poll_cq_send(ctx) != 0)
+        if (rdma_poll_cq_send(ctx, qp_index) != 0)
             return rdma_err_int(ctx, "Failed to poll CQ - rdma_post_write");
 
 #ifdef RDMA_DEBUG_WRITE
@@ -536,7 +519,7 @@ int rdma_post_write_(rdma_context_t *ctx, uintptr_t remote_addr, uintptr_t local
     return 0;
 }
 
-int rdma_flush_buffer_2(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t start_idx, uint32_t end_idx)
+int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t start_idx, uint32_t end_idx, int qp_index)
 {
     if (!ctx || !ringbuffer)
         return rdma_err_int(ctx, "Context or rb is NULL - rdma_flush_buffer");
@@ -552,7 +535,7 @@ int rdma_flush_buffer_2(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint
 
         uintptr_t remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
 
-        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE) != 0)
+        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE, qp_index) != 0)
         {
             return rdma_err_int(ctx, "Failed to post data batch - first write");
         }
@@ -562,7 +545,7 @@ int rdma_flush_buffer_2(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint
 
         remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
 
-        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE) != 0)
+        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE, qp_index) != 0)
         {
             return rdma_err_int(ctx, "Failed to post data batch - second write");
         }
@@ -575,7 +558,7 @@ int rdma_flush_buffer_2(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint
 
         uintptr_t remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
 
-        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE) != 0)
+        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE, qp_index) != 0)
         {
             return rdma_err_int(ctx, "Failed to post data batch");
         }
@@ -601,7 +584,7 @@ int rdma_flush_buffer_2(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint
     atomic_store(&ringbuffer->remote_write_index, end_idx);
     if (rdma_post_write_(ctx, remote_addr_write_index,
                          (uintptr_t)(ctx->buffer + write_index_offset),
-                         sizeof(ringbuffer->remote_write_index), TRUE) != 0)
+                         sizeof(ringbuffer->remote_write_index), TRUE, qp_index) != 0)
     {
         return rdma_err_int(ctx, "Failed to post write index");
     }
@@ -615,98 +598,6 @@ int rdma_flush_buffer_2(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint
     return 0;
 }
 
-/*
-int rdma_flush_buffer(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer)
-{
-    if (!ctx || !ringbuffer)
-        return rdma_err_int(ctx, "Context or rb is NULL - rdma_flush_buffer");
-
-    uint32_t actual_w = atomic_load(&ringbuffer->local_write_index);
-    uint32_t remote_r = atomic_load(&ringbuffer->remote_read_index);
-
-    uint32_t w_idx = RING_IDX(actual_w);
-    uint32_t r_idx = RING_IDX(remote_r);
-
-    if (r_idx > w_idx)
-    {
-        // wrap-around
-        uintptr_t batch_start = (uintptr_t)&ringbuffer->data[r_idx];
-        size_t batch_size = (MAX_MSG_BUFFER - r_idx) * sizeof(rdma_msg_t);
-
-        uintptr_t remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
-
-        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE) != 0)
-        {
-            return rdma_err_int(ctx, "Failed to post data batch - first write");
-        }
-
-        batch_start = (uintptr_t)&ringbuffer->data[0];
-        batch_size = w_idx * sizeof(rdma_msg_t);
-
-        remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
-
-        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE) != 0)
-        {
-            return rdma_err_int(ctx, "Failed to post data batch - second write");
-        }
-    }
-    else
-    {
-        // normal case
-        uintptr_t batch_start = (uintptr_t)&ringbuffer->data[r_idx];
-        size_t batch_size = (w_idx - r_idx) * sizeof(rdma_msg_t);
-
-        uintptr_t remote_addr = ctx->remote_addr + ((uintptr_t)batch_start - (uintptr_t)ctx->buffer);
-
-        if (rdma_post_write_(ctx, remote_addr, batch_start, batch_size, TRUE) != 0)
-        {
-            return rdma_err_int(ctx, "Failed to post data batch");
-        }
-    }
-
-    // Update the write index
-    atomic_store(&ringbuffer->remote_write_index, actual_w);
-
-    size_t write_index_offset = (size_t)((char *)ringbuffer - (char *)ctx->buffer) +
-                                offsetof(rdma_ringbuffer_t, remote_write_index);
-
-    uintptr_t remote_addr_write_index = ctx->remote_addr + write_index_offset;
-
-    if (rdma_post_write_(ctx, remote_addr_write_index,
-                         (uintptr_t)(ctx->buffer + write_index_offset),
-                         sizeof(ringbuffer->remote_write_index), TRUE) != 0)
-    {
-        return rdma_err_int(ctx, "Failed to post write index");
-    }
-
-    rdma_ringbuffer_t *peer_rb = (ctx->is_server == TRUE) ? ctx->ringbuffer_client : ctx->ringbuffer_server;
-
-    if (!(atomic_load(&peer_rb->flags.flags) & RING_BUFFER_POLLING))
-        rdma_send_data_ready(ctx);
-
-    // update the local read index
-    atomic_store(&ringbuffer->local_read_index, actual_w);
-
-    ctx->last_flush_ms = get_time_ms();
-
-#ifdef RDMA_DEBUG_FLUSH
-    uint32_t actual_r = atomic_load(&ringbuffer->local_read_index);
-    uint32_t msg_to_flush = RING_IDX(actual_w - actual_r);
-    TX_COUNT += msg_to_flush;
-    TX_N_FLUSH += 1;
-    if (TX_N_FLUSH % RDMA_DEBUG_INTERVAL == 0)
-    {
-        printf("TX_COUNT: %u (+%d), TX_SIZE: %u Thrsh: %u\n",
-               TX_COUNT,
-               msg_to_flush,
-               TX_SIZE,
-               atomic_load(&ctx->flush_threshold));
-    }
-#endif // RDMA_DEBUG_FLUSH
-
-    return 0;
-}
-*/
 int rdma_write_msg(rdma_context_t *ctx, int src_fd, struct sock_id original_socket)
 {
     if (!ctx)
@@ -838,7 +729,7 @@ int rdma_parse_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *cli
     return 0;
 }
 
-int rdma_update_remote_read_idx(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t r_idx)
+int rdma_update_remote_read_idx(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuffer, uint32_t r_idx, int qp_index)
 {
     // COMMIT the read index
     atomic_store(&ringbuffer->remote_read_index, r_idx);
@@ -852,7 +743,7 @@ int rdma_update_remote_read_idx(rdma_context_t *ctx, rdma_ringbuffer_t *ringbuff
                          remote_addr_read_index,
                          (uintptr_t)(ctx->buffer + read_index_offset),
                          sizeof(ringbuffer->remote_read_index),
-                         TRUE) != 0)
+                         TRUE, qp_index) != 0)
     {
         return rdma_err_int(ctx, "Failed to post read index update");
     }
@@ -915,16 +806,19 @@ int rdma_read_msg(rdma_context_t *ctx, bpf_context_t *bpf_ctx, client_sk_t *clie
 
 /** POLLING */
 
-int rdma_poll_cq_send(rdma_context_t *ctx)
+int rdma_poll_cq_send(rdma_context_t *ctx, int qp_index)
 {
-    if (ctx->send_cq == NULL)
+    if (qp_index < 0 || qp_index >= QP_NUMBER)
+        return rdma_err_int(ctx, "Invalid QP index - rdma_poll_cq_send");
+
+    if (ctx->send_cqs[qp_index] == NULL)
         return rdma_err_int(ctx, "CQ is NULL - rdma_poll_cq_send");
 
     struct ibv_wc wc;
     int num_completions;
     do
     {
-        num_completions = ibv_poll_cq(ctx->send_cq, 1, &wc);
+        num_completions = ibv_poll_cq(ctx->send_cqs[qp_index], 1, &wc);
     } while (num_completions == 0); // poll until we get a completion
 
     if (num_completions < 0)
@@ -965,7 +859,7 @@ int rdma_set_polling_status(rdma_context_t *ctx, uint32_t is_polling)
     if (rdma_post_write_(ctx, remote_addr,
                          (uintptr_t)(ctx->buffer + offset),
                          sizeof(ringbuffer->flags.flags),
-                         TRUE) != 0)
+                         TRUE, DEFAULT_QP_INDEX) != 0)
         return rdma_err_int(ctx, "Failed to post write - rdma_set_polling_status");
 
     printf("Updating REMOTE polling status: %u\n",
@@ -998,6 +892,17 @@ uint64_t get_time_ms()
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000;
+}
+
+int get_available_qp_index(rdma_context_t *ctx)
+{
+    pthread_mutex_lock(&ctx->mtx_qp_index);
+    int i = ctx->qp_index_counter;
+    ctx->qp_index_counter++;
+    if (ctx->qp_index_counter >= QP_NUMBER)
+        ctx->qp_index_counter = 0; // wrap around
+    pthread_mutex_unlock(&ctx->mtx_qp_index);
+    return i;
 }
 
 /** ERRORS */

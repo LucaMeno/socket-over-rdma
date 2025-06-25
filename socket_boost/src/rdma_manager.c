@@ -33,7 +33,7 @@ int rdma_manager_get_context_id(rdma_context_manager_t *ctxm, uint32_t remote_ip
 int rdma_manager_start_polling(rdma_context_manager_t *ctxm, rdma_context_t *ctx);
 int rdma_manager_stop_polling(rdma_context_manager_t *ctxm, rdma_context_t *ctx);
 int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx);
-int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t *ctx, rdma_ringbuffer_t *rb_remote);
+int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t *ctx, rdma_ringbuffer_t *rb_remote, int qp_index);
 
 // error handling
 int manager_err_int(rdma_context_t *rdma_ctx, char *msg);
@@ -511,40 +511,37 @@ int rdma_parse_notification(rdma_context_manager_t *ctxm, rdma_context_t *ctx)
     return 0;
 }
 
-int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t *ctx, rdma_ringbuffer_t *rb_remote)
+int rdma_manager_consume_ringbuffer(rdma_context_manager_t *ctxm, rdma_context_t *ctx, rdma_ringbuffer_t *rb_remote, int qp_index)
 {
     if (rb_remote == NULL || ctxm == NULL || ctx == NULL)
         return manager_err_int(ctx, "Invalid arguments - rdma_manager_consume_ringbuffer");
 
-    while (1)
+    uint32_t remote_w = atomic_load(&rb_remote->remote_write_index);
+    uint32_t local_r = atomic_load(&rb_remote->local_read_index);
+
+    if (remote_w != local_r)
     {
-        uint32_t remote_w = atomic_load(&rb_remote->remote_write_index);
-        uint32_t local_r = atomic_load(&rb_remote->local_read_index);
+        // set the local read index to avoid reading the same data again
+        uint32_t start_read_index = local_r;
+        uint32_t end_read_index = remote_w;
 
-        if (remote_w != local_r)
-        {
-            // set the local read index to avoid reading the same data again
-            uint32_t start_read_index = local_r;
-            uint32_t end_read_index = remote_w;
+        atomic_store(&rb_remote->local_read_index, remote_w);
 
-            atomic_store(&rb_remote->local_read_index, remote_w);
+        // update the remote index
+        /*if (rdma_update_remote_read_idx(ctx, rb_remote, end_read_index) != 0)
+            return manager_err_int(NULL, "Error while updating the index");
 
-            // update the remote index
-            /*if (rdma_update_remote_read_idx(ctx, rb_remote, end_read_index) != 0)
-                return manager_err_int(NULL, "Error while updating the index");
+        if (rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index) != 0)
+            return manager_err_int(ctx, "Error while reading messages - rdma_manager_consume_ringbuffer");*/
 
-            if (rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index) != 0)
-                return manager_err_int(ctx, "Error while reading messages - rdma_manager_consume_ringbuffer");*/
-
-            if (rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index) != 0)
-                return manager_err_int(ctx, "Error while reading messages - rdma_manager_consume_ringbuffer");
-            // update the remote index
-            return rdma_update_remote_read_idx(ctx, rb_remote, end_read_index);
-        }
-        else
-        {
-            return 1; // no messages to read
-        }
+        if (rdma_read_msg(ctx, ctxm->bpf_ctx, ctxm->client_sks, start_read_index, end_read_index) != 0)
+            return manager_err_int(ctx, "Error while reading messages - rdma_manager_consume_ringbuffer");
+        // update the remote index
+        return rdma_update_remote_read_idx(ctx, rb_remote, end_read_index, qp_index);
+    }
+    else
+    {
+        return 1; // no messages to read
     }
 }
 
@@ -685,7 +682,7 @@ void *rdma_manager_listen_thread(void *arg)
                     .next = NULL};
 
                 struct ibv_recv_wr *bad_wr = NULL;
-                if (ibv_post_recv(ctx->conn->qp, &recv_wr, &bad_wr) != 0 || bad_wr)
+                if (ibv_post_recv(ctx->qps[DEFAULT_QP_INDEX], &recv_wr, &bad_wr) != 0 || bad_wr)
                 {
                     fprintf(stderr, "Failed to post recv: %s\n", strerror(errno));
                     break;
@@ -953,7 +950,8 @@ void *rdma_manager_polling_thread(void *arg)
 
             while (1)
             {
-                int ret = rdma_manager_consume_ringbuffer(ctxm, ctx, ctx->is_server ? ctx->ringbuffer_client : ctx->ringbuffer_server);
+                int qp_index = get_available_qp_index(ctx);
+                int ret = rdma_manager_consume_ringbuffer(ctxm, ctx, ctx->is_server ? ctx->ringbuffer_client : ctx->ringbuffer_server, qp_index);
                 if (ret < 0)
                 {
                     // error occurred while consuming the ring buffer
@@ -1146,7 +1144,7 @@ void *rdma_manager_flush_thread(void *arg)
                 if (msg_sent >= ctx->flush_threshold ||
                     ((now - ctx->last_flush_ms >= FLUSH_INTERVAL_MS) && msg_sent > 0))
                 {
-                    //printf("Flushing context %d, messages sent: %u\n", i, msg_sent);
+                    // printf("Flushing context %d, messages sent: %u\n", i, msg_sent);
                     atomic_store(&ctx->n_msg_sent, 0); // reset the number of messages sent
                     rdma_manager_flush_buffer(ctxm, ctx, rb);
                 }
@@ -1234,13 +1232,15 @@ void *rdma_manager_flush_thread(void *arg)
 }*/
 
 void flush_thread_worker(void *arg)
-{  
+{
     flush_thread_arg_t *param = (flush_thread_arg_t *)arg;
 
     if (!param->ctx || !param->ringbuffer)
         return manager_err_void(NULL, "Context is NULL - flush_thread_worker");
 
-    if (rdma_flush_buffer_2(param->ctx, param->ringbuffer, param->start_idx, param->end_idx) != 0)
+    int qp_index = get_available_qp_index(param->ctx);
+
+    if (rdma_flush_buffer(param->ctx, param->ringbuffer, param->start_idx, param->end_idx, qp_index) != 0)
         return manager_err_void(NULL, "Failed to flush - flush_thread_worker");
 
     return;
