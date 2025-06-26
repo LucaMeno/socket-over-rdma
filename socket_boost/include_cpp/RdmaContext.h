@@ -2,32 +2,29 @@
 
 #include <cstdint>
 #include <atomic>
-#include <pthread.h>
+#include <thread>
 #include <rdma/rdma_cma.h>
 #include <rdma/rdma_verbs.h>
 #include <iostream>
 #include <unordered_map>
+#include <netdb.h>
+#include <mutex>
+#include <condition_variable>
 
 #include <BpfMng.h>
 #include <SocketMng.h>
-#include "config.h"
+#include <config.h>
 
-#define THRESHOLD_NOT_AUTOSCALER 256
+#define RING_IDX(i) ((i) & (MAX_MSG_BUFFER - 1))
 
-// BUFFER CONFIGURATION
-#define MAX_MSG_BUFFER (1024 * 8) // POWER OF 2!!!!!!!!!!!
-
-#define MAX_PAYLOAD_SIZE (128 * 1024) // 128 KB
-
-#define TIME_TO_WAIT_IF_NO_SPACE_MS 10
-
-// READ
-#define MSG_TO_READ_PER_THREAD 128
-
-// SIZE OF STRUCTURES
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
 #define MR_SIZE ((sizeof(rdma_ringbuffer_t) * 2) + NOTIFICATION_OFFSET_SIZE)
+
+constexpr int MAX_MSG_BUFFER = (1024 * 8); // POWER OF 2!!!!!!!!!!!
+constexpr int THRESHOLD_NOT_AUTOSCALER = 256;
+constexpr int TIME_TO_WAIT_IF_NO_SPACE_MS = 10;
+constexpr int MAX_PAYLOAD_SIZE = (128 * 1024);
 
 namespace rdma
 {
@@ -38,8 +35,15 @@ namespace rdma
         uint32_t psn;
         uint32_t rkey;
         uint64_t addr;
-        union ibv_gid gid; /* piena di zeri su InfiniBand pure */
+        union ibv_gid gid;
     } __attribute__((packed));
+
+    // TODO: REMOVE
+    typedef struct
+    {
+        uintptr_t addr;
+        uint32_t rkey;
+    } rdma_meta_info_t;
 
     enum class CommunicationCode : int32_t
     {
@@ -60,10 +64,10 @@ namespace rdma
         notification_data_t from_client; // notification from client
     } notification_t;
 
-    struct rdma_flag
+    typedef struct
     {
         std::atomic_uint flags;
-    };
+    } rdma_flag_t;
 
     enum class RingBufferFlag : int32_t
     {
@@ -83,7 +87,7 @@ namespace rdma
 
     typedef struct
     {
-        rdma_flag flags;
+        rdma_flag_t flags;
         std::atomic_uint remote_write_index;
         std::atomic_uint remote_read_index;
         std::atomic_uint local_write_index;
@@ -110,27 +114,27 @@ namespace rdma
         struct ibv_comp_channel *comp_channel; // Completion channel
 
         // Context id
-        __u32 remote_ip; // Remote IP
+        uint32_t remote_ip; // Remote IP
 
         int is_server;             // TRUE if server, FALSE if client
         std::atomic_uint is_ready; // TRUE if the context is ready
 
-        pthread_mutex_t mtx_tx; // used to wait for the context to be ready
-        pthread_cond_t cond_tx; // used to signal the context is ready
+        mutex mtx_tx;               // used to wait for the context to be ready
+        condition_variable cond_tx; // used to signal the context is ready
 
         uint64_t last_flush_ms; // last time the buffer was flushed, used to avoid flushing too often
         std::atomic_uint is_flushing;
 
         std::atomic_uint is_flush_thread_running; // TRUE if the flush thread is running, used to avoid multiple flush threads
 
-        pthread_mutex_t mtx_commit_flush; // used to commit the flush operation
-        pthread_cond_t cond_commit_flush; // used to signal the flush operation is committed
+        mutex mtx_commit_flush;               // used to commit the flush operation
+        condition_variable cond_commit_flush; // used to signal the flush operation is committed
 
         std::atomic_uint n_msg_sent; // counter for the number of messages sent, used to determinate the threshold for flushing
         std::atomic_uint flush_threshold;
         uint64_t flush_threshold_set_time; // time when the flush threshold was set, used to determine if we should change the flush threshold
         uint32_t fulsh_index;
-        pthread_mutex_t mtx;
+        mutex mtx;
 
         uint64_t time_start_polling; // time when the polling started, used to be able to stop the polling thread
         uint32_t loop_with_no_msg;   // number of loops with no messages, used to stop the polling thread if there are no messages for a while
@@ -144,27 +148,41 @@ namespace rdma
         std::unordered_map<sock_id_t, int> sockid_to_fd_map; // Map of sock_id to fd for fast access
 
         // CLIENT - SERVER
-        void serverSetup();
-        void clientConnect(const char *server_ip, uint16_t server_port);
+
+        /*void serverSetup(const char *server_ip, uint16_t server_port);
+        void clientConnect(const char *server_ip, uint16_t server_port);*/
+
+        void rdma_server_handle_new_client(struct rdma_event_channel *server_ec);
+        void rdma_client_setup(uint32_t ip, uint16_t port);
+        void rdma_client_connect();
 
         // SETUP
-        int rdma_context_destroy();
-        int rdma_context_init();
+        void init();
+        void destroy();
 
         // COMMUNICATION
         int rdma_write_msg(int src_fd, struct sock_id original_socket);
-        int rdma_read_msg(bpf_context_t *bpf_ctx, client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index);
-        int rdma_flush_buffer(rdma_ringbuffer_t *ringbuffer);
-        int rdma_send_data_ready();
-        int rdma_update_remote_read_idx(rdma_ringbuffer_t *ringbuffer, uint32_t r_idx);
-        int rdma_flush_buffer_2(rdma_ringbuffer_t *ringbuffer, uint32_t start_idx, uint32_t end_idx);
+        void rdma_read_msg(bpf::BpfMng *bpf_ctx, sk::client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index);
+        void rdma_flush_buffer(rdma_ringbuffer_t *ringbuffer, uint32_t start_idx, uint32_t end_idx);
+        void rdma_send_data_ready();
+        void rdma_update_remote_read_idx(rdma_ringbuffer_t *ringbuffer, uint32_t r_idx);
 
         // POLLING
-        int rdma_set_polling_status(uint32_t is_polling);
+        void rdma_set_polling_status(uint32_t is_polling);
 
         // UTILS
-        const char *get_op_name(CommunicationCode code);
+        const string get_op_name(CommunicationCode code);
         uint64_t get_time_ms();
+
+    private:
+        int tcp_connect(const std::string &ip);
+        ibv_context *open_device();
+        uint32_t gen_psn();
+        void tcp_server_listen();
+        void rdma_send_notification(CommunicationCode code);
+        void rdma_poll_cq_send();
+        void rdma_parse_msg(bpf::BpfMng *bpf_ctx, sk::client_sk_t *client_sks, rdma_msg_t *msg);
+        void rdma_post_write_(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, int signaled);
     };
 
 } // namespace rdma
