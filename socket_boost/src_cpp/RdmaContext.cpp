@@ -9,13 +9,37 @@ namespace rdma
 
     // CLIENT - SERVER
 
+    int RdmaContext::tcp_server_listen()
+    {
+        addrinfo hints = {};
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_flags = AI_PASSIVE;
+        addrinfo *res;
+        getaddrinfo(nullptr, TCP_PORT, &hints, &res);
+
+        int fd = socket(res->ai_family, res->ai_socktype, 0);
+        bind(fd, res->ai_addr, res->ai_addrlen);
+        listen(fd, 1);
+        freeaddrinfo(res);
+        return fd;
+    }
+
+    /*void RdmaContext::serverSetup(const char *server_ip, uint16_t server_port)
+    {
+    }
+
+    void RdmaContext::clientConnect(const char *server_ip, uint16_t server_port)
+    {
+    }*/
+
     void RdmaContext::rdma_server_handle_new_client(struct rdma_event_channel *server_ec)
     {
         pd = ibv_alloc_pd(conn->verbs);
         if (!pd)
             throw runtime_error("ibv_alloc_pd failed");
 
-        buffer = malloc(MR_SIZE);
+        buffer = (char *)malloc(MR_SIZE);
         if (!buffer)
             throw runtime_error("malloc buffer failed");
 
@@ -86,12 +110,12 @@ namespace rdma
             .addr = (uintptr_t)buffer,
             .rkey = mr->rkey};
 
-        struct rdma_conn_param conn_param = {
-            .initiator_depth = 1,
-            .responder_resources = 1,
-            .rnr_retry_count = 7,
-            .private_data = &info,
-            .private_data_len = sizeof(info)};
+        struct rdma_conn_param conn_param = {};
+        conn_param.initiator_depth = 1;
+        conn_param.responder_resources = 1;
+        conn_param.rnr_retry_count = 7;
+        conn_param.private_data = &info;
+        conn_param.private_data_len = sizeof(info);
 
         if (rdma_accept(conn, &conn_param))
             throw runtime_error("rdma_accept failed");
@@ -169,7 +193,7 @@ namespace rdma
         if (!pd)
             throw runtime_error("ibv_alloc_pd failed");
 
-        buffer = malloc(MR_SIZE);
+        buffer = (char *)malloc(MR_SIZE);
         if (!buffer)
             throw runtime_error("malloc buffer failed");
 
@@ -205,15 +229,14 @@ namespace rdma
         if (ibv_req_notify_cq(recv_cq, 0))
             throw runtime_error("ibv_req_notify_cq failed");
 
-        struct ibv_qp_init_attr qp_attr = {
-            .send_cq = send_cq,
-            .recv_cq = recv_cq,
-            .qp_type = IBV_QPT_RC,
-            .cap = {
-                .max_send_wr = 128,
-                .max_recv_wr = 10,
-                .max_send_sge = 10,
-                .max_recv_sge = 10}};
+        struct ibv_qp_init_attr qp_attr = {};
+        qp_attr.send_cq = send_cq;
+        qp_attr.recv_cq = recv_cq;
+        qp_attr.qp_type = IBV_QPT_RC;
+        qp_attr.cap.max_send_wr = 128;
+        qp_attr.cap.max_recv_wr = 10;
+        qp_attr.cap.max_send_sge = 10;
+        qp_attr.cap.max_recv_sge = 10;
 
         if (rdma_create_qp(conn, pd, &qp_attr))
         {
@@ -227,10 +250,10 @@ namespace rdma
 
     void RdmaContext::rdma_client_connect()
     {
-        struct rdma_conn_param conn_param = {
-            .initiator_depth = 1,
-            .responder_resources = 1,
-            .rnr_retry_count = 7};
+        struct rdma_conn_param conn_param = {};
+        conn_param.initiator_depth = 1;
+        conn_param.responder_resources = 1;
+        conn_param.rnr_retry_count = 7;
 
         if (rdma_connect(conn, &conn_param))
             throw runtime_error("rdma_connect failed");
@@ -252,7 +275,7 @@ namespace rdma
         notification_t *notification = (notification_t *)buffer;
         notification->from_client.code = CommunicationCode::EXCHANGE_REMOTE_INFO;
 
-        rdma_meta_info_t *remote_info = (rdma_meta_info_t *)(buffer + sizeof(notification_t));
+        rdma_meta_info_t *remote_info = (rdma_meta_info_t *)((char *)buffer + sizeof(notification_t));
         remote_info->addr = (uintptr_t)buffer;
         remote_info->rkey = mr->rkey;
 
@@ -419,19 +442,6 @@ namespace rdma
 
         // Poll the completion queue
         rdma_poll_cq_send();
-
-#ifdef RDMA_DEBUG_SR
-        if (is_server == TRUE)
-        {
-            printf("S: send: %s (%d)\n",
-                   get_op_name(notification->from_server.code), notification->from_server.code);
-        }
-        else // client
-        {
-            printf("C: send: %s (%d)\n",
-                   get_op_name(notification->from_client.code), notification->from_client.code);
-        }
-#endif // RDMA_DEBUG_SR
     }
 
     void RdmaContext::rdma_send_data_ready()
@@ -707,9 +717,6 @@ namespace rdma
         if (f & static_cast<unsigned int>(RingBufferFlag::RING_BUFFER_POLLING) == is_polling)
             return;
 
-        unsigned int expected = f;
-        unsigned int desired;
-
         uint32_t expected = ringbuffer->flags.flags.load(std::memory_order_relaxed);
         uint32_t desired;
 
@@ -760,7 +767,7 @@ namespace rdma
         }
     }
 
-    const string get_op_name(CommunicationCode code)
+    const string RdmaContext::get_op_name(CommunicationCode code)
     {
         switch (code)
         {
@@ -777,11 +784,18 @@ namespace rdma
         }
     }
 
-    uint64_t get_time_ms()
+    uint64_t RdmaContext::get_time_ms()
     {
         struct timespec ts;
         clock_gettime(CLOCK_MONOTONIC, &ts);
         return (uint64_t)ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000;
+    }
+
+    void RdmaContext::wait_for_context_ready()
+    {
+        std::unique_lock<std::mutex> lock(mtx_tx);
+        cond_tx.wait(lock, [&]()
+                     { return atomic_load(&is_ready) == TRUE; });
     }
 
 }

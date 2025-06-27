@@ -53,6 +53,7 @@ namespace sk
         int shared = 0;
         std::mutex mutex;
         std::condition_variable cond_var;
+        std::vector<std::thread> client_threads;
 
         void set_socket_nonblocking(int sockfd);
         void clientThread(int client_id);

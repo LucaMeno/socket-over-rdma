@@ -16,7 +16,9 @@ add_executable(scap
     src_cpp/main.cpp
     src_cpp/SocketMng.cpp
     src_cpp/BpfMng.cpp
-    src_cpp/
+    src_cpp/RdmaContext.cpp
+    src_cpp/ThreadPool.cpp
+    src_cpp/RdmaMng.cpp
 )
 
 # === BPF ===
@@ -28,8 +30,8 @@ file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/obj)
 
 add_custom_command(
     OUTPUT ${BPF_OBJ}
-    COMMAND clang -g -O2 -target bpf -I${CMAKE_SOURCE_DIR}/include -c ${CMAKE_SOURCE_DIR}/src/scap.bpf.c -o ${BPF_OBJ}
-    DEPENDS ${CMAKE_SOURCE_DIR}/src/scap.bpf.c
+    COMMAND clang -g -O2 -target bpf -I${CMAKE_SOURCE_DIR}/include -c ${CMAKE_SOURCE_DIR}/src_cpp/scap.bpf.c -o ${BPF_OBJ}
+    DEPENDS ${CMAKE_SOURCE_DIR}/src_cpp/scap.bpf.c
 )
 
 add_custom_command(
@@ -44,7 +46,6 @@ add_custom_target(bpf_gen ALL DEPENDS ${SKEL_HDR})
 add_custom_target(push
     COMMAND rsync -avz --delete ${CMAKE_BINARY_DIR}/bin poli-server:/home/$ENV{USER}/poli/socket-over-rdma
     COMMAND rsync -avz --delete ${CMAKE_BINARY_DIR}/obj poli-server:/home/$ENV{USER}/poli/socket-over-rdma
-    DEPENDS scap client server
 )
 
 # === CLEANUP ===

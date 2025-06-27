@@ -2,8 +2,8 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#define TRUE 1
-#define FALSE 0
+#define TRUE true
+#define FALSE false
 
 // RDMA
 #define RDMA_PORT 7471
@@ -37,8 +37,8 @@
 // EBPF userspace
 
 // EBPF
-//#define EBPF_DEBUG_SOCKET
-//#define EBPF_DEBUG_MSG
+#define EBPF_DEBUG_SOCKET 1
+#define EBPF_DEBUG_MSG
 // #define INTERCEPT_EVERYTHING
 
 #endif

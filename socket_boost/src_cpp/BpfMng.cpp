@@ -323,6 +323,9 @@ namespace bpf
 
         int err = bpf_map_lookup_elem(socket_association_fd, &proxy, &app);
 
+        if(err != 0)
+            throw runtime_error("Failed to lookup socket association map");
+
         return app.app;
     }
 

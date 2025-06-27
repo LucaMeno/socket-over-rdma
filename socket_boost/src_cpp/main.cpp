@@ -3,6 +3,7 @@
 
 #include <SocketMng.h>
 #include <BpfMng.h>
+#include "RdmaMng.h"
 
 constexpr int MAX_NUMBER_OF_RDMA_CONN = NUMBER_OF_SOCKETS;
 int STOP = false;
@@ -13,6 +14,7 @@ void handle_signal(int signal);
 
 sk::SocketMng s;
 bpf::BpfMng b;
+rdmaMng::RdmaMng r;
 
 int fun(void *ctx, void *data, size_t len)
 {
@@ -40,7 +42,10 @@ int fun(void *ctx, void *data, size_t len)
             return -1;
         }
 
-        // ret = rdma_manager_connect(&rdma_ctxm, user_data->association.app, proxy_fd);
+        cout << "Proxy fd: " << proxy_fd << endl;
+        cout << "App socket: " << user_data->association.app.sip << ":" << user_data->association.app.sport << endl;
+
+        r.rdma_manager_connect(user_data->association.app, proxy_fd);
     }
 
     return 0;
@@ -65,6 +70,8 @@ int main()
         s.init(PROXY_PORT, inet_addr(SERVER_IP));
 
         b.push_sock_to_map(s.client_sk_fd);
+
+        r.rdma_manager_run(7471, &b, s.client_sk_fd.data());
 
         printf("Waiting for messages, press Ctrl+C to exit...\n");
         while (!STOP)

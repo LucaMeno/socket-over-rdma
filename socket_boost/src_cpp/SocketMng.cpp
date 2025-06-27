@@ -41,10 +41,9 @@ namespace sk
         std::cout << "Server listening on " << inet_ntoa(ip_addr) << ":" << server_port << "\n";
         std::cout << "Launching client threads...\n";
 
-        std::vector<std::thread> threads;
         for (int i = 0; i < NUMBER_OF_SOCKETS; ++i)
         {
-            threads.emplace_back(&SocketMng::clientThread, this, i);
+            client_threads.emplace_back(&SocketMng::clientThread, this, i);
         }
 
         for (int i = 0; i < NUMBER_OF_SOCKETS; ++i)
@@ -59,9 +58,9 @@ namespace sk
 
         set_socket_nonblocking(server_sk_fd);
 
-        for (auto &thread : threads)
+        for (auto &thread : client_threads)
         {
-            thread.detach(); // attenzione: responsabilità della gestione dei thread persiste!
+            thread.detach();
         }
 
         std::cout << "All clients connected (" << NUMBER_OF_SOCKETS << ")\n";
@@ -78,8 +77,12 @@ namespace sk
         lock.unlock();
 
         for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
+        {
             if (client_sk_fd[i].fd >= 0)
                 close(client_sk_fd[i].fd);
+            if (client_threads[i].joinable())
+                client_threads[i].join();
+        }
 
         if (server_sk_fd >= 0)
             close(server_sk_fd);

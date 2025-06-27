@@ -10,10 +10,16 @@
 #include <netdb.h>
 #include <mutex>
 #include <condition_variable>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
 
-#include <BpfMng.h>
-#include <SocketMng.h>
-#include <config.h>
+#include "BpfMng.h"
+#include "SocketMng.h"
+#include "config.h"
+#include "SockMap.hpp"
 
 #define RING_IDX(i) ((i) & (MAX_MSG_BUFFER - 1))
 
@@ -97,6 +103,9 @@ namespace rdma
 
     class RdmaContext
     {
+
+        const char *TCP_PORT = "7471"; // Default RDMA port
+
     public:
         // RDMA
         struct rdma_event_channel *client_ec; // for client only
@@ -106,7 +115,7 @@ namespace rdma
         struct ibv_qp *qp;                    // Queue Pair
         struct ibv_cq *send_cq;               // send completion queue
         struct ibv_cq *recv_cq;               // recv completion queue
-        void *buffer;                         // Buffer to send
+        char *buffer;                         // Buffer to send
         size_t buffer_size;                   // Size of the buffer
         uintptr_t remote_addr;                // Remote address
         uint32_t remote_rkey;                 // Remote RKey
@@ -119,22 +128,22 @@ namespace rdma
         int is_server;             // TRUE if server, FALSE if client
         std::atomic_uint is_ready; // TRUE if the context is ready
 
-        mutex mtx_tx;               // used to wait for the context to be ready
-        condition_variable cond_tx; // used to signal the context is ready
+        std::mutex mtx_tx;               // used to wait for the context to be ready
+        std::condition_variable cond_tx; // used to signal the context is ready
 
         uint64_t last_flush_ms; // last time the buffer was flushed, used to avoid flushing too often
         std::atomic_uint is_flushing;
 
         std::atomic_uint is_flush_thread_running; // TRUE if the flush thread is running, used to avoid multiple flush threads
 
-        mutex mtx_commit_flush;               // used to commit the flush operation
-        condition_variable cond_commit_flush; // used to signal the flush operation is committed
+        std::mutex mtx_commit_flush;               // used to commit the flush operation
+        std::condition_variable cond_commit_flush; // used to signal the flush operation is committed
 
         std::atomic_uint n_msg_sent; // counter for the number of messages sent, used to determinate the threshold for flushing
         std::atomic_uint flush_threshold;
         uint64_t flush_threshold_set_time; // time when the flush threshold was set, used to determine if we should change the flush threshold
         uint32_t fulsh_index;
-        mutex mtx;
+        std::mutex mtx;
 
         uint64_t time_start_polling; // time when the polling started, used to be able to stop the polling thread
         uint32_t loop_with_no_msg;   // number of loops with no messages, used to stop the polling thread if there are no messages for a while
@@ -151,6 +160,15 @@ namespace rdma
 
         /*void serverSetup(const char *server_ip, uint16_t server_port);
         void clientConnect(const char *server_ip, uint16_t server_port);*/
+
+        RdmaContext()
+        {
+            init();
+        }
+        ~RdmaContext()
+        {
+            destroy();
+        }
 
         void rdma_server_handle_new_client(struct rdma_event_channel *server_ec);
         void rdma_client_setup(uint32_t ip, uint16_t port);
@@ -171,14 +189,16 @@ namespace rdma
         void rdma_set_polling_status(uint32_t is_polling);
 
         // UTILS
-        const string get_op_name(CommunicationCode code);
+        const std::string get_op_name(CommunicationCode code);
         uint64_t get_time_ms();
+
+        void wait_for_context_ready();
 
     private:
         int tcp_connect(const std::string &ip);
         ibv_context *open_device();
         uint32_t gen_psn();
-        void tcp_server_listen();
+        int tcp_server_listen();
         void rdma_send_notification(CommunicationCode code);
         void rdma_poll_cq_send();
         void rdma_parse_msg(bpf::BpfMng *bpf_ctx, sk::client_sk_t *client_sks, rdma_msg_t *msg);
