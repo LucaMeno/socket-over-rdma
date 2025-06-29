@@ -117,9 +117,20 @@ namespace rdmaMng
     void RdmaMng::rdma_manager_server_thread()
     {
         cout << "Server thread started" << endl;
-        unique_ptr<rdma::RdmaContext> ctx = make_unique<rdma::RdmaContext>();
-        ctx->serverSetup();
-        cout << "TODO: server setup completed" << endl;
+
+        while (stop_threads.load() == false)
+        {
+            unique_ptr<rdma::RdmaContext> ctx = make_unique<rdma::RdmaContext>();
+
+            serverConnection_t sc = ctx->serverSetup();
+
+            int ready = 0;
+            vector<int> fds = {sc.fd};
+            while (stop_threads.load() == false && waitOnSelect(fds).empty())
+                ;
+
+            ctx->serverHandleNewClient(sc);
+        }
     }
 
     int RdmaMng::rdma_manager_get_free_context_id()
@@ -491,123 +502,123 @@ namespace rdmaMng
     void RdmaMng::rdma_manager_listen_thread()
     {
         cout << "TODO";
-       /* cout << "Listening for notifications..." << endl;
-        struct timeval tv;
+        /* cout << "Listening for notifications..." << endl;
+         struct timeval tv;
 
-        while (stop_threads == false)
-        {
-            fd_set fds;
-            FD_ZERO(&fds);
-            int max_fd = -1;
+         while (stop_threads == false)
+         {
+             fd_set fds;
+             FD_ZERO(&fds);
+             int max_fd = -1;
 
-            for (auto &ctx : ctxs)
-            {
-                if (ctx.get()->recv_cq != NULL)
-                {
-                    FD_SET(ctx.get()->comp_channel->fd, &fds);
-                    if (ctx.get()->comp_channel->fd > max_fd)
-                        max_fd = ctx.get()->comp_channel->fd;
-                }
-                else
-                {
-                    cout << "Context not ready, skipping in rdma_manager_listen_thread" << endl;
-                }
-            }
+             for (auto &ctx : ctxs)
+             {
+                 if (ctx.get()->recv_cq != NULL)
+                 {
+                     FD_SET(ctx.get()->comp_channel->fd, &fds);
+                     if (ctx.get()->comp_channel->fd > max_fd)
+                         max_fd = ctx.get()->comp_channel->fd;
+                 }
+                 else
+                 {
+                     cout << "Context not ready, skipping in rdma_manager_listen_thread" << endl;
+                 }
+             }
 
-            if (max_fd < 0)
-                throw runtime_error("No valid contexts to monitor in rdma_manager_listen_thread");
+             if (max_fd < 0)
+                 throw runtime_error("No valid contexts to monitor in rdma_manager_listen_thread");
 
-            // Set timeout to avoid blocking indefinitely
-            tv.tv_sec = TIME_STOP_SELECT_SEC;
-            tv.tv_usec = 0;
+             // Set timeout to avoid blocking indefinitely
+             tv.tv_sec = TIME_STOP_SELECT_SEC;
+             tv.tv_usec = 0;
 
-            int activity = select(max_fd + 1, &fds, NULL, NULL, &tv);
-            if (activity == -1)
-            {
-                if (errno == EINTR)
-                {
-                    cout << "Select interrupted by signal in rdma_manager_listen_thread" << endl;
-                    break;
-                }
-                perror("select error");
-                break;
-            }
+             int activity = select(max_fd + 1, &fds, NULL, NULL, &tv);
+             if (activity == -1)
+             {
+                 if (errno == EINTR)
+                 {
+                     cout << "Select interrupted by signal in rdma_manager_listen_thread" << endl;
+                     break;
+                 }
+                 perror("select error");
+                 break;
+             }
 
-            for (int fd = 0; fd <= max_fd; fd++)
-            {
-                if (FD_ISSET(fd, &fds))
-                {
-                    // lookup to get the context
+             for (int fd = 0; fd <= max_fd; fd++)
+             {
+                 if (FD_ISSET(fd, &fds))
+                 {
+                     // lookup to get the context
 
-                    RdmaContext *ctx = nullptr;
-                    for (auto &c : ctxs)
-                    {
-                        if (c.get()->comp_channel == nullptr || c.get()->comp_channel->fd != fd)
-                            continue;
-                        ctx = c.get();
-                        break; // found the context for this fd
-                    }
+                     RdmaContext *ctx = nullptr;
+                     for (auto &c : ctxs)
+                     {
+                         if (c.get()->comp_channel == nullptr || c.get()->comp_channel->fd != fd)
+                             continue;
+                         ctx = c.get();
+                         break; // found the context for this fd
+                     }
 
-                    if (ctx == nullptr)
-                        throw runtime_error("Context not found for fd in rdma_manager_listen_thread");
+                     if (ctx == nullptr)
+                         throw runtime_error("Context not found for fd in rdma_manager_listen_thread");
 
-                    struct ibv_cq *ev_cq;
-                    void *ev_ctx;
-                    if (ibv_get_cq_event(ctx->comp_channel, &ev_cq, &ev_ctx))
-                    {
-                        perror("ibv_get_cq_event");
-                        continue;
-                    }
+                     struct ibv_cq *ev_cq;
+                     void *ev_ctx;
+                     if (ibv_get_cq_event(ctx->comp_channel, &ev_cq, &ev_ctx))
+                     {
+                         perror("ibv_get_cq_event");
+                         continue;
+                     }
 
-                    ibv_ack_cq_events(ev_cq, 1);
+                     ibv_ack_cq_events(ev_cq, 1);
 
-                    if (ibv_req_notify_cq(ctx->recv_cq, 0))
-                    {
-                        perror("ibv_req_notify_cq");
-                        continue;
-                    }
+                     if (ibv_req_notify_cq(ctx->recv_cq, 0))
+                     {
+                         perror("ibv_req_notify_cq");
+                         continue;
+                     }
 
-                    struct ibv_wc wc;
-                    int num_completions = ibv_poll_cq(ctx->recv_cq, 1, &wc);
-                    if (num_completions < 0)
-                    {
-                        cerr << "Failed to poll CQ: " << strerror(errno) << endl;
-                        continue;
-                    }
+                     struct ibv_wc wc;
+                     int num_completions = ibv_poll_cq(ctx->recv_cq, 1, &wc);
+                     if (num_completions < 0)
+                     {
+                         cerr << "Failed to poll CQ: " << strerror(errno) << endl;
+                         continue;
+                     }
 
-                    if (num_completions == 0) // it should not happen, but just in case
-                        continue;
+                     if (num_completions == 0) // it should not happen, but just in case
+                         continue;
 
-                    if (wc.status != IBV_WC_SUCCESS)
-                    {
-                        cerr << "CQ error: " << ibv_wc_status_str(wc.status) << " (" << wc.status << ")" << endl;
-                        continue;
-                    }
+                     if (wc.status != IBV_WC_SUCCESS)
+                     {
+                         cerr << "CQ error: " << ibv_wc_status_str(wc.status) << " (" << wc.status << ")" << endl;
+                         continue;
+                     }
 
-                    // repost another receive request
-                    struct ibv_sge sge;
-                    sge.addr = (uintptr_t)ctx->buffer;
-                    sge.length = sizeof(notification_t);
-                    sge.lkey = ctx->mr->lkey;
+                     // repost another receive request
+                     struct ibv_sge sge;
+                     sge.addr = (uintptr_t)ctx->buffer;
+                     sge.length = sizeof(notification_t);
+                     sge.lkey = ctx->mr->lkey;
 
-                    struct ibv_recv_wr recv_wr;
-                    recv_wr.wr_id = 0;
-                    recv_wr.sg_list = &sge;
-                    recv_wr.num_sge = 1;
-                    recv_wr.next = NULL;
+                     struct ibv_recv_wr recv_wr;
+                     recv_wr.wr_id = 0;
+                     recv_wr.sg_list = &sge;
+                     recv_wr.num_sge = 1;
+                     recv_wr.next = NULL;
 
-                    struct ibv_recv_wr *bad_wr = NULL;
-                    if (ibv_post_recv(ctx->qp, &recv_wr, &bad_wr) != 0 || bad_wr)
-                    {
-                        cerr << "Bad WR: " << (bad_wr ? bad_wr->wr_id : 0) << endl;
-                        cerr << "Error posting recv: " << strerror(errno) << endl;
-                        break;
-                    }
+                     struct ibv_recv_wr *bad_wr = NULL;
+                     if (ibv_post_recv(ctx->qp, &recv_wr, &bad_wr) != 0 || bad_wr)
+                     {
+                         cerr << "Bad WR: " << (bad_wr ? bad_wr->wr_id : 0) << endl;
+                         cerr << "Error posting recv: " << strerror(errno) << endl;
+                         break;
+                     }
 
-                    rdma_parse_notification(ctx);
-                }
-            }
-        }*/
+                     rdma_parse_notification(ctx);
+                 }
+             }
+         }*/
     }
 
     void RdmaMng::rdma_manager_flush_thread()
@@ -658,4 +669,49 @@ namespace rdmaMng
             }
         }
     }
-}
+
+    vector<int> RdmaMng::waitOnSelect(const vector<int> &fds)
+    {
+        if (fds.empty())
+            return {}; // Nothing to watch.
+
+        fd_set read_set;
+        FD_ZERO(&read_set);
+        int ready = 0;
+
+        while (stop_threads.load() == false)
+        {
+            int max_fd = -1;
+            for (int fd : fds)
+            {
+                if (fd < 0)
+                    continue; // Skip invalid entries.
+                FD_SET(fd, &read_set);
+                if (fd > max_fd)
+                    max_fd = fd;
+            }
+            if (max_fd < 0)
+                return {}; // No valid descriptors.
+
+            // Prepare timeout.
+            struct timeval tv;
+            tv.tv_sec = TIME_STOP_SELECT_SEC;
+            tv.tv_usec = 0;
+
+            int ready = ::select(max_fd + 1, &read_set, nullptr, nullptr, &tv);
+            if (ready < 0)
+                throw std::runtime_error("select() failed");
+            else if (ready > 0)
+                break; // Some file descriptors are ready.
+        }
+
+        std::vector<int> result;
+        result.reserve(static_cast<std::size_t>(ready));
+
+        for (int fd : fds)
+            if (fd >= 0 && FD_ISSET(fd, &read_set))
+                result.push_back(fd);
+
+        return result;
+    }
+};

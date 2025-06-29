@@ -101,6 +101,12 @@ namespace rdma
         rdma_msg_t data[MAX_MSG_BUFFER];
     } rdma_ringbuffer_t;
 
+    typedef struct
+    {
+        int fd;                           // file descriptor of the socket
+        struct conn_info conn_info_local; // connection info
+    } serverConnection_t;
+
     class RdmaContext
     {
 
@@ -162,7 +168,8 @@ namespace rdma
             destroy();
         }
 
-        void serverSetup();
+        serverConnection_t serverSetup();
+        void serverHandleNewClient(serverConnection_t &sc);
         void clientConnect(uint32_t server_ip, uint16_t server_port);
 
         // SETUP
@@ -195,6 +202,9 @@ namespace rdma
         void rdma_poll_cq_send();
         void rdma_parse_msg(bpf::BpfMng &bpf_ctx, sk::client_sk_t *client_sks, rdma_msg_t *msg);
         void rdma_post_write_(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, int signaled);
+
+        conn_info rdmaSetupPreHs();
+        void rdmaSetupPostHs(conn_info remote);
     };
 
 } // namespace rdma

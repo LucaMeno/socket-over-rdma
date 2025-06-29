@@ -30,7 +30,7 @@ namespace rdmaMng
 
     public:
         RdmaMng(uint16_t srv_port, sk::client_sk_t *proxy_sks, bpf::BpfMng &bpf);
-            
+
         ~RdmaMng();
 
         // Initialize the RDMA manager
@@ -70,7 +70,6 @@ namespace rdmaMng
 
         void flush_thread_worker(rdma::RdmaContext *ctx, rdma::rdma_ringbuffer_t *rb, uint32_t start_idx, uint32_t end_idx);
 
-        void rdma_manager_server_setup();
         int rdma_manager_get_free_context_id();
 
         void rdma_manager_start_polling(rdma::RdmaContext *ctx);
@@ -80,6 +79,8 @@ namespace rdmaMng
         void rdma_manager_flush_buffer(rdma::RdmaContext *ctx, rdma::rdma_ringbuffer_t *rb);
 
         rdma::RdmaContext *rdma_manager_get_context_by_ip(uint32_t remote_ip);
+
+        std::vector<int> waitOnSelect(const std::vector<int> &fds);
     };
 
 }

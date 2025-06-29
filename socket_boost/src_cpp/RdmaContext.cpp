@@ -9,22 +9,36 @@ namespace rdma
 
     // CLIENT - SERVER
 
-    void RdmaContext::serverSetup()
+    conn_info RdmaContext::rdmaSetupPreHs()
     {
-        is_server = TRUE;
-
         srand48(getpid());
 
         ctx = open_device();
+        if (!ctx)
+            throw runtime_error("Failed to open RDMA device: " + string(strerror(errno)));
+
         pd = ibv_alloc_pd(ctx);
+        if (!pd)
+            throw runtime_error("Failed to allocate protection domain");
+
         send_cq = ibv_create_cq(ctx, 16, nullptr, nullptr, 0);
+        if (!send_cq)
+            throw runtime_error("Failed to create send CQ");
+
         recv_cq = ibv_create_cq(ctx, 16, nullptr, nullptr, 0);
+        if (!recv_cq)
+            throw runtime_error("Failed to create receive CQ");
 
         buffer = (char *)aligned_alloc(4096, MR_SIZE);
+        if (!buffer)
+            throw runtime_error("Failed to allocate buffer");
+
         memset(buffer, 0, MR_SIZE);
 
         mr = ibv_reg_mr(pd, buffer, MR_SIZE,
-                        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+                        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+        if (!mr)
+            throw runtime_error("Failed to register memory region");
 
         ibv_qp_init_attr qpa = {};
         qpa.send_cq = send_cq;
@@ -37,31 +51,37 @@ namespace rdma
             .max_recv_sge = 1};
 
         qp = ibv_create_qp(pd, &qpa);
+        if (!qp)
+            throw runtime_error("Failed to create QP");
 
         ibv_qp_attr attr = {};
         attr.qp_state = IBV_QPS_INIT;
         attr.pkey_index = 0;
         attr.port_num = 1;
-        attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
+        attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE;
 
-        if (ibv_modify_qp(qp, &attr,
-                          IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS))
-        {
-            std::cerr << "Failed to modify QP to INIT state\n";
-            throw runtime_error("ibv_modify_qp failed");
-        }
+        int err = ibv_modify_qp(qp, &attr,
+                                IBV_QP_STATE | IBV_QP_PKEY_INDEX |
+                                    IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
+
+        if (err)
+            throw runtime_error("Failed to modify QP to INIT state");
 
         ibv_port_attr pattr;
         ibv_query_port(ctx, 1, &pattr);
 
         union ibv_gid gid;
-        if (ibv_query_gid(ctx, 1, 0, &gid))
-        {
-            perror("ibv_query_gid");
+        err = ibv_query_gid(ctx, 1, 0, &gid);
+        if (err)
             throw runtime_error("ibv_query_gid failed");
-        }
 
-        conn_info local = {.lid = pattr.lid, .qp_num = qp->qp_num, .psn = gen_psn(), .rkey = mr->rkey, .addr = reinterpret_cast<uintptr_t>(buffer), .gid = gid};
+        conn_info local = {};
+        local.lid = pattr.lid;
+        local.qp_num = qp->qp_num;
+        local.psn = gen_psn();
+        local.rkey = mr->rkey;
+        local.addr = reinterpret_cast<uintptr_t>(buffer);
+        local.gid = gid;
 
         std::cout << "Local connection info:\n"
                   << "LID: " << local.lid << "\n"
@@ -73,17 +93,22 @@ namespace rdma
             std::printf("%02x", local.gid.raw[i]);
         std::printf("\nBuffer address: 0x%lx\n", local.addr);
 
-        int listen_fd = tcp_server_listen();
-        int sock = accept(listen_fd, nullptr, nullptr);
+        return local;
+    }
 
-        conn_info remote;
-        if (write(sock, &local, sizeof(local)) < 0 || read(sock, &remote, sizeof(remote)) < 0)
-        {
-            perror("TCP exchange");
-            close(sock);
-            exit(EXIT_FAILURE);
-        }
-        close(listen_fd);
+    void RdmaContext::rdmaSetupPostHs(conn_info remote)
+    {
+        remote_addr = remote.addr;
+        remote_rkey = remote.rkey;
+
+        std::cout << "Remote QPN: " << remote.qp_num << "\n"
+                  << "Remote PSN: " << remote.psn << "\n"
+                  << "Remote LID: " << remote.lid << "\n"
+                  << "Remote GID: "
+                  << std::hex << int(remote.gid.raw[0]) << ":"
+                  << int(remote.gid.raw[1]) << std::dec << "\n"
+                  << "Remote address: 0x" << std::hex << remote.addr << std::dec << "\n"
+                  << "Remote rkey: " << remote.rkey << "\n";
 
         ibv_qp_attr rtr = {};
         rtr.qp_state = IBV_QPS_RTR;
@@ -100,24 +125,13 @@ namespace rdma
         rtr.ah_attr.grh.sgid_index = 0;
         rtr.ah_attr.grh.hop_limit = 1;
 
-        ibv_modify_qp(qp, &rtr,
-                      IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
-                          IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
-                          IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
+        int err = ibv_modify_qp(qp, &rtr,
+                                IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
+                                    IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
+                                    IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
 
-        ibv_qp_attr attr2;
-        ibv_qp_init_attr iattr;
-        iattr.send_cq = send_cq;
-        iattr.recv_cq = recv_cq;
-        iattr.qp_type = IBV_QPT_RC;
-        iattr.cap = {
-            .max_send_wr = 16,
-            .max_recv_wr = 16,
-            .max_send_sge = 1,
-            .max_recv_sge = 1};
-
-        ibv_query_qp(qp, &attr2, IBV_QP_STATE, &iattr);
-        std::cout << "QP state after RTR = " << attr2.qp_state << std::endl;
+        if (err)
+            throw runtime_error("Failed to modify QP to RTR state");
 
         ibv_qp_attr rts = {};
         rts.qp_state = IBV_QPS_RTS;
@@ -127,96 +141,71 @@ namespace rdma
         rts.rnr_retry = 7;
         rts.max_rd_atomic = 1;
 
-        ibv_modify_qp(qp, &rts,
-                      IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
-                          IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
+        err = ibv_modify_qp(qp, &rts,
+                            IBV_QP_STATE |
+                                IBV_QP_TIMEOUT |
+                                IBV_QP_RETRY_CNT |
+                                IBV_QP_RNR_RETRY |
+                                IBV_QP_SQ_PSN |
+                                IBV_QP_MAX_QP_RD_ATOMIC);
 
-        remote_addr = remote.addr;
-        remote_rkey = remote.rkey;
+        if (err)
+            throw std::runtime_error("ibv_modify_qp failed");
 
-        std::cout << "Remote QPN: " << remote.qp_num << "\n"
-                  << "Remote PSN: " << remote.psn << "\n"
-                  << "Remote LID: " << remote.lid << "\n"
-                  << "Remote GID: "
-                  << std::hex << int(remote.gid.raw[0]) << ":"
-                  << int(remote.gid.raw[1]) << std::dec << "\n"
-                  << "Remote address: 0x" << std::hex << remote.addr << std::dec << "\n"
-                  << "Remote rkey: " << remote.rkey << "\n";
+        ibv_qp_attr attr2;
+        ibv_qp_init_attr iattr = {};
+        err = ibv_query_qp(qp, &attr2, IBV_QP_STATE, &iattr);
+        if (err)
+            throw std::runtime_error("ibv_query_qp failed");
 
+        std::cout << "QP state after RTS = " << attr2.qp_state << "\n";
+    }
+
+    serverConnection_t RdmaContext::serverSetup()
+    {
+        // setup server side
+        is_server = TRUE;
+
+        conn_info local = rdmaSetupPreHs();
+
+        int listen_fd = tcp_server_listen();
         std::cout << "Server ready\n";
+
+        serverConnection_t sc;
+        sc.fd = listen_fd;
+        sc.conn_info_local = local;
+        return sc;
+    }
+
+    void RdmaContext::serverHandleNewClient(serverConnection_t &sc)
+    {
+        int sock = accept(sc.fd, nullptr, nullptr);
+
+        conn_info remote;
+        conn_info local = sc.conn_info_local;
+        if (write(sock, &local, sizeof(local)) < 0 || read(sock, &remote, sizeof(remote)) < 0)
+        {
+            perror("TCP exchange");
+            close(sock);
+            exit(EXIT_FAILURE);
+        }
+        close(sc.fd);
+
+        std::cout << "Accepted new client connection\n";
+
+        rdmaSetupPostHs(remote);
+
+        unique_lock<mutex> lock(mtx_tx);
+        atomic_store(is_ready, TRUE);
+        cond_tx.notify_all();
+        lock.unlock();
     }
 
     void RdmaContext::clientConnect(uint32_t server_ip, uint16_t server_port)
     {
-        srand48(getpid());
+        is_server = FALSE;
 
-        auto *ctx = open_device();
-        if (!ctx)
-            throw runtime_error("Failed to open RDMA device");
-
-        pd = ibv_alloc_pd(ctx);
-        send_cq = ibv_create_cq(ctx, 16, nullptr, nullptr, 0);
-        recv_cq = ibv_create_cq(ctx, 16, nullptr, nullptr, 0);
-
-        buffer = (char *)aligned_alloc(4096, MR_SIZE);
-        memset(buffer, 0, MR_SIZE);
-
-        mr = ibv_reg_mr(pd, buffer, MR_SIZE,
-                        IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_LOCAL_WRITE);
-
-        ibv_qp_init_attr qpa = {};
-        qpa.send_cq = send_cq;
-        qpa.recv_cq = recv_cq;
-        qpa.qp_type = IBV_QPT_RC;
-        qpa.cap = {16, 16, 1, 1};
-
-        qp = ibv_create_qp(pd, &qpa);
-
-        ibv_qp_attr attr = {};
-        attr.qp_state = IBV_QPS_INIT;
-        attr.pkey_index = 0;
-        attr.port_num = 1;
-        attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
-
-        int err = ibv_modify_qp(qp, &attr,
-                                IBV_QP_STATE | IBV_QP_PKEY_INDEX |
-                                    IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
-
-        if (err)
-        {
-            std::cerr << "Failed to modify QP to INIT state: " << err << "\n";
-            throw runtime_error("ibv_modify_qp failed");
-        }
-
-        ibv_port_attr pattr;
-        ibv_query_port(ctx, 1, &pattr);
-
-        union ibv_gid gid;
-        if (ibv_query_gid(ctx, 1, 0, &gid))
-        {
-            perror("ibv_query_gid");
-            throw runtime_error("ibv_query_gid failed");
-        }
-
-        conn_info local = {};
-        local.lid = pattr.lid;
-        local.qp_num = qp->qp_num;
-        local.psn = gen_psn();
-        local.rkey = mr->rkey;
-        local.addr = reinterpret_cast<uintptr_t>(buffer);
-        local.gid = gid;
-
-        /*std::cout << "Local connection info:\n"
-                  << "LID: " << local.lid << "\n"
-                  << "QP number: " << local.qp_num << "\n"
-                  << "PSN: " << local.psn << "\n"
-                  << "RKEY: " << local.rkey << "\n"
-                  << "GID: ";
-        for (int i = 0; i < 16; i++)
-        {
-            printf("%02x", local.gid.raw[i]);
-        }
-        std::cout << "\nBuffer address: 0x" << std::hex << local.addr << std::dec << "\n";*/
+        conn_info local = rdmaSetupPreHs();
 
         int sock = tcp_connect(server_ip);
         if (sock < 0)
@@ -242,60 +231,14 @@ namespace rdma
 
         close(sock);
 
-        std::cout << "Remote QPN: " << remote.qp_num << "\n"
-                  << "Remote PSN: " << remote.psn << "\n"
-                  << "Remote LID: " << remote.lid << "\n"
-                  << "Remote GID: "
-                  << std::hex << int(remote.gid.raw[0]) << ":"
-                  << int(remote.gid.raw[1]) << std::dec << "\n"
-                  << "Remote address: 0x" << std::hex << remote.addr << std::dec << "\n"
-                  << "Remote rkey: " << remote.rkey << "\n";
+        cout << "Connected to server\n";
 
-        ibv_qp_attr rtr = {};
-        rtr.qp_state = IBV_QPS_RTR;
-        rtr.path_mtu = IBV_MTU_1024;
-        rtr.dest_qp_num = remote.qp_num;
-        rtr.rq_psn = remote.psn;
-        rtr.max_dest_rd_atomic = 1;
-        rtr.min_rnr_timer = 12;
-        rtr.ah_attr.is_global = 1;
-        rtr.ah_attr.port_num = 1;
-        rtr.ah_attr.dlid = 0;
-        rtr.ah_attr.grh.dgid = remote.gid;
-        rtr.ah_attr.grh.sgid_index = 0;
-        rtr.ah_attr.grh.hop_limit = 1;
+        rdmaSetupPostHs(remote);
 
-        err = ibv_modify_qp(qp, &rtr,
-                            IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
-                                IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
-                                IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
-        if (err)
-        {
-            std::cerr << "Failed to modify QP to RTR state: " << err << "\n";
-            throw runtime_error("ibv_modify_qp failed");
-        }
-
-        ibv_qp_attr rts = {};
-        rts.qp_state = IBV_QPS_RTS;
-        rts.sq_psn = local.psn;
-        rts.timeout = 14;
-        rts.retry_cnt = 7;
-        rts.rnr_retry = 7;
-        rts.max_rd_atomic = 1;
-
-        err = ibv_modify_qp(qp, &rts,
-                            IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
-                                IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
-        if (err)
-        {
-            std::cerr << "Failed to modify QP to RTS state: " << err << "\n";
-            throw runtime_error("ibv_modify_qp failed");
-        }
-
-        ibv_qp_attr attr2;
-        ibv_qp_init_attr iattr;
-        ibv_query_qp(qp, &attr2, IBV_QP_STATE, &iattr);
-        std::cout << "QP state after RTS = " << attr2.qp_state << "\n";
+        unique_lock<mutex> lock(mtx_tx);
+        atomic_store(is_ready, TRUE);
+        cond_tx.notify_all();
+        lock.unlock();
     }
 
     int RdmaContext::tcp_connect(uint32_t ip)
@@ -341,6 +284,11 @@ namespace rdma
         int fd = socket(res->ai_family, res->ai_socktype, 0);
         bind(fd, res->ai_addr, res->ai_addrlen);
         listen(fd, 1);
+
+        // Make it non-blocking
+        int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
         freeaddrinfo(res);
         return fd;
     }
@@ -401,6 +349,20 @@ namespace rdma
         fulsh_index ^= fulsh_index; // reset the flush index
 
         atomic_store(&is_flush_thread_running, FALSE);
+
+        ringbuffer_server = (rdma_ringbuffer_t *)(buffer + NOTIFICATION_OFFSET_SIZE);
+        atomic_store(ringbuffer_server->local_read_index, 0);
+        atomic_store(ringbuffer_server->remote_read_index, 0);
+        atomic_store(ringbuffer_server->remote_write_index, 0);
+        atomic_store(ringbuffer_server->local_write_index, 0);
+        atomic_store(ringbuffer_server->flags.flags, 0);
+
+        ringbuffer_client = (rdma_ringbuffer_t *)(buffer + NOTIFICATION_OFFSET_SIZE + RING_BUFFER_OFFSET_SIZE); // skip the notification header and the server buffer
+        atomic_store(ringbuffer_client->local_read_index, 0);
+        atomic_store(ringbuffer_client->remote_read_index, 0);
+        atomic_store(ringbuffer_client->remote_write_index, 0);
+        atomic_store(ringbuffer_client->local_write_index, 0);
+        atomic_store(ringbuffer_client->flags.flags, 0);
     }
 
     void RdmaContext::destroy()
