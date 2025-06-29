@@ -29,17 +29,14 @@ namespace rdmaMng
         const int FLUSH_INTERVAL_MS = 100;              // ms
 
     public:
-        RdmaMng() = default;
-        ~RdmaMng()
-        {
-            destroy();
-        }
+        RdmaMng(uint16_t srv_port, sk::client_sk_t *proxy_sks, bpf::BpfMng &bpf);
+            
+        ~RdmaMng();
 
         // Initialize the RDMA manager
-        void init(uint16_t rdma_port, sk::client_sk_t *proxy_sks, bpf::BpfMng *bpf_ctx);
         void destroy();
 
-        void rdma_manager_run(uint16_t srv_port, bpf::BpfMng *bpf_ctx, sk::client_sk_t *proxy_sks);
+        void rdma_manager_run();
 
         void rdma_manager_connect(struct sock_id original_socket, int proxy_sk_fd);
 
@@ -50,7 +47,7 @@ namespace rdmaMng
         struct rdma_cm_id *listener;          // Listener ID for incoming connections
         struct rdma_event_channel *server_ec; // Event channel
         sk::client_sk_t *client_sks;          // list of client sockets
-        std::unique_ptr<bpf::BpfMng> bpf_ctx;
+        bpf::BpfMng &bpf_ctx;
 
         std::thread notification_thread;         // thread for the notification
         std::thread server_thread;               // thread for the server

@@ -6,12 +6,11 @@ using namespace rdma;
 
 namespace rdmaMng
 {
-    void RdmaMng::init(uint16_t srv_port, sk::client_sk_t *proxy_sks, bpf::BpfMng *bpf_ctx)
+    RdmaMng::RdmaMng(uint16_t srv_port, sk::client_sk_t *proxy_sks, bpf::BpfMng &bpf) : bpf_ctx{bpf},
+                                                                                        rdma_port{srv_port},
+                                                                                        client_sks{proxy_sks}
     {
-        rdma_port = srv_port;
         stop_threads = false;
-        client_sks = proxy_sks;
-        bpf_ctx = bpf_ctx;
 
         // setup the pool
         thPool = make_unique<ThreadPool>(N_WRITER_THREADS);
@@ -27,14 +26,14 @@ namespace rdmaMng
         cout << " Port used for RDMA: " << rdma_port << endl;
     }
 
-    void RdmaMng::destroy()
+    RdmaMng::~RdmaMng()
     {
         stop_threads = true;
 
-        if (server_thread.joinable())
-            server_thread.join();
+        /*if (server_thread.joinable())
+            server_thread.join();*/
 
-        cout << "Server thread joined" << endl;
+        cout << "Server thread joined -  TODO" << endl;
 
         for (auto &thread : writer_threads)
         {
@@ -75,14 +74,9 @@ namespace rdmaMng
         cout << "RDMA contexts cleared" << endl;
     }
 
-    void RdmaMng::rdma_manager_run(uint16_t srv_port, bpf::BpfMng *bpf_ctx, sk::client_sk_t *proxy_sks)
+    void RdmaMng::rdma_manager_run()
     {
-        // init the maanger
-        init(srv_port, proxy_sks, bpf_ctx);
-
         // start the server thread
-        rdma_manager_server_setup();
-
         server_thread = thread(&RdmaMng::rdma_manager_server_thread, this);
         cout << "Server th created" << endl;
 
@@ -120,98 +114,12 @@ namespace rdmaMng
         }
     }
 
-    void RdmaMng::rdma_manager_server_setup()
-    {
-        struct addrinfo *res;
-        struct addrinfo hints = {
-            .ai_flags = AI_PASSIVE,
-            .ai_family = AF_INET,
-            .ai_socktype = SOCK_STREAM};
-
-        char port[6];
-        snprintf(port, sizeof(port), "%u", rdma_port);
-
-        if (getaddrinfo(NULL, port, &hints, &res))
-            throw runtime_error("getaddrinfo failed");
-
-        struct rdma_event_channel *ec = rdma_create_event_channel();
-        if (!ec)
-            throw runtime_error("rdma_create_event_channel failed");
-
-        struct rdma_cm_id *listener;
-        if (rdma_create_id(ec, &listener, NULL, RDMA_PS_TCP))
-            throw runtime_error("rdma_create_id failed");
-
-        if (rdma_bind_addr(listener, res->ai_addr))
-            throw runtime_error("rdma_bind_addr failed");
-
-        freeaddrinfo(res);
-
-        if (rdma_listen(listener, 10))
-            throw runtime_error("rdma_listen failed");
-
-        if (listener == NULL)
-            throw runtime_error("Listener is NULL after rdma_listen");
-
-        server_ec = ec;
-        listener = listener;
-    }
-
     void RdmaMng::rdma_manager_server_thread()
     {
-        int fd = server_ec->fd;
-
-        struct pollfd pfd = {
-            .fd = fd,
-            .events = POLLIN};
-
-        while (stop_threads == false)
-        {
-            int ret = poll(&pfd, 1, 1000);
-
-            if (ret < 0)
-            {
-                perror("poll");
-                continue;
-            }
-            else if (ret == 0)
-            {
-                if (stop_threads == true)
-                    break;
-                continue; // timeout, no new connection
-            }
-
-            struct rdma_cm_event *event;
-            if (rdma_get_cm_event(server_ec, &event))
-            {
-                perror("rdma_get_cm_event");
-                continue;
-            }
-
-            if (event->event == RDMA_CM_EVENT_CONNECT_REQUEST)
-            {
-                // add new context
-                int free_ctx_id = rdma_manager_get_free_context_id();
-
-                auto &ctx = *ctxs[free_ctx_id];
-
-                ctx.conn = event->id;
-                ctx.is_server = TRUE;
-                struct sockaddr_in *addr_in = (struct sockaddr_in *)&event->id->route.addr.dst_addr; // TODO: understand this
-                ctx.remote_ip = addr_in->sin_addr.s_addr;                                            // get the IP address of the client
-
-                rdma_ack_cm_event(event);
-
-                ctx.rdma_server_handle_new_client(server_ec);
-
-                rdma_manager_launch_background_threads();
-            }
-            else
-            {
-                cout << "Unexpected event: " << rdma_event_str(event->event) << endl;
-                rdma_ack_cm_event(event); // ignore other events
-            }
-        }
+        cout << "Server thread started" << endl;
+        unique_ptr<rdma::RdmaContext> ctx = make_unique<rdma::RdmaContext>();
+        ctx->serverSetup();
+        cout << "TODO: server setup completed" << endl;
     }
 
     int RdmaMng::rdma_manager_get_free_context_id()
@@ -297,7 +205,7 @@ namespace rdmaMng
                     cout << sk_to_monitor[j].sk_id.sip << ":" << sk_to_monitor[j].sk_id.sport << " -> "
                          << sk_to_monitor[j].sk_id.dip << ":" << sk_to_monitor[j].sk_id.dport << endl;
 
-                    struct sock_id app = bpf_ctx->get_app_sk_from_proxy_sk(sk_to_monitor[j].sk_id);
+                    struct sock_id app = bpf_ctx.get_app_sk_from_proxy_sk(sk_to_monitor[j].sk_id);
                     if (app.sip == 0)
                     {
                         cout << "No app socket found for fd: " << fd << endl;
@@ -418,7 +326,7 @@ namespace rdmaMng
 
                 atomic_store(&rb_remote->local_read_index, remote_w);
 
-                ctx->rdma_read_msg(bpf_ctx.get(), client_sks, start_read_index, end_read_index);
+                ctx->rdma_read_msg(bpf_ctx, client_sks, start_read_index, end_read_index);
                 ctx->rdma_update_remote_read_idx(rb_remote, end_read_index);
             }
             else
@@ -472,8 +380,8 @@ namespace rdmaMng
             auto ctx = ctxs[ctx_id].get();        // get the context by index
             ctx->remote_ip = original_socket.dip; // set the remote IP
 
-            ctx->rdma_client_setup(original_socket.dip, rdma_port);
-            ctx->rdma_client_connect();
+            ctx->clientConnect(original_socket.dip, rdma_port);
+
             rdma_manager_launch_background_threads();
         }
     }
@@ -557,6 +465,12 @@ namespace rdmaMng
             ctx->cond_tx.notify_all();
             lock.unlock();
 
+            cout << "EXCHANGE_REMOTE_INFO notification processed" << endl;
+            cout << "Remote address: " << ctx->remote_addr << endl;
+            cout << "Remote rkey: " << ctx->remote_rkey << endl;
+            cout << "Local address: " << (uintptr_t)ctx->buffer << endl;
+            cout << "Local rkey: " << ctx->mr->rkey << endl;
+
             break;
         }
 
@@ -576,7 +490,8 @@ namespace rdmaMng
 
     void RdmaMng::rdma_manager_listen_thread()
     {
-        cout << "Listening for notifications..." << endl;
+        cout << "TODO";
+       /* cout << "Listening for notifications..." << endl;
         struct timeval tv;
 
         while (stop_threads == false)
@@ -587,7 +502,7 @@ namespace rdmaMng
 
             for (auto &ctx : ctxs)
             {
-                if (ctx.get()->recv_cq != NULL && ctx.get()->comp_channel != NULL)
+                if (ctx.get()->recv_cq != NULL)
                 {
                     FD_SET(ctx.get()->comp_channel->fd, &fds);
                     if (ctx.get()->comp_channel->fd > max_fd)
@@ -682,7 +597,7 @@ namespace rdmaMng
                     recv_wr.next = NULL;
 
                     struct ibv_recv_wr *bad_wr = NULL;
-                    if (ibv_post_recv(ctx->conn->qp, &recv_wr, &bad_wr) != 0 || bad_wr)
+                    if (ibv_post_recv(ctx->qp, &recv_wr, &bad_wr) != 0 || bad_wr)
                     {
                         cerr << "Bad WR: " << (bad_wr ? bad_wr->wr_id : 0) << endl;
                         cerr << "Error posting recv: " << strerror(errno) << endl;
@@ -692,7 +607,7 @@ namespace rdmaMng
                     rdma_parse_notification(ctx);
                 }
             }
-        }
+        }*/
     }
 
     void RdmaMng::rdma_manager_flush_thread()

@@ -9,6 +9,326 @@ namespace rdma
 
     // CLIENT - SERVER
 
+    void RdmaContext::serverSetup()
+    {
+        is_server = TRUE;
+
+        srand48(getpid());
+
+        ctx = open_device();
+        pd = ibv_alloc_pd(ctx);
+        send_cq = ibv_create_cq(ctx, 16, nullptr, nullptr, 0);
+        recv_cq = ibv_create_cq(ctx, 16, nullptr, nullptr, 0);
+
+        buffer = (char *)aligned_alloc(4096, MR_SIZE);
+        memset(buffer, 0, MR_SIZE);
+
+        mr = ibv_reg_mr(pd, buffer, MR_SIZE,
+                        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+
+        ibv_qp_init_attr qpa = {};
+        qpa.send_cq = send_cq;
+        qpa.recv_cq = recv_cq;
+        qpa.qp_type = IBV_QPT_RC;
+        qpa.cap = {
+            .max_send_wr = 16,
+            .max_recv_wr = 16,
+            .max_send_sge = 1,
+            .max_recv_sge = 1};
+
+        qp = ibv_create_qp(pd, &qpa);
+
+        ibv_qp_attr attr = {};
+        attr.qp_state = IBV_QPS_INIT;
+        attr.pkey_index = 0;
+        attr.port_num = 1;
+        attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
+
+        if (ibv_modify_qp(qp, &attr,
+                          IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS))
+        {
+            std::cerr << "Failed to modify QP to INIT state\n";
+            throw runtime_error("ibv_modify_qp failed");
+        }
+
+        ibv_port_attr pattr;
+        ibv_query_port(ctx, 1, &pattr);
+
+        union ibv_gid gid;
+        if (ibv_query_gid(ctx, 1, 0, &gid))
+        {
+            perror("ibv_query_gid");
+            throw runtime_error("ibv_query_gid failed");
+        }
+
+        conn_info local = {.lid = pattr.lid, .qp_num = qp->qp_num, .psn = gen_psn(), .rkey = mr->rkey, .addr = reinterpret_cast<uintptr_t>(buffer), .gid = gid};
+
+        std::cout << "Local connection info:\n"
+                  << "LID: " << local.lid << "\n"
+                  << "QP number: " << local.qp_num << "\n"
+                  << "PSN: " << local.psn << "\n"
+                  << "RKEY: " << local.rkey << "\nGID: ";
+
+        for (int i = 0; i < 16; i++)
+            std::printf("%02x", local.gid.raw[i]);
+        std::printf("\nBuffer address: 0x%lx\n", local.addr);
+
+        int listen_fd = tcp_server_listen();
+        int sock = accept(listen_fd, nullptr, nullptr);
+
+        conn_info remote;
+        if (write(sock, &local, sizeof(local)) < 0 || read(sock, &remote, sizeof(remote)) < 0)
+        {
+            perror("TCP exchange");
+            close(sock);
+            exit(EXIT_FAILURE);
+        }
+        close(listen_fd);
+
+        ibv_qp_attr rtr = {};
+        rtr.qp_state = IBV_QPS_RTR;
+        rtr.path_mtu = IBV_MTU_1024;
+        rtr.dest_qp_num = remote.qp_num;
+        rtr.rq_psn = remote.psn;
+        rtr.max_dest_rd_atomic = 1;
+        rtr.min_rnr_timer = 12;
+        memset(&rtr.ah_attr, 0, sizeof(rtr.ah_attr));
+        rtr.ah_attr.is_global = 1;
+        rtr.ah_attr.port_num = 1;
+        rtr.ah_attr.dlid = 0;
+        rtr.ah_attr.grh.dgid = remote.gid;
+        rtr.ah_attr.grh.sgid_index = 0;
+        rtr.ah_attr.grh.hop_limit = 1;
+
+        ibv_modify_qp(qp, &rtr,
+                      IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
+                          IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
+                          IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
+
+        ibv_qp_attr attr2;
+        ibv_qp_init_attr iattr;
+        iattr.send_cq = send_cq;
+        iattr.recv_cq = recv_cq;
+        iattr.qp_type = IBV_QPT_RC;
+        iattr.cap = {
+            .max_send_wr = 16,
+            .max_recv_wr = 16,
+            .max_send_sge = 1,
+            .max_recv_sge = 1};
+
+        ibv_query_qp(qp, &attr2, IBV_QP_STATE, &iattr);
+        std::cout << "QP state after RTR = " << attr2.qp_state << std::endl;
+
+        ibv_qp_attr rts = {};
+        rts.qp_state = IBV_QPS_RTS;
+        rts.sq_psn = local.psn;
+        rts.timeout = 14;
+        rts.retry_cnt = 7;
+        rts.rnr_retry = 7;
+        rts.max_rd_atomic = 1;
+
+        ibv_modify_qp(qp, &rts,
+                      IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
+                          IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
+
+        remote_addr = remote.addr;
+        remote_rkey = remote.rkey;
+
+        std::cout << "Remote QPN: " << remote.qp_num << "\n"
+                  << "Remote PSN: " << remote.psn << "\n"
+                  << "Remote LID: " << remote.lid << "\n"
+                  << "Remote GID: "
+                  << std::hex << int(remote.gid.raw[0]) << ":"
+                  << int(remote.gid.raw[1]) << std::dec << "\n"
+                  << "Remote address: 0x" << std::hex << remote.addr << std::dec << "\n"
+                  << "Remote rkey: " << remote.rkey << "\n";
+
+        std::cout << "Server ready\n";
+    }
+
+    void RdmaContext::clientConnect(uint32_t server_ip, uint16_t server_port)
+    {
+        srand48(getpid());
+
+        auto *ctx = open_device();
+        if (!ctx)
+            throw runtime_error("Failed to open RDMA device");
+
+        pd = ibv_alloc_pd(ctx);
+        send_cq = ibv_create_cq(ctx, 16, nullptr, nullptr, 0);
+        recv_cq = ibv_create_cq(ctx, 16, nullptr, nullptr, 0);
+
+        buffer = (char *)aligned_alloc(4096, MR_SIZE);
+        memset(buffer, 0, MR_SIZE);
+
+        mr = ibv_reg_mr(pd, buffer, MR_SIZE,
+                        IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_LOCAL_WRITE);
+
+        ibv_qp_init_attr qpa = {};
+        qpa.send_cq = send_cq;
+        qpa.recv_cq = recv_cq;
+        qpa.qp_type = IBV_QPT_RC;
+        qpa.cap = {16, 16, 1, 1};
+
+        qp = ibv_create_qp(pd, &qpa);
+
+        ibv_qp_attr attr = {};
+        attr.qp_state = IBV_QPS_INIT;
+        attr.pkey_index = 0;
+        attr.port_num = 1;
+        attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
+
+        int err = ibv_modify_qp(qp, &attr,
+                                IBV_QP_STATE | IBV_QP_PKEY_INDEX |
+                                    IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
+
+        if (err)
+        {
+            std::cerr << "Failed to modify QP to INIT state: " << err << "\n";
+            throw runtime_error("ibv_modify_qp failed");
+        }
+
+        ibv_port_attr pattr;
+        ibv_query_port(ctx, 1, &pattr);
+
+        union ibv_gid gid;
+        if (ibv_query_gid(ctx, 1, 0, &gid))
+        {
+            perror("ibv_query_gid");
+            throw runtime_error("ibv_query_gid failed");
+        }
+
+        conn_info local = {};
+        local.lid = pattr.lid;
+        local.qp_num = qp->qp_num;
+        local.psn = gen_psn();
+        local.rkey = mr->rkey;
+        local.addr = reinterpret_cast<uintptr_t>(buffer);
+        local.gid = gid;
+
+        /*std::cout << "Local connection info:\n"
+                  << "LID: " << local.lid << "\n"
+                  << "QP number: " << local.qp_num << "\n"
+                  << "PSN: " << local.psn << "\n"
+                  << "RKEY: " << local.rkey << "\n"
+                  << "GID: ";
+        for (int i = 0; i < 16; i++)
+        {
+            printf("%02x", local.gid.raw[i]);
+        }
+        std::cout << "\nBuffer address: 0x" << std::hex << local.addr << std::dec << "\n";*/
+
+        int sock = tcp_connect(server_ip);
+        if (sock < 0)
+        {
+            std::cerr << "Failed to connect to server: " << strerror(errno) << "\n";
+            throw runtime_error("tcp_connect failed");
+        }
+
+        conn_info remote;
+        if (read(sock, &remote, sizeof(remote)) < 0)
+        {
+            perror("read");
+            close(sock);
+            throw runtime_error("Failed to read remote connection info");
+        }
+
+        if (write(sock, &local, sizeof(local)) < 0)
+        {
+            perror("write");
+            close(sock);
+            throw runtime_error("Failed to write local connection info");
+        }
+
+        close(sock);
+
+        std::cout << "Remote QPN: " << remote.qp_num << "\n"
+                  << "Remote PSN: " << remote.psn << "\n"
+                  << "Remote LID: " << remote.lid << "\n"
+                  << "Remote GID: "
+                  << std::hex << int(remote.gid.raw[0]) << ":"
+                  << int(remote.gid.raw[1]) << std::dec << "\n"
+                  << "Remote address: 0x" << std::hex << remote.addr << std::dec << "\n"
+                  << "Remote rkey: " << remote.rkey << "\n";
+
+        ibv_qp_attr rtr = {};
+        rtr.qp_state = IBV_QPS_RTR;
+        rtr.path_mtu = IBV_MTU_1024;
+        rtr.dest_qp_num = remote.qp_num;
+        rtr.rq_psn = remote.psn;
+        rtr.max_dest_rd_atomic = 1;
+        rtr.min_rnr_timer = 12;
+        rtr.ah_attr.is_global = 1;
+        rtr.ah_attr.port_num = 1;
+        rtr.ah_attr.dlid = 0;
+        rtr.ah_attr.grh.dgid = remote.gid;
+        rtr.ah_attr.grh.sgid_index = 0;
+        rtr.ah_attr.grh.hop_limit = 1;
+
+        err = ibv_modify_qp(qp, &rtr,
+                            IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
+                                IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
+                                IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
+        if (err)
+        {
+            std::cerr << "Failed to modify QP to RTR state: " << err << "\n";
+            throw runtime_error("ibv_modify_qp failed");
+        }
+
+        ibv_qp_attr rts = {};
+        rts.qp_state = IBV_QPS_RTS;
+        rts.sq_psn = local.psn;
+        rts.timeout = 14;
+        rts.retry_cnt = 7;
+        rts.rnr_retry = 7;
+        rts.max_rd_atomic = 1;
+
+        err = ibv_modify_qp(qp, &rts,
+                            IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
+                                IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
+        if (err)
+        {
+            std::cerr << "Failed to modify QP to RTS state: " << err << "\n";
+            throw runtime_error("ibv_modify_qp failed");
+        }
+
+        ibv_qp_attr attr2;
+        ibv_qp_init_attr iattr;
+        ibv_query_qp(qp, &attr2, IBV_QP_STATE, &iattr);
+        std::cout << "QP state after RTS = " << attr2.qp_state << "\n";
+    }
+
+    int RdmaContext::tcp_connect(uint32_t ip)
+    {
+        // Convert IP address from uint32_t to string
+        string ip_str;
+        ip_str.resize(16); // Enough space for IPv6
+        inet_ntop(AF_INET, &ip, &ip_str[0], ip_str.size());
+        ip_str.resize(strlen(ip_str.c_str())); // Resize to actual length
+
+        struct addrinfo hints = {};
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        struct addrinfo *res;
+
+        if (getaddrinfo(ip_str.c_str(), TCP_PORT, &hints, &res) != 0)
+        {
+            perror("getaddrinfo");
+            return -1;
+        }
+
+        int fd = socket(res->ai_family, res->ai_socktype, 0);
+        if (fd < 0 || connect(fd, res->ai_addr, res->ai_addrlen) != 0)
+        {
+            perror("connect");
+            freeaddrinfo(res);
+            return -1;
+        }
+
+        freeaddrinfo(res);
+        return fd;
+    }
+
     int RdmaContext::tcp_server_listen()
     {
         addrinfo hints = {};
@@ -25,314 +345,29 @@ namespace rdma
         return fd;
     }
 
-    /*void RdmaContext::serverSetup(const char *server_ip, uint16_t server_port)
+    ibv_context *RdmaContext::open_device()
     {
+        int num_devices = 0;
+        ibv_device **device_list = ibv_get_device_list(&num_devices);
+        if (!device_list || num_devices == 0)
+        {
+            std::cerr << "No RDMA devices found.\n";
+            return nullptr;
+        }
+
+        for (int i = 0; i < num_devices; ++i)
+        {
+            std::cout << "Device " << i << ": " << ibv_get_device_name(device_list[i]) << "\n";
+        }
+
+        ibv_context *ctx = ibv_open_device(device_list[0]);
+        ibv_free_device_list(device_list);
+        return ctx;
     }
 
-    void RdmaContext::clientConnect(const char *server_ip, uint16_t server_port)
+    uint32_t RdmaContext::gen_psn()
     {
-    }*/
-
-    void RdmaContext::rdma_server_handle_new_client(struct rdma_event_channel *server_ec)
-    {
-        pd = ibv_alloc_pd(conn->verbs);
-        if (!pd)
-            throw runtime_error("ibv_alloc_pd failed");
-
-        buffer = (char *)malloc(MR_SIZE);
-        if (!buffer)
-            throw runtime_error("malloc buffer failed");
-
-        buffer_size = MR_SIZE;
-
-        mr = ibv_reg_mr(pd, buffer, MR_SIZE,
-                        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
-
-        if (!mr)
-            throw runtime_error("ibv_reg_mr failed");
-
-        // create the completion channel to be able to use select()
-        comp_channel = ibv_create_comp_channel(conn->verbs);
-        if (!comp_channel)
-            throw runtime_error("ibv_create_comp_channel failed");
-
-        send_cq = ibv_create_cq(conn->verbs, 10, NULL, NULL, 0);
-        if (!send_cq)
-        {
-            ibv_destroy_cq(send_cq);
-            throw runtime_error("ibv_create_cq (send) failed");
-        }
-
-        recv_cq = ibv_create_cq(conn->verbs, 10, NULL, comp_channel, 0);
-        if (!recv_cq)
-        {
-            ibv_destroy_cq(send_cq);
-            throw runtime_error("ibv_create_cq (recv) failed");
-        }
-
-        // set the recv cq in event mode
-        if (ibv_req_notify_cq(recv_cq, 0))
-        {
-            ibv_destroy_cq(recv_cq);
-            ibv_destroy_cq(send_cq);
-            throw runtime_error("ibv_req_notify_cq failed");
-        }
-
-        struct ibv_qp_init_attr qp_attr = {
-            .send_cq = send_cq,
-            .recv_cq = recv_cq,
-            .cap = {
-                .max_send_wr = 128,
-                .max_recv_wr = 10,
-                .max_send_sge = 1,
-                .max_recv_sge = 1},
-            .qp_type = IBV_QPT_RC};
-
-        if (rdma_create_qp(conn, pd, &qp_attr))
-        {
-            ibv_destroy_cq(send_cq);
-            ibv_destroy_cq(recv_cq);
-            throw runtime_error("rdma_create_qp failed");
-        }
-
-        // Post a receive work request to receive the remote address and rkey
-        struct ibv_sge sge = {
-            .addr = (uintptr_t)buffer,
-            .length = sizeof(notification_t) + sizeof(rdma_meta_info_t),
-            .lkey = mr->lkey};
-
-        struct ibv_recv_wr recv_wr = {.wr_id = 0, .sg_list = &sge, .num_sge = 1};
-        struct ibv_recv_wr *bad_wr;
-        ibv_post_recv(conn->qp, &recv_wr, &bad_wr);
-
-        // Accept the connection and send the remote address and rkey
-        rdma_meta_info_t info = {
-            .addr = (uintptr_t)buffer,
-            .rkey = mr->rkey};
-
-        struct rdma_conn_param conn_param = {};
-        conn_param.initiator_depth = 1;
-        conn_param.responder_resources = 1;
-        conn_param.rnr_retry_count = 7;
-        conn_param.private_data = &info;
-        conn_param.private_data_len = sizeof(info);
-
-        if (rdma_accept(conn, &conn_param))
-            throw runtime_error("rdma_accept failed");
-
-        struct rdma_cm_event *event;
-        if (rdma_get_cm_event(server_ec, &event))
-            throw runtime_error("rdma_get_cm_event failed");
-
-        if (event->event != RDMA_CM_EVENT_ESTABLISHED)
-            throw runtime_error("unexpected event - not ESTABLISHED");
-
-        rdma_ack_cm_event(event);
-    }
-
-    void RdmaContext::rdma_client_setup(uint32_t ip, uint16_t port)
-    {
-        is_server = FALSE;
-
-        conn = NULL;
-        client_ec = rdma_create_event_channel();
-        if (!client_ec)
-            throw runtime_error("rdma_create_event_channel failed");
-
-        if (rdma_create_id(client_ec, &conn, NULL, RDMA_PS_TCP))
-            throw runtime_error("rdma_create_id failed");
-
-        // Resolve the address
-        char ip_str[INET_ADDRSTRLEN];
-        if (!inet_ntop(AF_INET, &ip, ip_str, sizeof(ip_str)))
-            throw runtime_error("inet_ntop failed");
-
-        char port_str[6];
-        snprintf(port_str, sizeof(port_str), "%u", port);
-
-        struct addrinfo hints = {
-            .ai_family = AF_INET,
-            .ai_socktype = SOCK_STREAM};
-
-        struct addrinfo *res;
-
-        if (getaddrinfo(ip_str, port_str, &hints, &res) != 0)
-            throw runtime_error("getaddrinfo failed");
-
-        if (rdma_resolve_addr(conn, NULL, res->ai_addr, 2000))
-            throw runtime_error("rdma_resolve_addr failed");
-
-        remote_ip = ((struct sockaddr_in *)res->ai_addr)->sin_addr.s_addr;
-
-        freeaddrinfo(res);
-
-        // Wait for the ADDR_RESOLVED event
-        struct rdma_cm_event *event = NULL;
-        if (rdma_get_cm_event(client_ec, &event))
-            throw runtime_error("rdma_get_cm_event - addr_resolved failed");
-
-        if (event->event != RDMA_CM_EVENT_ADDR_RESOLVED)
-            throw runtime_error("unexpected event - not ADDR_RESOLVED");
-
-        rdma_ack_cm_event(event);
-
-        // Resolve the route
-        if (rdma_resolve_route(conn, 2000))
-            throw runtime_error("rdma_resolve_route failed");
-
-        if (rdma_get_cm_event(client_ec, &event))
-            throw runtime_error("rdma_get_cm_event - route_resolved failed");
-
-        if (event->event != RDMA_CM_EVENT_ROUTE_RESOLVED)
-            throw runtime_error("unexpected event - not ROUTE_RESOLVED");
-
-        rdma_ack_cm_event(event);
-
-        // PD, buffer, MR
-        pd = ibv_alloc_pd(conn->verbs);
-        if (!pd)
-            throw runtime_error("ibv_alloc_pd failed");
-
-        buffer = (char *)malloc(MR_SIZE);
-        if (!buffer)
-            throw runtime_error("malloc buffer failed");
-
-        buffer_size = MR_SIZE;
-
-        mr = ibv_reg_mr(pd, buffer, MR_SIZE,
-                        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
-
-        if (!mr)
-            throw runtime_error("ibv_reg_mr failed");
-
-        // CQ + QP
-        comp_channel = ibv_create_comp_channel(conn->verbs);
-        if (!comp_channel)
-            throw runtime_error("ibv_create_comp_channel failed");
-
-        cout << "Creating send and receive completion queues..." << endl;
-
-        send_cq = ibv_create_cq(conn->verbs, 10, NULL, NULL, 0);
-        if (!send_cq)
-        {
-            ibv_destroy_cq(recv_cq);
-            throw runtime_error("ibv_create_cq (send) failed");
-        }
-
-        recv_cq = ibv_create_cq(conn->verbs, 10, NULL, comp_channel, 0);
-        if (!recv_cq)
-        {
-            ibv_destroy_cq(send_cq);
-            throw runtime_error("ibv_create_cq (recv) failed");
-        }
-
-        if (ibv_req_notify_cq(recv_cq, 0))
-            throw runtime_error("ibv_req_notify_cq failed");
-
-        struct ibv_qp_init_attr qp_attr = {};
-        qp_attr.send_cq = send_cq;
-        qp_attr.recv_cq = recv_cq;
-        qp_attr.qp_type = IBV_QPT_RC;
-        qp_attr.cap.max_send_wr = 128;
-        qp_attr.cap.max_recv_wr = 10;
-        qp_attr.cap.max_send_sge = 10;
-        qp_attr.cap.max_recv_sge = 10;
-
-        if (rdma_create_qp(conn, pd, &qp_attr))
-        {
-            ibv_destroy_cq(send_cq);
-            ibv_destroy_cq(recv_cq);
-            throw runtime_error("rdma_create_qp failed");
-        }
-
-        cout << "Client connected to server at " << ip_str << ":" << port_str << endl;
-    }
-
-    void RdmaContext::rdma_client_connect()
-    {
-        struct rdma_conn_param conn_param = {};
-        conn_param.initiator_depth = 1;
-        conn_param.responder_resources = 1;
-        conn_param.rnr_retry_count = 7;
-
-        if (rdma_connect(conn, &conn_param))
-            throw runtime_error("rdma_connect failed");
-
-        struct rdma_cm_event *event = NULL;
-        if (rdma_get_cm_event(client_ec, &event))
-            throw runtime_error("rdma_get_cm_event failed");
-
-        if (event->event != RDMA_CM_EVENT_ESTABLISHED)
-            throw runtime_error("unexpected event - not ESTABLISHED");
-
-        rdma_meta_info_t *info = (rdma_meta_info_t *)event->param.conn.private_data;
-        remote_addr = info->addr;
-        remote_rkey = info->rkey;
-
-        rdma_ack_cm_event(event);
-
-        // send the remote address and rkey to the server
-        notification_t *notification = (notification_t *)buffer;
-        notification->from_client.code = CommunicationCode::EXCHANGE_REMOTE_INFO;
-
-        rdma_meta_info_t *remote_info = (rdma_meta_info_t *)((char *)buffer + sizeof(notification_t));
-        remote_info->addr = (uintptr_t)buffer;
-        remote_info->rkey = mr->rkey;
-
-        struct ibv_sge sge = {
-            .addr = (uintptr_t)buffer,
-            .length = sizeof(notification_t) + sizeof(rdma_meta_info_t),
-            .lkey = mr->lkey};
-
-        struct ibv_send_wr send_wr = {
-            .wr_id = 0,
-            .sg_list = &sge,
-            .num_sge = 1,
-            .opcode = IBV_WR_SEND,
-            .send_flags = IBV_SEND_SIGNALED};
-
-        struct ibv_send_wr *bad_wr;
-        if (ibv_post_send(conn->qp, &send_wr, &bad_wr))
-            throw runtime_error("Failed to post send - rdma_send_notification");
-
-        rdma_poll_cq_send();
-
-        // post a receive work request to receive the notification
-        struct ibv_sge sge2 = {
-            .addr = (uintptr_t)buffer,
-            .length = sizeof(notification_t),
-            .lkey = mr->lkey};
-
-        struct ibv_recv_wr recv_wr = {
-            .wr_id = 0,
-            .sg_list = &sge2,
-            .num_sge = 1};
-        struct ibv_recv_wr *bad_wr2 = NULL;
-
-        if (ibv_post_recv(conn->qp, &recv_wr, &bad_wr2) != 0 || bad_wr2)
-            throw runtime_error("Failed to post recv - rdma_send_notification");
-
-        ringbuffer_server = (rdma_ringbuffer_t *)(buffer +
-                                                  NOTIFICATION_OFFSET_SIZE);
-        atomic_store(&ringbuffer_server->local_read_index, 0);
-        atomic_store(&ringbuffer_server->remote_read_index, 0);
-        atomic_store(&ringbuffer_server->remote_write_index, 0);
-        atomic_store(&ringbuffer_server->local_write_index, 0);
-        atomic_store(&ringbuffer_server->flags.flags, 0);
-
-        ringbuffer_client = (rdma_ringbuffer_t *)(buffer +
-                                                  NOTIFICATION_OFFSET_SIZE +
-                                                  RING_BUFFER_OFFSET_SIZE); // skip the notification header and the server buffer
-        atomic_store(&ringbuffer_client->remote_write_index, 0);
-        atomic_store(&ringbuffer_client->local_read_index, 0);
-        atomic_store(&ringbuffer_client->remote_read_index, 0);
-        atomic_store(&ringbuffer_client->local_write_index, 0);
-        atomic_store(&ringbuffer_client->flags.flags, 0);
-
-        // sleep(1);
-        unique_lock<mutex> lock(mtx_tx);
-        is_ready = TRUE;
-        cond_tx.notify_all(); // Notify the waiting threads that the context is ready
+        return lrand48() & 0xffffff;
     }
 
     // SETUP
@@ -342,16 +377,12 @@ namespace rdma
         atomic_store(&is_ready, FALSE);
         remote_ip = 0;
         buffer = NULL;
-        buffer_size = 0;
-        conn = NULL;
         pd = NULL;
         mr = NULL;
         recv_cq = NULL;
         send_cq = NULL;
         remote_rkey = 0;
         remote_addr = 0;
-        client_ec = NULL;
-        comp_channel = NULL;
 
         ringbuffer_client = NULL;
         ringbuffer_server = NULL;
@@ -359,11 +390,7 @@ namespace rdma
         last_flush_ms = 0;
         is_flushing = FALSE;
 
-#ifdef AUTOSCALE_FLUSH_THRESHOLD
-        atomic_store(&flush_threshold, MIN_FLUSH_THRESHOLD);
-#else
         atomic_store(&flush_threshold, THRESHOLD_NOT_AUTOSCALER);
-#endif // AUTOSCALE_FLUSH_THRESHOLD
 
         atomic_store(&n_msg_sent, 0);
         flush_threshold_set_time = 0;
@@ -378,11 +405,6 @@ namespace rdma
 
     void RdmaContext::destroy()
     {
-        if (conn)
-        {
-            rdma_destroy_qp(conn);
-            rdma_destroy_id(conn);
-        }
         if (send_cq)
             ibv_destroy_cq(send_cq);
         if (recv_cq)
@@ -393,19 +415,13 @@ namespace rdma
             ibv_dealloc_pd(pd);
         if (buffer)
             free(buffer);
-        if (client_ec)
-            rdma_destroy_event_channel(client_ec);
-        if (comp_channel)
-            ibv_destroy_comp_channel(comp_channel);
 
-        conn = NULL;
         pd = NULL;
         mr = NULL;
         remote_ip = 0;
         remote_addr = 0;
         remote_rkey = 0;
         buffer = NULL;
-        buffer_size = 0;
     }
 
     // NOTIFICATIONS
@@ -437,7 +453,7 @@ namespace rdma
 
         // Post send with ibv_post_send
         struct ibv_send_wr *bad_send_wr;
-        if (ibv_post_send(conn->qp, &send_wr, &bad_send_wr) != 0) // Post the send work request
+        if (ibv_post_send(qp, &send_wr, &bad_send_wr) != 0) // Post the send work request
             throw runtime_error("Failed to post send - rdma_send_notification");
 
         // Poll the completion queue
@@ -472,7 +488,7 @@ namespace rdma
 
         // Post send in SQ with ibv_post_send
         struct ibv_send_wr *bad_send_wr_data;
-        int ret = ibv_post_send(conn->qp, &send_wr_data, &bad_send_wr_data);
+        int ret = ibv_post_send(qp, &send_wr_data, &bad_send_wr_data);
         if (ret != 0) // Post the send work request
         {
             cerr << "Failed to post write - rdma_post_write: " << strerror(errno) << endl;
@@ -608,7 +624,7 @@ namespace rdma
         return 1;
     }
 
-    void RdmaContext::rdma_parse_msg(bpf::BpfMng *bpf_ctx, sk::client_sk_t *client_sks, rdma_msg_t *msg)
+    void RdmaContext::rdma_parse_msg(bpf::BpfMng &bpf_ctx, sk::client_sk_t *client_sks, rdma_msg_t *msg)
     {
         // retrive the proxy_fd
         int fd;
@@ -627,7 +643,7 @@ namespace rdma
             swapped.sport = msg->original_sk_id.dport;
 
             // find the corresponding proxy socket
-            struct sock_id proxy_sk_id = bpf_ctx->get_proxy_sk_from_app_sk(swapped);
+            struct sock_id proxy_sk_id = bpf_ctx.get_proxy_sk_from_app_sk(swapped);
 
             // find the original socket in the lists
             int i = 0;
@@ -678,7 +694,7 @@ namespace rdma
                          TRUE);
     }
 
-    void RdmaContext::rdma_read_msg(bpf::BpfMng *bpf_ctx, sk::client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index)
+    void RdmaContext::rdma_read_msg(bpf::BpfMng &bpf_ctx, sk::client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index)
     {
         rdma_ringbuffer_t *ringbuffer = is_server ? ringbuffer_client : ringbuffer_server;
 

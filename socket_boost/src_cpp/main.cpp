@@ -11,10 +11,16 @@ int STOP = false;
 using namespace std;
 
 void handle_signal(int signal);
+int fun(void *ctx, void *data, size_t len);
 
 sk::SocketMng s;
-bpf::BpfMng b;
-rdmaMng::RdmaMng r;
+
+bpf::EventHandler handler = {
+    .ctx = NULL,
+    .handle_event = fun};
+bpf::BpfMng b(handler);
+
+rdmaMng::RdmaMng r(RDMA_PORT, s.client_sk_fd.data(), b);
 
 int fun(void *ctx, void *data, size_t len)
 {
@@ -58,11 +64,6 @@ int main()
         signal(SIGINT, handle_signal);
         signal(SIGTSTP, handle_signal);
 
-        bpf::EventHandler handler = {
-            .ctx = NULL,
-            .handle_event = fun};
-        b.init(handler);
-
         vector<uint16_t> ports_to_set = {TARGET_PORT};
         b.set_target_ports(ports_to_set, PROXY_PORT);
         b.run();
@@ -71,7 +72,7 @@ int main()
 
         b.push_sock_to_map(s.client_sk_fd);
 
-        r.rdma_manager_run(7471, &b, s.client_sk_fd.data());
+        r.rdma_manager_run();
 
         printf("Waiting for messages, press Ctrl+C to exit...\n");
         while (!STOP)

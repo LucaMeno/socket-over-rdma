@@ -107,20 +107,15 @@ namespace rdma
         const char *TCP_PORT = "7471"; // Default RDMA port
 
     public:
-        // RDMA
-        struct rdma_event_channel *client_ec; // for client only
-        struct rdma_cm_id *conn;              // Connection ID
-        struct ibv_pd *pd;                    // Protection Domain
-        struct ibv_mr *mr;                    // Memory Region
-        struct ibv_qp *qp;                    // Queue Pair
-        struct ibv_cq *send_cq;               // send completion queue
-        struct ibv_cq *recv_cq;               // recv completion queue
-        char *buffer;                         // Buffer to send
-        size_t buffer_size;                   // Size of the buffer
-        uintptr_t remote_addr;                // Remote address
-        uint32_t remote_rkey;                 // Remote RKey
-
-        struct ibv_comp_channel *comp_channel; // Completion channel
+        ibv_context *ctx;
+        ibv_pd *pd;
+        ibv_cq *send_cq;
+        ibv_cq *recv_cq;
+        ibv_mr *mr;
+        ibv_qp *qp;
+        char *buffer;
+        uintptr_t remote_addr;
+        uint32_t remote_rkey;
 
         // Context id
         uint32_t remote_ip; // Remote IP
@@ -158,9 +153,6 @@ namespace rdma
 
         // CLIENT - SERVER
 
-        /*void serverSetup(const char *server_ip, uint16_t server_port);
-        void clientConnect(const char *server_ip, uint16_t server_port);*/
-
         RdmaContext()
         {
             init();
@@ -170,9 +162,8 @@ namespace rdma
             destroy();
         }
 
-        void rdma_server_handle_new_client(struct rdma_event_channel *server_ec);
-        void rdma_client_setup(uint32_t ip, uint16_t port);
-        void rdma_client_connect();
+        void serverSetup();
+        void clientConnect(uint32_t server_ip, uint16_t server_port);
 
         // SETUP
         void init();
@@ -180,7 +171,7 @@ namespace rdma
 
         // COMMUNICATION
         int rdma_write_msg(int src_fd, struct sock_id original_socket);
-        void rdma_read_msg(bpf::BpfMng *bpf_ctx, sk::client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index);
+        void rdma_read_msg(bpf::BpfMng &bpf_ctx, sk::client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index);
         void rdma_flush_buffer(rdma_ringbuffer_t *ringbuffer, uint32_t start_idx, uint32_t end_idx);
         void rdma_send_data_ready();
         void rdma_update_remote_read_idx(rdma_ringbuffer_t *ringbuffer, uint32_t r_idx);
@@ -195,13 +186,14 @@ namespace rdma
         void wait_for_context_ready();
 
     private:
-        int tcp_connect(const std::string &ip);
+        int tcp_connect(uint32_t ip);
+        int tcp_server_listen();
         ibv_context *open_device();
         uint32_t gen_psn();
-        int tcp_server_listen();
+
         void rdma_send_notification(CommunicationCode code);
         void rdma_poll_cq_send();
-        void rdma_parse_msg(bpf::BpfMng *bpf_ctx, sk::client_sk_t *client_sks, rdma_msg_t *msg);
+        void rdma_parse_msg(bpf::BpfMng &bpf_ctx, sk::client_sk_t *client_sks, rdma_msg_t *msg);
         void rdma_post_write_(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, int signaled);
     };
 

@@ -51,15 +51,10 @@ namespace bpf
         int stop_threads;
         EventHandler new_sk_event_handler;
 
-        BpfMng() = default;
-        ~BpfMng()
-        {
-            destroy();
-        }
+        BpfMng(EventHandler event_handler);
+        ~BpfMng();
 
-        void init(EventHandler event_handler);
         void run();
-        void destroy();
         void set_target_ports(const std::vector<uint16_t> &target_ports, uint16_t server_port);
         void set_target_ip(const std::vector<uint32_t> &target_ip);
         void push_sock_to_map(const std::vector<sk::client_sk_t> &client_sks);

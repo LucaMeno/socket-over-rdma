@@ -5,7 +5,7 @@ using namespace std;
 
 namespace bpf
 {
-    void BpfMng::init(EventHandler event_handler)
+    BpfMng::BpfMng(EventHandler event_handler)
     {
         // set the event handler
         new_sk_event_handler.ctx = event_handler.ctx;
@@ -175,7 +175,7 @@ namespace bpf
         }
     }
 
-    void BpfMng::destroy()
+    BpfMng::~BpfMng()
     {
         cout << "Cleaning up BPF resources..." << endl;
 
