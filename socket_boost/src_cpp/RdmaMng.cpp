@@ -10,7 +10,7 @@ namespace rdmaMng
                                                                                         rdma_port{srv_port},
                                                                                         client_sks{proxy_sks}
     {
-        stop_threads = false;
+        stop_threads.store(false);
 
         // setup the pool
         thPool = make_unique<ThreadPool>(N_WRITER_THREADS);
@@ -30,10 +30,10 @@ namespace rdmaMng
     {
         stop_threads = true;
 
-        /*if (server_thread.joinable())
-            server_thread.join();*/
+        if (server_thread.joinable())
+            server_thread.join();
 
-        cout << "Server thread joined -  TODO" << endl;
+        cout << "Server thread joined" << endl;
 
         for (auto &thread : writer_threads)
         {
@@ -67,11 +67,10 @@ namespace rdmaMng
 
         // Cleanup RDMA contexts
         ctxs.clear();
+        cout << "RDMA contexts cleared" << endl;
 
         thPool->destroy();
         cout << "Thread pool destroyed" << endl;
-
-        cout << "RDMA contexts cleared" << endl;
     }
 
     void RdmaMng::rdma_manager_run()
@@ -130,6 +129,13 @@ namespace rdmaMng
                 ;
 
             ctx->serverHandleNewClient(sc);
+
+            ctxs.push_back(std::move(ctx));
+
+            if (!notification_thread.joinable())
+            {
+                rdma_manager_launch_background_threads();
+            }
         }
     }
 
@@ -180,7 +186,7 @@ namespace rdmaMng
             tv.tv_sec = TIME_STOP_SELECT_SEC;
             tv.tv_usec = 0;
 
-            int activity = select(max_fd + 1, &temp_fds, NULL, NULL, &tv);
+            int activity = select(max_fd + 1, &temp_fds, nullptr, nullptr, &tv);
             if (activity == -1)
             {
                 if (errno == EINTR)
@@ -212,10 +218,6 @@ namespace rdmaMng
                         continue;
                     }
 
-                    cout << "Socket ID: ";
-                    cout << sk_to_monitor[j].sk_id.sip << ":" << sk_to_monitor[j].sk_id.sport << " -> "
-                         << sk_to_monitor[j].sk_id.dip << ":" << sk_to_monitor[j].sk_id.dport << endl;
-
                     struct sock_id app = bpf_ctx.get_app_sk_from_proxy_sk(sk_to_monitor[j].sk_id);
                     if (app.sip == 0)
                     {
@@ -225,7 +227,6 @@ namespace rdmaMng
                     }
 
                     // get the context
-                    // vector<unique_ptr<RdmaContext>>::iterator ctx;
                     auto ctxIt = ctxs.begin();
                     for (; ctxIt != ctxs.end(); ++ctxIt)
                         if ((*ctxIt)->remote_ip == app.dip)
@@ -275,30 +276,35 @@ namespace rdmaMng
         cout << "Polling thread started" << endl;
 
         int i;
-        rdma::rdma_ringbuffer_t *rb_local = NULL;
-        rdma::rdma_ringbuffer_t *rb_remote = NULL;
+        rdma::rdma_ringbuffer_t *rb_local = nullptr;
+        rdma::rdma_ringbuffer_t *rb_remote = nullptr;
 
         // TODO: remove
         unique_lock<mutex> lock(mtx_polling);
         is_polling_thread_running = false;
-        while (is_polling_thread_running == false && stop_threads == false)
+        while (is_polling_thread_running == false && stop_threads.load() == false)
         {
             cout << "Waiting for polling thread to start..." << endl;
             cond_polling.wait(lock);
         }
         lock.unlock();
 
-        if (stop_threads == true)
-        {
-            return; // stop the thread if stop_threads is set
-        }
-
         auto ctxIt = ctxs.begin();
 
-        while (stop_threads == false)
+        cout << "Polling thread is running" << endl;
+
+        while (stop_threads.load() == false)
         {
             auto &ctx = *ctxIt;
-            int ret = rdma_manager_consume_ringbuffer(ctx.get(), ctx->is_server ? ctx->ringbuffer_client : ctx->ringbuffer_server);
+            int ret;
+            try
+            {
+                ret = rdma_manager_consume_ringbuffer(ctx.get(), ctx->is_server ? ctx->ringbuffer_client : ctx->ringbuffer_server);
+            }
+            catch (const std::exception &e)
+            {
+                cerr << "Exception in rdma_manager_polling_thread: " << e.what() << endl;
+            }
             if (ret < 0)
             {
                 throw runtime_error("Error consuming ring buffer - rdma_manager_polling_thread");
@@ -306,7 +312,7 @@ namespace rdmaMng
             else if (ret == 1)
             {
                 // no msg to read
-                break;
+                // break;
             }
 
             ctxIt++;
@@ -321,13 +327,14 @@ namespace rdmaMng
     {
         if (ctx == nullptr || rb_remote == nullptr)
         {
-            throw runtime_error("Context or remote ring buffer is NULL - rdma_manager_consume_ringbuffer");
+            cerr << "Context or remote ring buffer is nullptr - rdma_manager_consume_ringbuffer" << endl;
+            throw runtime_error("Context or remote ring buffer is nullptr - rdma_manager_consume_ringbuffer");
         }
 
         while (1)
         {
-            uint32_t remote_w = atomic_load(&rb_remote->remote_write_index);
-            uint32_t local_r = atomic_load(&rb_remote->local_read_index);
+            uint32_t remote_w = rb_remote->remote_write_index.load(); // atomic_load(&rb_remote->remote_write_index);
+            uint32_t local_r = rb_remote->local_read_index.load();    // atomic_load(&rb_remote->local_read_index);
 
             if (remote_w != local_r)
             {
@@ -335,7 +342,8 @@ namespace rdmaMng
                 uint32_t start_read_index = local_r;
                 uint32_t end_read_index = remote_w;
 
-                atomic_store(&rb_remote->local_read_index, remote_w);
+                // atomic_store(&rb_remote->local_read_index, remote_w);
+                rb_remote->local_read_index.store(remote_w); // reset the local write index
 
                 ctx->rdma_read_msg(bpf_ctx, client_sks, start_read_index, end_read_index);
                 ctx->rdma_update_remote_read_idx(rb_remote, end_read_index);
@@ -364,7 +372,7 @@ namespace rdmaMng
     void RdmaMng::flush_thread_worker(rdma::RdmaContext *ctx, rdma::rdma_ringbuffer_t *rb, uint32_t start_idx, uint32_t end_idx)
     {
         if (ctx == nullptr || rb == nullptr)
-            throw runtime_error("Context or ring buffer is NULL - flush_thread_worker");
+            throw runtime_error("Context or ring buffer is nullptr - flush_thread_worker");
 
         ctx->rdma_flush_buffer(rb, start_idx, end_idx);
     }
@@ -428,7 +436,7 @@ namespace rdmaMng
     {
         rdma::notification_t *notification = (rdma::notification_t *)ctx->buffer;
         rdma::CommunicationCode code; // enum rdma_communication_code
-        if (ctx->is_server == TRUE)
+        if (ctx->is_server == true)
         {
             code = notification->from_client.code;
             notification->from_client.code = rdma::CommunicationCode::NONE; // reset the code
@@ -443,48 +451,6 @@ namespace rdmaMng
 
         switch (code)
         {
-        case rdma::CommunicationCode::EXCHANGE_REMOTE_INFO:
-        {
-            if (ctx->remote_addr != 0)
-            {
-                cout << "Remote address already set, ignoring EXCHANGE_REMOTE_INFO notification" << endl;
-                return;
-            }
-
-            rdma::rdma_meta_info_t *remote_info = (rdma::rdma_meta_info_t *)(ctx->buffer + sizeof(rdma::notification_t));
-
-            // save the remote address and rkey
-            ctx->remote_addr = remote_info->addr;
-            ctx->remote_rkey = remote_info->rkey;
-
-            ctx->ringbuffer_server = (rdma_ringbuffer_t *)(ctx->buffer + NOTIFICATION_OFFSET_SIZE);
-            atomic_store(&ctx->ringbuffer_server->local_read_index, 0);
-            atomic_store(&ctx->ringbuffer_server->remote_read_index, 0);
-            atomic_store(&ctx->ringbuffer_server->remote_write_index, 0);
-            atomic_store(&ctx->ringbuffer_server->local_write_index, 0);
-            atomic_store(&ctx->ringbuffer_server->flags.flags, 0);
-
-            ctx->ringbuffer_client = (rdma_ringbuffer_t *)(ctx->buffer + NOTIFICATION_OFFSET_SIZE + RING_BUFFER_OFFSET_SIZE); // skip the notification header and the server buffer
-            atomic_store(&ctx->ringbuffer_client->local_read_index, 0);
-            atomic_store(&ctx->ringbuffer_client->remote_read_index, 0);
-            atomic_store(&ctx->ringbuffer_client->remote_write_index, 0);
-            atomic_store(&ctx->ringbuffer_client->local_write_index, 0);
-            atomic_store(&ctx->ringbuffer_client->flags.flags, 0);
-
-            unique_lock<mutex> lock(ctx->mtx_tx);
-            atomic_store(&ctx->is_ready, TRUE);
-            ctx->cond_tx.notify_all();
-            lock.unlock();
-
-            cout << "EXCHANGE_REMOTE_INFO notification processed" << endl;
-            cout << "Remote address: " << ctx->remote_addr << endl;
-            cout << "Remote rkey: " << ctx->remote_rkey << endl;
-            cout << "Local address: " << (uintptr_t)ctx->buffer << endl;
-            cout << "Local rkey: " << ctx->mr->rkey << endl;
-
-            break;
-        }
-
         case CommunicationCode::RDMA_DATA_READY:
         {
             rdma_manager_start_polling(ctx);
@@ -501,152 +467,142 @@ namespace rdmaMng
 
     void RdmaMng::rdma_manager_listen_thread()
     {
-        cout << "TODO";
-        /* cout << "Listening for notifications..." << endl;
-         struct timeval tv;
+        std::cout << "Listening for notifications..." << std::endl;
 
-         while (stop_threads == false)
-         {
-             fd_set fds;
-             FD_ZERO(&fds);
-             int max_fd = -1;
+        while (!stop_threads)
+        {
+            fd_set fds;
+            FD_ZERO(&fds);
+            int max_fd = -1;
 
-             for (auto &ctx : ctxs)
-             {
-                 if (ctx.get()->recv_cq != NULL)
-                 {
-                     FD_SET(ctx.get()->comp_channel->fd, &fds);
-                     if (ctx.get()->comp_channel->fd > max_fd)
-                         max_fd = ctx.get()->comp_channel->fd;
-                 }
-                 else
-                 {
-                     cout << "Context not ready, skipping in rdma_manager_listen_thread" << endl;
-                 }
-             }
+            for (const auto &ctx_ptr : ctxs)
+            {
+                RdmaContext *ctx = ctx_ptr.get();
+                if (!ctx->recv_cq || !ctx->comp_channel)
+                {
+                    std::cerr << "Context not ready, skipping\n";
+                    continue;
+                }
 
-             if (max_fd < 0)
-                 throw runtime_error("No valid contexts to monitor in rdma_manager_listen_thread");
+                FD_SET(ctx->comp_channel->fd, &fds);
+                max_fd = std::max(max_fd, ctx->comp_channel->fd);
+            }
 
-             // Set timeout to avoid blocking indefinitely
-             tv.tv_sec = TIME_STOP_SELECT_SEC;
-             tv.tv_usec = 0;
+            if (max_fd < 0)
+            {
+                throw std::runtime_error("No valid contexts to monitor");
+            }
 
-             int activity = select(max_fd + 1, &fds, NULL, NULL, &tv);
-             if (activity == -1)
-             {
-                 if (errno == EINTR)
-                 {
-                     cout << "Select interrupted by signal in rdma_manager_listen_thread" << endl;
-                     break;
-                 }
-                 perror("select error");
-                 break;
-             }
+            timeval tv{TIME_STOP_SELECT_SEC, 0};
 
-             for (int fd = 0; fd <= max_fd; fd++)
-             {
-                 if (FD_ISSET(fd, &fds))
-                 {
-                     // lookup to get the context
+            int activity = select(max_fd + 1, &fds, nullptr, nullptr, &tv);
+            if (activity == -1)
+            {
+                if (errno == EINTR)
+                {
+                    std::cout << "Select interrupted by signal\n";
+                    break;
+                }
+                perror("select error");
+                break;
+            }
 
-                     RdmaContext *ctx = nullptr;
-                     for (auto &c : ctxs)
-                     {
-                         if (c.get()->comp_channel == nullptr || c.get()->comp_channel->fd != fd)
-                             continue;
-                         ctx = c.get();
-                         break; // found the context for this fd
-                     }
+            for (int fd = 0; fd <= max_fd; ++fd)
+            {
+                if (!FD_ISSET(fd, &fds))
+                    continue;
 
-                     if (ctx == nullptr)
-                         throw runtime_error("Context not found for fd in rdma_manager_listen_thread");
+                RdmaContext *ctx = nullptr;
+                for (const auto &c : ctxs)
+                {
+                    if (c->comp_channel && c->comp_channel->fd == fd)
+                    {
+                        ctx = c.get();
+                        break;
+                    }
+                }
 
-                     struct ibv_cq *ev_cq;
-                     void *ev_ctx;
-                     if (ibv_get_cq_event(ctx->comp_channel, &ev_cq, &ev_ctx))
-                     {
-                         perror("ibv_get_cq_event");
-                         continue;
-                     }
+                if (!ctx)
+                {
+                    throw std::runtime_error("Context not found for fd");
+                }
 
-                     ibv_ack_cq_events(ev_cq, 1);
+                struct ibv_cq *ev_cq = nullptr;
+                void *ev_ctx = nullptr;
+                if (ibv_get_cq_event(ctx->comp_channel, &ev_cq, &ev_ctx))
+                {
+                    perror("ibv_get_cq_event");
+                    continue;
+                }
 
-                     if (ibv_req_notify_cq(ctx->recv_cq, 0))
-                     {
-                         perror("ibv_req_notify_cq");
-                         continue;
-                     }
+                ibv_ack_cq_events(ev_cq, 1);
 
-                     struct ibv_wc wc;
-                     int num_completions = ibv_poll_cq(ctx->recv_cq, 1, &wc);
-                     if (num_completions < 0)
-                     {
-                         cerr << "Failed to poll CQ: " << strerror(errno) << endl;
-                         continue;
-                     }
+                if (ibv_req_notify_cq(ctx->recv_cq, 0))
+                {
+                    perror("ibv_req_notify_cq");
+                    continue;
+                }
 
-                     if (num_completions == 0) // it should not happen, but just in case
-                         continue;
+                struct ibv_wc wc{};
+                int num_completions = ibv_poll_cq(ctx->recv_cq, 1, &wc);
+                if (num_completions < 0)
+                {
+                    std::cerr << "Failed to poll CQ: " << strerror(errno) << std::endl;
+                    continue;
+                }
 
-                     if (wc.status != IBV_WC_SUCCESS)
-                     {
-                         cerr << "CQ error: " << ibv_wc_status_str(wc.status) << " (" << wc.status << ")" << endl;
-                         continue;
-                     }
+                if (num_completions == 0)
+                    continue;
 
-                     // repost another receive request
-                     struct ibv_sge sge;
-                     sge.addr = (uintptr_t)ctx->buffer;
-                     sge.length = sizeof(notification_t);
-                     sge.lkey = ctx->mr->lkey;
+                if (wc.status != IBV_WC_SUCCESS)
+                {
+                    std::cerr << "CQ error: " << ibv_wc_status_str(wc.status) << "\n";
+                    continue;
+                }
 
-                     struct ibv_recv_wr recv_wr;
-                     recv_wr.wr_id = 0;
-                     recv_wr.sg_list = &sge;
-                     recv_wr.num_sge = 1;
-                     recv_wr.next = NULL;
+                // Repost receive
+                ibv_sge sge{
+                    .addr = reinterpret_cast<uintptr_t>(ctx->buffer),
+                    .length = sizeof(notification_t),
+                    .lkey = ctx->mr->lkey};
 
-                     struct ibv_recv_wr *bad_wr = NULL;
-                     if (ibv_post_recv(ctx->qp, &recv_wr, &bad_wr) != 0 || bad_wr)
-                     {
-                         cerr << "Bad WR: " << (bad_wr ? bad_wr->wr_id : 0) << endl;
-                         cerr << "Error posting recv: " << strerror(errno) << endl;
-                         break;
-                     }
+                ibv_recv_wr recv_wr = {};
+                recv_wr.wr_id = 0;
+                recv_wr.sg_list = &sge;
+                recv_wr.num_sge = 1;
+                recv_wr.next = nullptr;
 
-                     rdma_parse_notification(ctx);
-                 }
-             }
-         }*/
+                ibv_recv_wr *bad_wr = nullptr;
+                if (ibv_post_recv(ctx->qp, &recv_wr, &bad_wr) != 0 || bad_wr)
+                {
+                    std::cerr << "Error posting recv: " << strerror(errno) << "\n";
+                    break;
+                }
+
+                rdma_parse_notification(ctx);
+            }
+        }
     }
 
     void RdmaMng::rdma_manager_flush_thread()
     {
         cout << "Flush thread started" << endl;
 
-        while (stop_threads == false)
+        while (stop_threads.load() == false)
         {
             auto ctxIt = ctxs.begin();
             for (; ctxIt != ctxs.end(); ++ctxIt)
             {
                 auto &ctx = *ctxIt;
-                if (ctx->is_ready == FALSE)
+                if (ctx->is_ready.load() == false)
                 {
                     // context is not ready, skip it
                     continue;
                 }
 
-                uint32_t is_flushing_thread_running = ctx->is_flush_thread_running.load();
-                if (is_flushing_thread_running == TRUE)
-                {
-                    // flush thread is already running, skip this context
-                    continue;
-                }
-
                 uint32_t msg_sent = ctx->n_msg_sent.load();
                 uint32_t counter = 0;
-                rdma_ringbuffer_t *rb = (ctx->is_server == TRUE) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
+                rdma_ringbuffer_t *rb = (ctx->is_server == true) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
 
                 while (1)
                 {
@@ -668,6 +624,8 @@ namespace rdmaMng
                 }
             }
         }
+
+        cout << "Flush thread stopped" << endl;
     }
 
     vector<int> RdmaMng::waitOnSelect(const vector<int> &fds)

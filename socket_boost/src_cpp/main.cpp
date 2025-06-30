@@ -16,7 +16,7 @@ int fun(void *ctx, void *data, size_t len);
 sk::SocketMng s;
 
 bpf::EventHandler handler = {
-    .ctx = NULL,
+    .ctx = nullptr,
     .handle_event = fun};
 bpf::BpfMng b(handler);
 
@@ -74,82 +74,19 @@ int main()
 
         r.rdma_manager_run();
 
-        printf("Waiting for messages, press Ctrl+C to exit...\n");
+        cout << "Waiting for messages, press Ctrl+C to exit..." << endl;
+        cout << "-----------------------------------------------------------" << endl;
         while (!STOP)
             pause(); // wait for signal
 
-        printf("Exiting gracefully...\n");
+        cout << "-----------------------------------------------------------" << endl;
     }
     catch (const std::exception &e)
     {
         fprintf(stderr, "Error: %s\n", e.what());
+        perror("Exception caught");
         return EXIT_FAILURE;
     }
-
-    /*int err;
-    EventHandler handler = {
-        .ctx = NULL,
-        .handle_event = fun};
-
-    err = bpf_init(&bpf_ctx, handler);
-
-    check_error(err, "");
-    printf("eBPF program setup complete\n");
-
-    // TODO: scale this
-    __u16 ports_to_set[1] = {TARGET_PORT};
-    int nport = sizeof(ports_to_set) / sizeof(ports_to_set[0]);
-
-    // const char *ip_env = getenv("REMOTE_IP");
-    const char *ip1 = "192.168.17.86";
-    const char *ip2 = "192.168.17.84";
-    __u32 ips_to_set[2];
-
-    ips_to_set[0] = inet_addr(ip1);
-    ips_to_set[1] = inet_addr(ip2);
-
-    int nip = sizeof(ips_to_set) / sizeof(ips_to_set[0]);
-
-    err = bpf_set_target_ports(&bpf_ctx, ports_to_set, nport, PROXY_PORT);
-    check_error(err, "");
-    printf("Target ports set\n");
-
-    err = bpf_set_target_ip(&bpf_ctx, ips_to_set, nip);
-    check_error(err, "");
-    printf("Target IPs set\n");
-
-    err = bpf_run(&bpf_ctx);
-    check_error(err, "");
-    printf("eBPF program attached to socket\n");
-
-    err = sk_init(&sk_ctx, PROXY_PORT, inet_addr(SERVER_IP));
-    check_error(err, "");
-    printf("Sockets setup complete\n");
-
-    err = bpf_push_sock_to_map(&bpf_ctx, sk_ctx.client_sk_fd, NUMBER_OF_SOCKETS);
-    check_error(err, "");
-    printf("Map updated\n");
-
-    // RDMA
-    err = rdma_manager_run(&rdma_ctxm, RDMA_PORT, &bpf_ctx, sk_ctx.client_sk_fd);
-
-    printf("Waiting for messages, press Ctrl+C to exit...\n");
-    while (!STOP)
-    {
-        pause(); // wait for signal
-    }
-
-    err = sk_destroy(&sk_ctx);
-    check_error(err, "");
-    printf("Socket closed\n");
-
-    err = bpf_destroy(&bpf_ctx);
-    check_error(err, "");
-    printf("Successfully detached eBPF program\n");
-
-    err = rdma_manager_destroy(&rdma_ctxm);
-    check_error(err, "");
-    printf("RDMA manager destroyed\n");*/
 
     return 0;
 }

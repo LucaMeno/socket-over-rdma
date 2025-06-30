@@ -54,7 +54,6 @@ namespace rdma
     enum class CommunicationCode : int32_t
     {
         RDMA_DATA_READY = 10,
-        EXCHANGE_REMOTE_INFO = 4,
         RDMA_CLOSE_CONTEXT = 5,
         NONE = -1
     };
@@ -122,12 +121,13 @@ namespace rdma
         char *buffer;
         uintptr_t remote_addr;
         uint32_t remote_rkey;
+        ibv_comp_channel *comp_channel;
 
         // Context id
         uint32_t remote_ip; // Remote IP
 
-        int is_server;             // TRUE if server, FALSE if client
-        std::atomic_uint is_ready; // TRUE if the context is ready
+        bool is_server;             // TRUE if server, FALSE if client
+        std::atomic<bool> is_ready; // TRUE if the context is ready
 
         std::mutex mtx_tx;               // used to wait for the context to be ready
         std::condition_variable cond_tx; // used to signal the context is ready
@@ -135,7 +135,7 @@ namespace rdma
         uint64_t last_flush_ms; // last time the buffer was flushed, used to avoid flushing too often
         std::atomic_uint is_flushing;
 
-        std::atomic_uint is_flush_thread_running; // TRUE if the flush thread is running, used to avoid multiple flush threads
+        //std::atomic_uint is_flush_thread_running; // TRUE if the flush thread is running, used to avoid multiple flush threads
 
         std::mutex mtx_commit_flush;               // used to commit the flush operation
         std::condition_variable cond_commit_flush; // used to signal the flush operation is committed
@@ -204,7 +204,7 @@ namespace rdma
         void rdma_post_write_(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, int signaled);
 
         conn_info rdmaSetupPreHs();
-        void rdmaSetupPostHs(conn_info remote);
+        void rdmaSetupPostHs(conn_info remote, conn_info local);
     };
 
 } // namespace rdma
