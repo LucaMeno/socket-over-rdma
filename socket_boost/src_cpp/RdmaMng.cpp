@@ -6,9 +6,9 @@ using namespace rdma;
 
 namespace rdmaMng
 {
-    RdmaMng::RdmaMng(uint16_t srv_port, sk::client_sk_t *proxy_sks, bpf::BpfMng &bpf) : bpf_ctx{bpf},
-                                                                                        rdma_port{srv_port},
-                                                                                        client_sks{proxy_sks}
+    RdmaMng::RdmaMng(uint16_t srv_port, vector<sk::client_sk_t> &proxy_sks, bpf::BpfMng &bpf) : bpf_ctx{bpf},
+                                                                                                rdma_port{srv_port},
+                                                                                                client_sks{proxy_sks}
     {
         stop_threads.store(false);
 
@@ -238,14 +238,14 @@ namespace rdmaMng
                         continue; // no context for this IP
                     }
 
-                    auto &ctx = *ctxIt;
+                    auto &ctx = **ctxIt;
 
                     // Wait for the context to be ready
-                    ctx->wait_for_context_ready();
+                    ctx.wait_for_context_ready();
 
                     while (1)
                     {
-                        int ret = ctx->rdma_write_msg(fd, app);
+                        int ret = ctx.rdma_write_msg(fd, app);
 
                         if (ret == 0)
                         {
@@ -275,11 +275,6 @@ namespace rdmaMng
     {
         cout << "Polling thread started" << endl;
 
-        int i;
-        rdma::rdma_ringbuffer_t *rb_local = nullptr;
-        rdma::rdma_ringbuffer_t *rb_remote = nullptr;
-
-        // TODO: remove
         unique_lock<mutex> lock(mtx_polling);
         is_polling_thread_running = false;
         while (is_polling_thread_running == false && stop_threads.load() == false)
@@ -295,11 +290,11 @@ namespace rdmaMng
 
         while (stop_threads.load() == false)
         {
-            auto &ctx = *ctxIt;
+            auto &ctx = **ctxIt;
             int ret;
             try
             {
-                ret = rdma_manager_consume_ringbuffer(ctx.get(), ctx->is_server ? ctx->ringbuffer_client : ctx->ringbuffer_server);
+                ret = rdma_manager_consume_ringbuffer(ctx, ctx.is_server ? *ctx.ringbuffer_client : *ctx.ringbuffer_server);
             }
             catch (const std::exception &e)
             {
@@ -317,24 +312,16 @@ namespace rdmaMng
 
             ctxIt++;
             if (ctxIt == ctxs.end())
-            {
                 ctxIt = ctxs.begin(); // reset the iterator to the beginning
-            }
         }
     }
 
-    int RdmaMng::rdma_manager_consume_ringbuffer(rdma::RdmaContext *ctx, rdma::rdma_ringbuffer_t *rb_remote)
+    int RdmaMng::rdma_manager_consume_ringbuffer(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb_remote)
     {
-        if (ctx == nullptr || rb_remote == nullptr)
-        {
-            cerr << "Context or remote ring buffer is nullptr - rdma_manager_consume_ringbuffer" << endl;
-            throw runtime_error("Context or remote ring buffer is nullptr - rdma_manager_consume_ringbuffer");
-        }
-
         while (1)
         {
-            uint32_t remote_w = rb_remote->remote_write_index.load(); // atomic_load(&rb_remote->remote_write_index);
-            uint32_t local_r = rb_remote->local_read_index.load();    // atomic_load(&rb_remote->local_read_index);
+            uint32_t remote_w = rb_remote.remote_write_index.load(); // atomic_load(&rb_remote->remote_write_index);
+            uint32_t local_r = rb_remote.local_read_index.load();    // atomic_load(&rb_remote->local_read_index);
 
             if (remote_w != local_r)
             {
@@ -342,11 +329,10 @@ namespace rdmaMng
                 uint32_t start_read_index = local_r;
                 uint32_t end_read_index = remote_w;
 
-                // atomic_store(&rb_remote->local_read_index, remote_w);
-                rb_remote->local_read_index.store(remote_w); // reset the local write index
+                rb_remote.local_read_index.store(remote_w); // reset the local write index
 
-                ctx->rdma_read_msg(bpf_ctx, client_sks, start_read_index, end_read_index);
-                ctx->rdma_update_remote_read_idx(rb_remote, end_read_index);
+                ctx.rdma_read_msg(bpf_ctx, client_sks, start_read_index, end_read_index);
+                ctx.rdma_update_remote_read_idx(rb_remote, end_read_index);
             }
             else
             {
@@ -355,26 +341,22 @@ namespace rdmaMng
         }
     }
 
-    void RdmaMng::rdma_manager_flush_buffer(rdma::RdmaContext *ctx, rdma::rdma_ringbuffer_t *rb)
+    void RdmaMng::rdma_manager_flush_buffer(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb)
     {
-        uint32_t start_idx = rb->local_read_index.load();
-        uint32_t end_idx = rb->local_write_index.load();
+        uint32_t start_idx = rb.local_read_index.load();
+        uint32_t end_idx = rb.local_write_index.load();
 
-        thPool->enqueue([this, ctx, rb, start_idx, end_idx]()
+        thPool->enqueue([this, &ctx, &rb, start_idx, end_idx]()
                         { flush_thread_worker(ctx, rb, start_idx, end_idx); });
 
-        // atomic_store(&rb->local_read_index, atomic_load(&rb->local_write_index)); // reset the local read index
-        rb->local_read_index.store(rb->local_write_index.load());
+        rb.local_read_index.store(rb.local_write_index.load());
 
-        ctx->last_flush_ms = ctx->get_time_ms();
+        ctx.last_flush_ms = ctx.get_time_ms();
     }
 
-    void RdmaMng::flush_thread_worker(rdma::RdmaContext *ctx, rdma::rdma_ringbuffer_t *rb, uint32_t start_idx, uint32_t end_idx)
+    void RdmaMng::flush_thread_worker(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb, uint32_t start_idx, uint32_t end_idx)
     {
-        if (ctx == nullptr || rb == nullptr)
-            throw runtime_error("Context or ring buffer is nullptr - flush_thread_worker");
-
-        ctx->rdma_flush_buffer(rb, start_idx, end_idx);
+        ctx.rdma_flush_buffer(rb, start_idx, end_idx);
     }
 
     void RdmaMng::rdma_manager_launch_background_threads()
@@ -413,40 +395,40 @@ namespace rdmaMng
         return nullptr; // Context not found
     }
 
-    void RdmaMng::rdma_manager_start_polling(rdma::RdmaContext *ctx)
+    void RdmaMng::rdma_manager_start_polling(rdma::RdmaContext &ctx)
     {
         // Try to set polling status
-        ctx->rdma_set_polling_status(TRUE);
+        ctx.rdma_set_polling_status(TRUE);
 
         // wake up the polling thread
         unique_lock<mutex> lock(mtx_polling);
         is_polling_thread_running = true;
-        ctx->time_start_polling = ctx->get_time_ms();
-        ctx->loop_with_no_msg = 0;
+        ctx.time_start_polling = ctx.get_time_ms();
+        ctx.loop_with_no_msg = 0;
         cond_polling.notify_all();
     }
 
-    void RdmaMng::rdma_manager_stop_polling(rdma::RdmaContext *ctx)
+    void RdmaMng::rdma_manager_stop_polling(rdma::RdmaContext &ctx)
     {
         // Try to set polling status
-        ctx->rdma_set_polling_status(FALSE);
+        ctx.rdma_set_polling_status(FALSE);
     }
 
-    void RdmaMng::rdma_parse_notification(rdma::RdmaContext *ctx)
+    void RdmaMng::rdma_parse_notification(rdma::RdmaContext &ctx)
     {
-        rdma::notification_t *notification = (rdma::notification_t *)ctx->buffer;
+        rdma::notification_t *notification = (rdma::notification_t *)ctx.buffer;
         rdma::CommunicationCode code; // enum rdma_communication_code
-        if (ctx->is_server == true)
+        if (ctx.is_server == true)
         {
             code = notification->from_client.code;
             notification->from_client.code = rdma::CommunicationCode::NONE; // reset the code
-            cout << "S: Received: " << ctx->get_op_name(code) << " (" << static_cast<int>(code) << ")" << endl;
+            cout << "S: Received: " << ctx.get_op_name(code) << " (" << static_cast<int>(code) << ")" << endl;
         }
         else // client
         {
             code = notification->from_server.code;
             notification->from_server.code = rdma::CommunicationCode::NONE; // reset the code
-            cout << "C: Received: " << ctx->get_op_name(code) << " (" << static_cast<int>(code) << ")" << endl;
+            cout << "C: Received: " << ctx.get_op_name(code) << " (" << static_cast<int>(code) << ")" << endl;
         }
 
         switch (code)
@@ -579,7 +561,7 @@ namespace rdmaMng
                     break;
                 }
 
-                rdma_parse_notification(ctx);
+                rdma_parse_notification(*ctx);
             }
         }
     }
@@ -593,29 +575,29 @@ namespace rdmaMng
             auto ctxIt = ctxs.begin();
             for (; ctxIt != ctxs.end(); ++ctxIt)
             {
-                auto &ctx = *ctxIt;
-                if (ctx->is_ready.load() == false)
+                auto &ctx = **ctxIt;
+                if (ctx.is_ready.load() == false)
                 {
                     // context is not ready, skip it
                     continue;
                 }
 
-                uint32_t msg_sent = ctx->n_msg_sent.load();
+                uint32_t msg_sent = ctx.n_msg_sent.load();
                 uint32_t counter = 0;
-                rdma_ringbuffer_t *rb = (ctx->is_server == true) ? ctx->ringbuffer_server : ctx->ringbuffer_client;
+                rdma_ringbuffer_t &rb = *((ctx.is_server == true) ? ctx.ringbuffer_server : ctx.ringbuffer_client);
 
                 while (1)
                 {
-                    uint64_t now = ctx->get_time_ms();
+                    uint64_t now = ctx.get_time_ms();
 
-                    if (msg_sent >= ctx->flush_threshold ||
-                        ((now - ctx->last_flush_ms >= FLUSH_INTERVAL_MS) && msg_sent > 0))
+                    if (msg_sent >= ctx.flush_threshold ||
+                        ((now - ctx.last_flush_ms >= FLUSH_INTERVAL_MS) && msg_sent > 0))
                     {
-                        ctx->n_msg_sent.store(0); // reset the atomic counter
-                        rdma_manager_flush_buffer(&(*ctx), rb);
+                        ctx.n_msg_sent.store(0); // reset the atomic counter
+                        rdma_manager_flush_buffer(ctx, rb);
                     }
 
-                    msg_sent = ctx->n_msg_sent.load(); // reload the atomic counter
+                    msg_sent = ctx.n_msg_sent.load(); // reload the atomic counter
                     if (msg_sent == 0)
                     {
                         // no messages to flush, break the loop

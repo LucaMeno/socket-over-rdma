@@ -364,9 +364,9 @@ namespace rdma
 
     // SETUP
 
-    void RdmaContext::init()
+    RdmaContext::RdmaContext()
     {
-        atomic_store(&is_ready, FALSE);
+        is_ready.store(false);
         remote_ip = 0;
         buffer = nullptr;
         pd = nullptr;
@@ -382,20 +382,18 @@ namespace rdma
         last_flush_ms = 0;
         is_flushing = FALSE;
 
-        atomic_store(&flush_threshold, THRESHOLD_NOT_AUTOSCALER);
+        flush_threshold.store(THRESHOLD_NOT_AUTOSCALER);
 
-        atomic_store(&n_msg_sent, 0);
+        n_msg_sent.store(0);
         flush_threshold_set_time = 0;
 
         time_last_recv = 0;
         n_recv_msg = 0;
 
         fulsh_index ^= fulsh_index; // reset the flush index
-
-        // is_flush_thread_running.store(FALSE);
     }
 
-    void RdmaContext::destroy()
+    RdmaContext::~RdmaContext()
     {
         if (send_cq)
             ibv_destroy_cq(send_cq);
@@ -498,25 +496,22 @@ namespace rdma
             rdma_poll_cq_send();
     }
 
-    void RdmaContext::rdma_flush_buffer(rdma_ringbuffer_t *ringbuffer, uint32_t start_idx, uint32_t end_idx)
+    void RdmaContext::rdma_flush_buffer(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx)
     {
-        if (!ringbuffer)
-            throw runtime_error("ringbuffer is nullptr - rdma_flush_buffer");
-
         uint32_t w_idx = RING_IDX(end_idx);   // local write index
         uint32_t r_idx = RING_IDX(start_idx); // remote read index
 
         if (r_idx > w_idx)
         {
             // wrap-around
-            uintptr_t batch_start = (uintptr_t)&ringbuffer->data[r_idx];
+            uintptr_t batch_start = (uintptr_t)&ringbuffer.data[r_idx];
             size_t batch_size = (MAX_MSG_BUFFER - r_idx) * sizeof(rdma_msg_t);
 
             uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
 
             rdma_post_write_(remote_addr_2, batch_start, batch_size, TRUE);
 
-            batch_start = (uintptr_t)&ringbuffer->data[0];
+            batch_start = (uintptr_t)&ringbuffer.data[0];
             batch_size = w_idx * sizeof(rdma_msg_t);
 
             remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
@@ -526,7 +521,7 @@ namespace rdma
         else
         {
             // normal case
-            uintptr_t batch_start = (uintptr_t)&ringbuffer->data[r_idx];
+            uintptr_t batch_start = (uintptr_t)&ringbuffer.data[r_idx];
             size_t batch_size = (w_idx - r_idx) * sizeof(rdma_msg_t);
 
             uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
@@ -535,7 +530,7 @@ namespace rdma
         }
 
         // calculate the offset
-        size_t write_index_offset = (size_t)((char *)ringbuffer - (char *)buffer) +
+        size_t write_index_offset = (size_t)(reinterpret_cast<const char *>(&ringbuffer) - (char *)buffer) +
                                     offsetof(rdma_ringbuffer_t, remote_write_index);
 
         uintptr_t remote_addr_write_index = remote_addr + write_index_offset;
@@ -546,14 +541,14 @@ namespace rdma
         std::unique_lock<std::mutex> lock(mtx_commit_flush);
         // Wait until the previous flush is committed
         cond_commit_flush.wait(lock, [&]()
-                               { return atomic_load(&ringbuffer->remote_write_index) == start_idx; });
+                               { return ringbuffer.remote_write_index.load() == start_idx; });
 
         // Update the write index
-        atomic_store(&ringbuffer->remote_write_index, end_idx);
+        ringbuffer.remote_write_index.store(end_idx);
 
         rdma_post_write_(remote_addr_write_index,
                          (uintptr_t)(buffer + write_index_offset),
-                         sizeof(ringbuffer->remote_write_index), TRUE);
+                         sizeof(ringbuffer.remote_write_index), TRUE);
 
         auto flags = peer_rb->flags.flags.load(std::memory_order_acquire);
 
@@ -578,8 +573,8 @@ namespace rdma
             int c = 0;
             while (1)
             {
-                start_w_index = atomic_load(&ringbuffer->local_write_index);
-                end_w_index = atomic_load(&ringbuffer->remote_read_index);
+                start_w_index = ringbuffer->local_write_index.load();
+                end_w_index = ringbuffer->remote_write_index.load();
 
                 uint32_t used = start_w_index - end_w_index; // wrap-around safe
                 available_space = MAX_MSG_BUFFER - used - 1;
@@ -614,19 +609,19 @@ namespace rdma
             msg->original_sk_id = original_socket;
             msg->number_of_slots = 1;
 
-            atomic_fetch_add(&n_msg_sent, 1);
-            atomic_fetch_add(&ringbuffer->local_write_index, 1);
+            n_msg_sent.fetch_add(1);
+            ringbuffer->local_write_index.fetch_add(1);
         }
 
         return 1;
     }
 
-    void RdmaContext::rdma_parse_msg(bpf::BpfMng &bpf_ctx, sk::client_sk_t *client_sks, rdma_msg_t *msg)
+    void RdmaContext::rdma_parse_msg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg)
     {
         // retrive the proxy_fd
         int fd;
 
-        auto it = sockid_to_fd_map.find(msg->original_sk_id);
+        auto it = sockid_to_fd_map.find(msg.original_sk_id);
         if (it != sockid_to_fd_map.end())
         {
             fd = it->second;
@@ -636,10 +631,10 @@ namespace rdma
             // loockup the original socket
             // swap the ip and port
             struct sock_id swapped;
-            swapped.dip = msg->original_sk_id.sip;
-            swapped.sip = msg->original_sk_id.dip;
-            swapped.dport = msg->original_sk_id.sport;
-            swapped.sport = msg->original_sk_id.dport;
+            swapped.dip = msg.original_sk_id.sip;
+            swapped.sip = msg.original_sk_id.dip;
+            swapped.dport = msg.original_sk_id.sport;
+            swapped.sport = msg.original_sk_id.dport;
 
             // find the corresponding proxy socket
             struct sock_id proxy_sk_id = bpf_ctx.get_proxy_sk_from_app_sk(swapped);
@@ -655,11 +650,11 @@ namespace rdma
                 {
                     // update the map with the new socket
                     printf("New entry: %u:%u - %u:%u -> %d\n",
-                           msg->original_sk_id.sip, msg->original_sk_id.sport,
-                           msg->original_sk_id.dip, msg->original_sk_id.dport,
+                           msg.original_sk_id.sip, msg.original_sk_id.sport,
+                           msg.original_sk_id.dip, msg.original_sk_id.dport,
                            client_sks[i].fd);
                     // update the map with the new socket
-                    sockid_to_fd_map[msg->original_sk_id] = client_sks[i].fd;
+                    sockid_to_fd_map[msg.original_sk_id] = client_sks[i].fd;
                     fd = client_sks[i].fd;
                     break;
                 }
@@ -667,34 +662,36 @@ namespace rdma
 
             if (i == NUMBER_OF_SOCKETS)
             {
-                printf("Socket not found in the list: %u:%u -> %u:%u\n",
-                       msg->original_sk_id.sip, msg->original_sk_id.sport,
-                       msg->original_sk_id.dip, msg->original_sk_id.dport);
+                cout << "Socket not found in the list: "
+                     << msg.original_sk_id.sip << ":" << msg.original_sk_id.sport
+                     << " -> " << msg.original_sk_id.dip << ":" << msg.original_sk_id.dport
+                     << endl;
+                throw runtime_error("Socket not found in the list - rdma_parse_msg");
             }
         }
 
-        int err = send(fd, msg->msg, msg->msg_size, 0);
-        if (err != (int)msg->msg_size)
+        int err = send(fd, msg.msg, msg.msg_size, 0);
+        if (err != (int)msg.msg_size)
             throw runtime_error("Failed to send message - rdma_parse_msg");
     }
 
-    void RdmaContext::rdma_update_remote_read_idx(rdma_ringbuffer_t *ringbuffer, uint32_t r_idx)
+    void RdmaContext::rdma_update_remote_read_idx(rdma_ringbuffer_t &ringbuffer, uint32_t r_idx)
     {
         // COMMIT the read index
-        atomic_store(&ringbuffer->remote_read_index, r_idx);
+        ringbuffer.remote_read_index.store(r_idx);
 
-        size_t read_index_offset = (size_t)((char *)ringbuffer - (char *)buffer) +
+        size_t read_index_offset = (size_t)(reinterpret_cast<const char *>(&ringbuffer) - (char *)buffer) +
                                    offsetof(rdma_ringbuffer_t, remote_read_index);
 
         uintptr_t remote_addr_read_index = remote_addr + read_index_offset;
 
         rdma_post_write_(remote_addr_read_index,
                          (uintptr_t)(buffer + read_index_offset),
-                         sizeof(ringbuffer->remote_read_index),
+                         sizeof(ringbuffer.remote_read_index),
                          TRUE);
     }
 
-    void RdmaContext::rdma_read_msg(bpf::BpfMng &bpf_ctx, sk::client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index)
+    void RdmaContext::rdma_read_msg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index)
     {
         rdma_ringbuffer_t *ringbuffer = is_server ? ringbuffer_client : ringbuffer_server;
 
@@ -717,7 +714,7 @@ namespace rdma
         {
             int idx = RING_IDX(start_read_index + i);
             rdma_msg_t *msg = &ringbuffer->data[idx];
-            rdma_parse_msg(bpf_ctx, client_sks, msg);
+            rdma_parse_msg(bpf_ctx, client_sks, *msg);
             i += msg->number_of_slots;
         }
     }
@@ -727,7 +724,7 @@ namespace rdma
     void RdmaContext::rdma_set_polling_status(uint32_t is_polling)
     {
         rdma_ringbuffer_t *ringbuffer = (is_server == true) ? ringbuffer_server : ringbuffer_client;
-        unsigned int f = atomic_load(&ringbuffer->flags.flags);
+        unsigned int f = ringbuffer->flags.flags.load();
 
         // is polling?
         if (f & static_cast<unsigned int>(RingBufferFlag::RING_BUFFER_POLLING) == is_polling)
@@ -809,7 +806,7 @@ namespace rdma
     {
         std::unique_lock<std::mutex> lock(mtx_tx);
         cond_tx.wait(lock, [&]()
-                     { return atomic_load(&is_ready) == TRUE; });
+                     { return is_ready.load() == true; });
     }
 
 }

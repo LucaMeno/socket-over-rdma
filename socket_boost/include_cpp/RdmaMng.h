@@ -29,7 +29,7 @@ namespace rdmaMng
         const int FLUSH_INTERVAL_MS = 100;              // ms
 
     public:
-        RdmaMng(uint16_t srv_port, sk::client_sk_t *proxy_sks, bpf::BpfMng &bpf);
+        RdmaMng(uint16_t srv_port, std::vector<sk::client_sk_t> &proxy_sks, bpf::BpfMng &bpf);
 
         ~RdmaMng();
 
@@ -44,9 +44,8 @@ namespace rdmaMng
         std::vector<std::unique_ptr<rdma::RdmaContext>> ctxs; // vector of active RDMA contexts
         uint16_t rdma_port;                                   // port used for RDMA
         std::unique_ptr<ThreadPool> thPool;
-        struct rdma_cm_id *listener;          // Listener ID for incoming connections
-        struct rdma_event_channel *server_ec; // Event channel
-        sk::client_sk_t *client_sks;          // list of client sockets
+        std::vector<sk::client_sk_t> &client_sks;
+
         bpf::BpfMng &bpf_ctx;
 
         std::thread notification_thread;         // thread for the notification
@@ -68,15 +67,15 @@ namespace rdmaMng
         void rdma_manager_flush_thread();
         void rdma_manager_writer_thread(std::vector<sk::client_sk_t> sk_to_monitor);
 
-        void flush_thread_worker(rdma::RdmaContext *ctx, rdma::rdma_ringbuffer_t *rb, uint32_t start_idx, uint32_t end_idx);
+        void flush_thread_worker(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb, uint32_t start_idx, uint32_t end_idx);
 
         int rdma_manager_get_free_context_id();
 
-        void rdma_manager_start_polling(rdma::RdmaContext *ctx);
-        void rdma_manager_stop_polling(rdma::RdmaContext *ctx);
-        void rdma_parse_notification(rdma::RdmaContext *ctx);
-        int rdma_manager_consume_ringbuffer(rdma::RdmaContext *ctx, rdma::rdma_ringbuffer_t *rb_remote);
-        void rdma_manager_flush_buffer(rdma::RdmaContext *ctx, rdma::rdma_ringbuffer_t *rb);
+        void rdma_manager_start_polling(rdma::RdmaContext &ctx);
+        void rdma_manager_stop_polling(rdma::RdmaContext &ctx);
+        void rdma_parse_notification(rdma::RdmaContext &ctx);
+        int rdma_manager_consume_ringbuffer(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb_remote);
+        void rdma_manager_flush_buffer(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb);
 
         rdma::RdmaContext *rdma_manager_get_context_by_ip(uint32_t remote_ip);
 

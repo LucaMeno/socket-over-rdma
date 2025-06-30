@@ -71,7 +71,7 @@ namespace rdma
 
     typedef struct
     {
-        std::atomic_uint flags;
+        std::atomic<uint32_t> flags;
     } rdma_flag_t;
 
     enum class RingBufferFlag : int32_t
@@ -93,10 +93,10 @@ namespace rdma
     typedef struct
     {
         rdma_flag_t flags;
-        std::atomic_uint remote_write_index;
-        std::atomic_uint remote_read_index;
-        std::atomic_uint local_write_index;
-        std::atomic_uint local_read_index;
+        std::atomic<uint32_t> remote_write_index;
+        std::atomic<uint32_t> remote_read_index;
+        std::atomic<uint32_t> local_write_index;
+        std::atomic<uint32_t> local_read_index;
         rdma_msg_t data[MAX_MSG_BUFFER];
     } rdma_ringbuffer_t;
 
@@ -133,15 +133,13 @@ namespace rdma
         std::condition_variable cond_tx; // used to signal the context is ready
 
         uint64_t last_flush_ms; // last time the buffer was flushed, used to avoid flushing too often
-        std::atomic_uint is_flushing;
-
-        //std::atomic_uint is_flush_thread_running; // TRUE if the flush thread is running, used to avoid multiple flush threads
+        std::atomic<uint32_t> is_flushing;
 
         std::mutex mtx_commit_flush;               // used to commit the flush operation
         std::condition_variable cond_commit_flush; // used to signal the flush operation is committed
 
-        std::atomic_uint n_msg_sent; // counter for the number of messages sent, used to determinate the threshold for flushing
-        std::atomic_uint flush_threshold;
+        std::atomic<uint32_t> n_msg_sent; // counter for the number of messages sent, used to determinate the threshold for flushing
+        std::atomic<uint32_t> flush_threshold;
         uint64_t flush_threshold_set_time; // time when the flush threshold was set, used to determine if we should change the flush threshold
         uint32_t fulsh_index;
         std::mutex mtx;
@@ -159,29 +157,19 @@ namespace rdma
 
         // CLIENT - SERVER
 
-        RdmaContext()
-        {
-            init();
-        }
-        ~RdmaContext()
-        {
-            destroy();
-        }
+        RdmaContext();
+        ~RdmaContext();
 
         serverConnection_t serverSetup();
         void serverHandleNewClient(serverConnection_t &sc);
         void clientConnect(uint32_t server_ip, uint16_t server_port);
 
-        // SETUP
-        void init();
-        void destroy();
-
         // COMMUNICATION
         int rdma_write_msg(int src_fd, struct sock_id original_socket);
-        void rdma_read_msg(bpf::BpfMng &bpf_ctx, sk::client_sk_t *client_sks, uint32_t start_read_index, uint32_t end_read_index);
-        void rdma_flush_buffer(rdma_ringbuffer_t *ringbuffer, uint32_t start_idx, uint32_t end_idx);
+        void rdma_read_msg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index);
+        void rdma_flush_buffer(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx);
         void rdma_send_data_ready();
-        void rdma_update_remote_read_idx(rdma_ringbuffer_t *ringbuffer, uint32_t r_idx);
+        void rdma_update_remote_read_idx(rdma_ringbuffer_t &ringbuffer, uint32_t r_idx);
 
         // POLLING
         void rdma_set_polling_status(uint32_t is_polling);
@@ -200,7 +188,7 @@ namespace rdma
 
         void rdma_send_notification(CommunicationCode code);
         void rdma_poll_cq_send();
-        void rdma_parse_msg(bpf::BpfMng &bpf_ctx, sk::client_sk_t *client_sks, rdma_msg_t *msg);
+        void rdma_parse_msg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg);
         void rdma_post_write_(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, int signaled);
 
         conn_info rdmaSetupPreHs();

@@ -13,14 +13,11 @@ using namespace std;
 void handle_signal(int signal);
 int fun(void *ctx, void *data, size_t len);
 
-sk::SocketMng s;
+sk::SocketMng* s = nullptr;
 
-bpf::EventHandler handler = {
-    .ctx = nullptr,
-    .handle_event = fun};
-bpf::BpfMng b(handler);
+bpf::BpfMng *b = nullptr;
 
-rdmaMng::RdmaMng r(RDMA_PORT, s.client_sk_fd.data(), b);
+rdmaMng::RdmaMng *r = nullptr;
 
 int fun(void *ctx, void *data, size_t len)
 {
@@ -40,7 +37,7 @@ int fun(void *ctx, void *data, size_t len)
     if (user_data->sockops_op == BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB)
     {
         int ret;
-        int proxy_fd = s.get_proxy_fd_from_sockid(user_data->association.proxy);
+        int proxy_fd = s->get_proxy_fd_from_sockid(user_data->association.proxy);
 
         if (proxy_fd < 0)
         {
@@ -51,7 +48,7 @@ int fun(void *ctx, void *data, size_t len)
         cout << "Proxy fd: " << proxy_fd << endl;
         cout << "App socket: " << user_data->association.app.sip << ":" << user_data->association.app.sport << endl;
 
-        r.rdma_manager_connect(user_data->association.app, proxy_fd);
+        r->rdma_manager_connect(user_data->association.app, proxy_fd);
     }
 
     return 0;
@@ -64,15 +61,24 @@ int main()
         signal(SIGINT, handle_signal);
         signal(SIGTSTP, handle_signal);
 
+        s = new sk::SocketMng();
+
+        bpf::EventHandler handler = {
+            .ctx = nullptr,
+            .handle_event = fun};
+        b = new bpf::BpfMng(handler);
+
+        r = new rdmaMng::RdmaMng(PROXY_PORT, s->client_sk_fd, *b);
+
         vector<uint16_t> ports_to_set = {TARGET_PORT};
-        b.set_target_ports(ports_to_set, PROXY_PORT);
-        b.run();
+        b->set_target_ports(ports_to_set, PROXY_PORT);
+        b->run();
 
-        s.init(PROXY_PORT, inet_addr(SERVER_IP));
+        s->init(PROXY_PORT, inet_addr(SERVER_IP));
 
-        b.push_sock_to_map(s.client_sk_fd);
+        b->push_sock_to_map(s->client_sk_fd);
 
-        r.rdma_manager_run();
+        r->rdma_manager_run();
 
         cout << "Waiting for messages, press Ctrl+C to exit..." << endl;
         cout << "-----------------------------------------------------------" << endl;

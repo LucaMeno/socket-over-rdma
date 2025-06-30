@@ -12,7 +12,7 @@
 #define AF_INET6 10
 
 //#define EBPF_DEBUG_SOCKET
-#define EBPF_DEBUG_MSG
+//#define EBPF_DEBUG_MSG
 
 struct
 {
