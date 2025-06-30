@@ -4,8 +4,13 @@ using namespace std;
 
 namespace sk
 {
-    void SocketMng::init(uint16_t port, uint32_t ip)
+    SocketMng::SocketMng(uint16_t port, uint32_t ip)
     {
+        client_sk_fd.resize(NUMBER_OF_SOCKETS);
+        server_sk_fd = -1;
+        server_port = 0;
+        server_ip = 0;
+
         server_port = port;
         server_ip = ip;
 
@@ -53,10 +58,10 @@ namespace sk
             {
                 throw std::runtime_error("Failed to accept connection");
             }
-            set_socket_nonblocking(tmp_fd);
+            setSocketNonblocking(tmp_fd);
         }
 
-        set_socket_nonblocking(server_sk_fd);
+        setSocketNonblocking(server_sk_fd);
 
         for (auto &thread : client_threads)
         {
@@ -66,7 +71,7 @@ namespace sk
         std::cout << "All clients connected (" << NUMBER_OF_SOCKETS << ")\n";
     }
 
-    void SocketMng::destroy()
+    SocketMng::~SocketMng()
     {
         std::cout << "Destroying SocketMng...\n";
 
@@ -88,7 +93,7 @@ namespace sk
             close(server_sk_fd);
     }
 
-    void SocketMng::set_socket_nonblocking(int sockfd)
+    void SocketMng::setSocketNonblocking(int sockfd)
     {
         int flags = fcntl(sockfd, F_GETFL, 0);
         if (flags < 0)
@@ -135,14 +140,14 @@ namespace sk
         client_sk_fd[client_id].sk_id.dip = server_ip;
         client_sk_fd[client_id].sk_id.dport = server_port;
 
-        set_socket_nonblocking(client_fd);
+        setSocketNonblocking(client_fd);
 
         unique_lock<std::mutex> lock(mutex);
         cond_var.wait(lock, [this]()
                       { return shared == 1; });
     }
 
-    int SocketMng::get_proxy_fd_from_sockid(struct sock_id sk_id)
+    int SocketMng::getProxyFdFromSockid(struct sock_id sk_id)
     {
         for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
         {

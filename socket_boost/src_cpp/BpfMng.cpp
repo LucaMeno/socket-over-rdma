@@ -5,7 +5,7 @@ using namespace std;
 
 namespace bpf
 {
-    BpfMng::BpfMng(EventHandler event_handler)
+    BpfMng::BpfMng(EventHandler event_handler, const std::vector<uint16_t> &target_ports_to_set, uint16_t proxy_port, const std::vector<sk::client_sk_t> &client_sks)
     {
         // set the event handler
         new_sk_event_handler.ctx = event_handler.ctx;
@@ -117,6 +117,9 @@ namespace bpf
         prog_tcp_destroy_sock = bpf_object__find_program_by_name(obj, "tcp_destroy_sock_prog");
         if (!prog_tcp_destroy_sock)
             throw runtime_error("Failed to find tcp_destroy_sock_prog");
+
+        setTargetPort(target_ports_to_set, proxy_port);
+        pushSockToMap(client_sks);
     }
 
     void BpfMng::run()
@@ -139,13 +142,13 @@ namespace bpf
             throw runtime_error("Failed to attach tcp_destroy_sock_prog to tracepoint");
 
         // create a thread to poll the ring buffer
-        thread t = thread(&BpfMng::thread_poll_rb, this);
+        thread t = thread(&BpfMng::threadPollRb, this);
         t.detach();
 
         cout << "BPF programs attached successfully." << endl;
     }
 
-    void BpfMng::thread_poll_rb()
+    void BpfMng::threadPollRb()
     {
         // create a ring buffer to poll events
         rb = ring_buffer__new(
@@ -207,14 +210,14 @@ namespace bpf
         }
 
         // Close all file descriptors
-        wrap_close(intercepted_sk_fd);
-        wrap_close(free_sk_fd);
-        wrap_close(socket_association_fd);
-        wrap_close(target_ports_fd);
-        wrap_close(cgroup_fd);
-        wrap_close(prog_fd_sockops);
-        wrap_close(prog_fd_sk_msg);
-        wrap_close(ring_buffer_fd);
+        wrapClose(intercepted_sk_fd);
+        wrapClose(free_sk_fd);
+        wrapClose(socket_association_fd);
+        wrapClose(target_ports_fd);
+        wrapClose(cgroup_fd);
+        wrapClose(prog_fd_sockops);
+        wrapClose(prog_fd_sk_msg);
+        wrapClose(ring_buffer_fd);
         ring_buffer__free(rb);
 
         // Destroy BPF object
@@ -223,7 +226,7 @@ namespace bpf
         cout << "BPF resources cleaned up successfully." << endl;
     }
 
-    void BpfMng::set_target_ports(const vector<uint16_t> &target_ports, uint16_t server_port)
+    void BpfMng::setTargetPort(const vector<uint16_t> &target_ports, uint16_t server_port)
     {
         int val = 1;
         int err = 0;
@@ -242,7 +245,7 @@ namespace bpf
             throw runtime_error("Failed to update server_port map");
     }
 
-    void BpfMng::set_target_ip(const std::vector<uint32_t> &target_ip)
+    void BpfMng::setTargetIp(const std::vector<uint32_t> &target_ip)
     {
         int val = 1;
         int err = 0;
@@ -255,7 +258,7 @@ namespace bpf
         }
     }
 
-    void BpfMng::push_sock_to_map(const std::vector<sk::client_sk_t> &client_sks)
+    void BpfMng::pushSockToMap(const std::vector<sk::client_sk_t> &client_sks)
     {
         int err = 0;
         for (auto &client_sk : client_sks)
@@ -272,7 +275,7 @@ namespace bpf
         }
     }
 
-    struct sock_id BpfMng::get_proxy_sk_from_app_sk(struct sock_id app_sk)
+    struct sock_id BpfMng::getProxySkFromAppSk(struct sock_id app_sk)
     {
         struct association_t app = {0};
         struct association_t proxy = {0};
@@ -284,7 +287,7 @@ namespace bpf
         return proxy.proxy;
     }
 
-    struct sock_id BpfMng::get_app_sk_from_proxy_fd(const std::vector<sk::client_sk_t> &client_sks, int target_fd)
+    struct sock_id BpfMng::getAppSkFromProxyFd(const std::vector<sk::client_sk_t> &client_sks, int target_fd)
     {
         struct sock_id app_sk = {0};
 
@@ -314,7 +317,7 @@ namespace bpf
         return sk_assoc_v.app;
     }
 
-    struct sock_id BpfMng::get_app_sk_from_proxy_sk(struct sock_id proxy_sk)
+    struct sock_id BpfMng::getAppSkFromProxySk(struct sock_id proxy_sk)
     {
         struct association_t app = {0};
         struct association_t proxy = {0};
@@ -329,21 +332,14 @@ namespace bpf
         return app.app;
     }
 
-    int BpfMng::get_proxy_fd_from_app_sk(struct sock_id app_sk)
+    int BpfMng::getProxyFdFromAppSk(struct sock_id app_sk)
     {
         int fd = -1;
         int err = bpf_map_lookup_elem(sock_proxyfd_association_fd, &app_sk, &fd);
         return fd;
     }
 
-    void BpfMng::add_app_sk_to_proxy_fd(struct sock_id app_sk, int proxy_fd)
-    {
-        int err = bpf_map_update_elem(sock_proxyfd_association_fd, &app_sk, &proxy_fd, BPF_ANY);
-        if (err != 0)
-            throw runtime_error("Failed to add app_sk to proxy_fd association map");
-    }
-
-    void BpfMng::wrap_close(int fd)
+    void BpfMng::wrapClose(int fd)
     {
         if (fd >= 0)
             close(fd);

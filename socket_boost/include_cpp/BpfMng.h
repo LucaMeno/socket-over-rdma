@@ -51,26 +51,25 @@ namespace bpf
         int stop_threads;
         EventHandler new_sk_event_handler;
 
-        BpfMng(EventHandler event_handler);
+        BpfMng(EventHandler event_handler, const std::vector<uint16_t> &target_ports_to_set, uint16_t proxy_port, const std::vector<sk::client_sk_t> &client_sks);
         ~BpfMng();
 
         void run();
-        void set_target_ports(const std::vector<uint16_t> &target_ports, uint16_t server_port);
-        void set_target_ip(const std::vector<uint32_t> &target_ip);
-        void push_sock_to_map(const std::vector<sk::client_sk_t> &client_sks);
 
-        struct sock_id get_proxy_sk_from_app_sk(struct sock_id app_sk);
-        struct sock_id get_app_sk_from_proxy_fd(const std::vector<sk::client_sk_t> &client_sks, int target_fd);
-        struct sock_id get_app_sk_from_proxy_sk(struct sock_id proxy_sk);
-        int get_proxy_fd_from_app_sk(struct sock_id app_sk);
-        void add_app_sk_to_proxy_fd(struct sock_id app_sk, int proxy_fd);
+        struct sock_id getProxySkFromAppSk(struct sock_id app_sk);
+        struct sock_id getAppSkFromProxyFd(const std::vector<sk::client_sk_t> &client_sks, int target_fd);
+        struct sock_id getAppSkFromProxySk(struct sock_id proxy_sk);
+        int getProxyFdFromAppSk(struct sock_id app_sk);
 
     private:
         const char *CGROUP_PATH = "/sys/fs/cgroup";
         const char *PATH_TO_BPF_OBJ_FILE = "obj/scap.bpf.o";
         const int POOL_RB_INTERVAL = 100; // milliseconds
 
-        void thread_poll_rb();
-        void wrap_close(int fd);
+        void threadPollRb();
+        void wrapClose(int fd);
+        void setTargetPort(const std::vector<uint16_t> &target_ports, uint16_t server_port);
+        void setTargetIp(const std::vector<uint32_t> &target_ip);
+        void pushSockToMap(const std::vector<sk::client_sk_t> &client_sks);
     };
 } // namespace bpf

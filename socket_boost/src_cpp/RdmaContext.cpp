@@ -628,7 +628,7 @@ namespace rdma
             swapped.sport = msg.original_sk_id.dport;
 
             // find the corresponding proxy socket
-            struct sock_id proxy_sk_id = bpf_ctx.get_proxy_sk_from_app_sk(swapped);
+            struct sock_id proxy_sk_id = bpf_ctx.getProxySkFromAppSk(swapped);
 
             // find the original socket in the lists
             int i = 0;

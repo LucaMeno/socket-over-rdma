@@ -29,25 +29,13 @@ namespace sk
     public:
         std::vector<client_sk_t> client_sk_fd;
         int server_sk_fd;
-        __u16 server_port;
-        __u32 server_ip;
+        uint16_t server_port;
+        uint32_t server_ip;
 
-        SocketMng()
-        {
-            client_sk_fd.resize(NUMBER_OF_SOCKETS);
-            server_sk_fd = -1;
-            server_port = 0;
-            server_ip = 0;
-        }
+        SocketMng(uint16_t port, uint32_t ip);
+        ~SocketMng();
 
-        ~SocketMng()
-        {
-            destroy();
-        }
-
-        void init(uint16_t port, uint32_t ip);
-        void destroy();
-        int get_proxy_fd_from_sockid(struct sock_id sk_id);
+        int getProxyFdFromSockid(struct sock_id sk_id);
 
     private:
         int shared = 0;
@@ -55,7 +43,7 @@ namespace sk
         std::condition_variable cond_var;
         std::vector<std::thread> client_threads;
 
-        void set_socket_nonblocking(int sockfd);
+        void setSocketNonblocking(int sockfd);
         void clientThread(int client_id);
     };
 

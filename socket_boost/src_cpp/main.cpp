@@ -5,7 +5,6 @@
 #include <BpfMng.h>
 #include "RdmaMng.h"
 
-constexpr int MAX_NUMBER_OF_RDMA_CONN = NUMBER_OF_SOCKETS;
 int STOP = false;
 
 using namespace std;
@@ -13,7 +12,7 @@ using namespace std;
 void handle_signal(int signal);
 int fun(void *ctx, void *data, size_t len);
 
-sk::SocketMng* s = nullptr;
+sk::SocketMng *s = nullptr;
 bpf::BpfMng *b = nullptr;
 rdmaMng::RdmaMng *r = nullptr;
 
@@ -35,12 +34,14 @@ int fun(void *ctx, void *data, size_t len)
     if (user_data->sockops_op == BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB)
     {
         int ret;
-        int proxy_fd = s->get_proxy_fd_from_sockid(user_data->association.proxy);
+        int proxy_fd = s->getProxyFdFromSockid(user_data->association.proxy);
 
         if (proxy_fd < 0)
         {
-            printf("Failed to get proxy fd from sockid\n");
-            return -1;
+            cerr << "Error: Proxy fd not found for association: "
+                 << user_data->association.proxy.sip << ":"
+                 << user_data->association.proxy.sport << endl;
+            throw std::runtime_error("Proxy fd not found");
         }
 
         cout << "Proxy fd: " << proxy_fd << endl;
@@ -59,22 +60,16 @@ int main()
         signal(SIGINT, handle_signal);
         signal(SIGTSTP, handle_signal);
 
-        s = new sk::SocketMng();
+        s = new sk::SocketMng(PROXY_PORT, inet_addr(SERVER_IP));
 
         bpf::EventHandler handler = {
             .ctx = nullptr,
             .handle_event = fun};
-        b = new bpf::BpfMng(handler);
+        b = new bpf::BpfMng(handler, {TARGET_PORT}, PROXY_PORT, s->client_sk_fd);
 
         r = new rdmaMng::RdmaMng(PROXY_PORT, s->client_sk_fd, *b);
 
-        vector<uint16_t> ports_to_set = {TARGET_PORT};
-        b->set_target_ports(ports_to_set, PROXY_PORT);
         b->run();
-
-        s->init(PROXY_PORT, inet_addr(SERVER_IP));
-
-        b->push_sock_to_map(s->client_sk_fd);
 
         r->run();
 

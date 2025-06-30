@@ -218,7 +218,7 @@ namespace rdmaMng
                         continue;
                     }
 
-                    struct sock_id app = bpf_ctx.get_app_sk_from_proxy_sk(sk_to_monitor[j].sk_id);
+                    struct sock_id app = bpf_ctx.getAppSkFromProxySk(sk_to_monitor[j].sk_id);
                     if (app.sip == 0)
                     {
                         cout << "No app socket found for fd: " << fd << endl;
