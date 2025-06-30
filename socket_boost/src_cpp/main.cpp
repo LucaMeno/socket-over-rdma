@@ -14,9 +14,7 @@ void handle_signal(int signal);
 int fun(void *ctx, void *data, size_t len);
 
 sk::SocketMng* s = nullptr;
-
 bpf::BpfMng *b = nullptr;
-
 rdmaMng::RdmaMng *r = nullptr;
 
 int fun(void *ctx, void *data, size_t len)
@@ -48,7 +46,7 @@ int fun(void *ctx, void *data, size_t len)
         cout << "Proxy fd: " << proxy_fd << endl;
         cout << "App socket: " << user_data->association.app.sip << ":" << user_data->association.app.sport << endl;
 
-        r->rdma_manager_connect(user_data->association.app, proxy_fd);
+        r->connect(user_data->association.app, proxy_fd);
     }
 
     return 0;
@@ -78,7 +76,7 @@ int main()
 
         b->push_sock_to_map(s->client_sk_fd);
 
-        r->rdma_manager_run();
+        r->run();
 
         cout << "Waiting for messages, press Ctrl+C to exit..." << endl;
         cout << "-----------------------------------------------------------" << endl;

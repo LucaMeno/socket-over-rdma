@@ -73,10 +73,10 @@ namespace rdmaMng
         cout << "Thread pool destroyed" << endl;
     }
 
-    void RdmaMng::rdma_manager_run()
+    void RdmaMng::run()
     {
         // start the server thread
-        server_thread = thread(&RdmaMng::rdma_manager_server_thread, this);
+        server_thread = thread(&RdmaMng::serverThread, this);
         cout << "Server th created" << endl;
 
         // start the writer threads
@@ -102,7 +102,7 @@ namespace rdmaMng
                 writer_threads.emplace_back(
                     [this, sockets = std::move(sockets)]() mutable
                     {
-                        rdma_manager_writer_thread(std::move(sockets));
+                        writerThread(std::move(sockets));
                     });
             }
             catch (const std::system_error &e)
@@ -113,7 +113,7 @@ namespace rdmaMng
         }
     }
 
-    void RdmaMng::rdma_manager_server_thread()
+    void RdmaMng::serverThread()
     {
         cout << "Server thread started" << endl;
 
@@ -134,18 +134,18 @@ namespace rdmaMng
 
             if (!notification_thread.joinable())
             {
-                rdma_manager_launch_background_threads();
+                launchBackbroundThread();
             }
         }
     }
 
-    int RdmaMng::rdma_manager_get_free_context_id()
+    int RdmaMng::getFreeContextId()
     {
         ctxs.push_back(make_unique<rdma::RdmaContext>());
         return ctxs.size() - 1; // Return the index of the newly added context
     }
 
-    void RdmaMng::rdma_manager_writer_thread(vector<sk::client_sk_t> sk_to_monitor)
+    void RdmaMng::writerThread(vector<sk::client_sk_t> sk_to_monitor)
     {
         if (sk_to_monitor.empty())
         {
@@ -241,16 +241,16 @@ namespace rdmaMng
                     auto &ctx = **ctxIt;
 
                     // Wait for the context to be ready
-                    ctx.wait_for_context_ready();
+                    ctx.waitForContextToBeReady();
 
                     while (1)
                     {
-                        int ret = ctx.rdma_write_msg(fd, app);
+                        int ret = ctx.writeMsg(fd, app);
 
                         if (ret == 0)
                         {
                             cout << "0" << endl;
-                            throw runtime_error("Connection closed - rdma_manager_writer_thread");
+                            throw runtime_error("Connection closed - writerThread");
                         }
                         else if (ret < 0)
                         {
@@ -262,7 +262,7 @@ namespace rdmaMng
                             {
                                 cerr << "recv error" << endl;
                                 perror("recv error");
-                                throw runtime_error("Connection closed - rdma_manager_writer_thread");
+                                throw runtime_error("Connection closed - writerThread");
                             }
                         }
                     }
@@ -271,7 +271,7 @@ namespace rdmaMng
         }
     }
 
-    void RdmaMng::rdma_manager_polling_thread()
+    void RdmaMng::pollingThread()
     {
         cout << "Polling thread started" << endl;
 
@@ -294,15 +294,15 @@ namespace rdmaMng
             int ret;
             try
             {
-                ret = rdma_manager_consume_ringbuffer(ctx, ctx.is_server ? *ctx.ringbuffer_client : *ctx.ringbuffer_server);
+                ret = consumeRingbuffer(ctx, ctx.is_server ? *ctx.ringbuffer_client : *ctx.ringbuffer_server);
             }
             catch (const std::exception &e)
             {
-                cerr << "Exception in rdma_manager_polling_thread: " << e.what() << endl;
+                cerr << "Exception in pollingThread: " << e.what() << endl;
             }
             if (ret < 0)
             {
-                throw runtime_error("Error consuming ring buffer - rdma_manager_polling_thread");
+                throw runtime_error("Error consuming ring buffer - pollingThread");
             }
             else if (ret == 1)
             {
@@ -316,7 +316,7 @@ namespace rdmaMng
         }
     }
 
-    int RdmaMng::rdma_manager_consume_ringbuffer(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb_remote)
+    int RdmaMng::consumeRingbuffer(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb_remote)
     {
         while (1)
         {
@@ -331,8 +331,8 @@ namespace rdmaMng
 
                 rb_remote.local_read_index.store(remote_w); // reset the local write index
 
-                ctx.rdma_read_msg(bpf_ctx, client_sks, start_read_index, end_read_index);
-                ctx.rdma_update_remote_read_idx(rb_remote, end_read_index);
+                ctx.readMsg(bpf_ctx, client_sks, start_read_index, end_read_index);
+                ctx.updateRemoteReadIndex(rb_remote, end_read_index);
             }
             else
             {
@@ -341,53 +341,53 @@ namespace rdmaMng
         }
     }
 
-    void RdmaMng::rdma_manager_flush_buffer(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb)
+    void RdmaMng::addFlushRingbufferJob(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb)
     {
         uint32_t start_idx = rb.local_read_index.load();
         uint32_t end_idx = rb.local_write_index.load();
 
         thPool->enqueue([this, &ctx, &rb, start_idx, end_idx]()
-                        { flush_thread_worker(ctx, rb, start_idx, end_idx); });
+                        { flushThreadWorker(ctx, rb, start_idx, end_idx); });
 
         rb.local_read_index.store(rb.local_write_index.load());
 
-        ctx.last_flush_ms = ctx.get_time_ms();
+        ctx.last_flush_ms = ctx.getTimeMS();
     }
 
-    void RdmaMng::flush_thread_worker(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb, uint32_t start_idx, uint32_t end_idx)
+    void RdmaMng::flushThreadWorker(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb, uint32_t start_idx, uint32_t end_idx)
     {
-        ctx.rdma_flush_buffer(rb, start_idx, end_idx);
+        ctx.flushRingbuffer(rb, start_idx, end_idx);
     }
 
-    void RdmaMng::rdma_manager_launch_background_threads()
+    void RdmaMng::launchBackbroundThread()
     {
         // Launch the notification thread
-        notification_thread = thread(&RdmaMng::rdma_manager_listen_thread, this);
+        notification_thread = thread(&RdmaMng::listenThread, this);
 
         // Launch the polling thread
-        polling_thread = thread(&RdmaMng::rdma_manager_polling_thread, this);
+        polling_thread = thread(&RdmaMng::pollingThread, this);
 
         // Launch the flush thread
-        flush_thread = thread(&RdmaMng::rdma_manager_flush_thread, this);
+        flush_thread = thread(&RdmaMng::flushThread, this);
     }
 
-    void RdmaMng::rdma_manager_connect(struct sock_id original_socket, int proxy_sk_fd)
+    void RdmaMng::connect(struct sock_id original_socket, int proxy_sk_fd)
     {
-        rdma::RdmaContext *ctx = rdma_manager_get_context_by_ip(original_socket.dip);
+        rdma::RdmaContext *ctx = getContextByIp(original_socket.dip);
 
         if (ctx == nullptr) // no previus connection to the given node, create a new one
         {
-            int ctx_id = rdma_manager_get_free_context_id();
+            int ctx_id = getFreeContextId();
             auto ctx = ctxs[ctx_id].get();        // get the context by index
             ctx->remote_ip = original_socket.dip; // set the remote IP
 
             ctx->clientConnect(original_socket.dip, rdma_port);
 
-            rdma_manager_launch_background_threads();
+            launchBackbroundThread();
         }
     }
 
-    rdma::RdmaContext *RdmaMng::rdma_manager_get_context_by_ip(uint32_t remote_ip)
+    rdma::RdmaContext *RdmaMng::getContextByIp(uint32_t remote_ip)
     {
         for (auto &ctx : ctxs)
             if (ctx.get()->remote_ip == remote_ip)
@@ -395,26 +395,24 @@ namespace rdmaMng
         return nullptr; // Context not found
     }
 
-    void RdmaMng::rdma_manager_start_polling(rdma::RdmaContext &ctx)
+    void RdmaMng::startPolling(rdma::RdmaContext &ctx)
     {
         // Try to set polling status
-        ctx.rdma_set_polling_status(TRUE);
+        ctx.setPollingStatus(TRUE);
 
         // wake up the polling thread
         unique_lock<mutex> lock(mtx_polling);
         is_polling_thread_running = true;
-        ctx.time_start_polling = ctx.get_time_ms();
-        ctx.loop_with_no_msg = 0;
         cond_polling.notify_all();
     }
 
-    void RdmaMng::rdma_manager_stop_polling(rdma::RdmaContext &ctx)
+    void RdmaMng::stopPolling(rdma::RdmaContext &ctx)
     {
         // Try to set polling status
-        ctx.rdma_set_polling_status(FALSE);
+        ctx.setPollingStatus(FALSE);
     }
 
-    void RdmaMng::rdma_parse_notification(rdma::RdmaContext &ctx)
+    void RdmaMng::parseNotification(rdma::RdmaContext &ctx)
     {
         rdma::notification_t *notification = (rdma::notification_t *)ctx.buffer;
         rdma::CommunicationCode code; // enum rdma_communication_code
@@ -422,20 +420,20 @@ namespace rdmaMng
         {
             code = notification->from_client.code;
             notification->from_client.code = rdma::CommunicationCode::NONE; // reset the code
-            cout << "S: Received: " << ctx.get_op_name(code) << " (" << static_cast<int>(code) << ")" << endl;
+            cout << "S: Received: " << ctx.getOpName(code) << " (" << static_cast<int>(code) << ")" << endl;
         }
         else // client
         {
             code = notification->from_server.code;
             notification->from_server.code = rdma::CommunicationCode::NONE; // reset the code
-            cout << "C: Received: " << ctx.get_op_name(code) << " (" << static_cast<int>(code) << ")" << endl;
+            cout << "C: Received: " << ctx.getOpName(code) << " (" << static_cast<int>(code) << ")" << endl;
         }
 
         switch (code)
         {
         case CommunicationCode::RDMA_DATA_READY:
         {
-            rdma_manager_start_polling(ctx);
+            startPolling(ctx);
             break;
         }
 
@@ -447,7 +445,7 @@ namespace rdmaMng
         }
     }
 
-    void RdmaMng::rdma_manager_listen_thread()
+    void RdmaMng::listenThread()
     {
         std::cout << "Listening for notifications..." << std::endl;
 
@@ -561,12 +559,12 @@ namespace rdmaMng
                     break;
                 }
 
-                rdma_parse_notification(*ctx);
+                parseNotification(*ctx);
             }
         }
     }
 
-    void RdmaMng::rdma_manager_flush_thread()
+    void RdmaMng::flushThread()
     {
         cout << "Flush thread started" << endl;
 
@@ -588,13 +586,13 @@ namespace rdmaMng
 
                 while (1)
                 {
-                    uint64_t now = ctx.get_time_ms();
+                    uint64_t now = ctx.getTimeMS();
 
                     if (msg_sent >= ctx.flush_threshold ||
                         ((now - ctx.last_flush_ms >= FLUSH_INTERVAL_MS) && msg_sent > 0))
                     {
                         ctx.n_msg_sent.store(0); // reset the atomic counter
-                        rdma_manager_flush_buffer(ctx, rb);
+                        addFlushRingbufferJob(ctx, rb);
                     }
 
                     msg_sent = ctx.n_msg_sent.load(); // reload the atomic counter

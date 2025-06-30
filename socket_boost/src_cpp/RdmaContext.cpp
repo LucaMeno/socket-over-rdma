@@ -13,7 +13,7 @@ namespace rdma
     {
         srand48(getpid());
 
-        ctx = open_device();
+        ctx = openDevice();
         if (!ctx)
             throw runtime_error("Failed to open RDMA device: " + string(strerror(errno)));
 
@@ -85,7 +85,7 @@ namespace rdma
         conn_info local = {};
         local.lid = pattr.lid;
         local.qp_num = qp->qp_num;
-        local.psn = gen_psn();
+        local.psn = getPsn();
         local.rkey = mr->rkey;
         local.addr = reinterpret_cast<uintptr_t>(buffer);
         local.gid = gid;
@@ -209,7 +209,7 @@ namespace rdma
 
         conn_info local = rdmaSetupPreHs();
 
-        int listen_fd = tcp_server_listen();
+        int listen_fd = tcpWaitForConnection();
         std::cout << "Server ready\n";
 
         serverConnection_t sc;
@@ -251,11 +251,11 @@ namespace rdma
 
         conn_info local = rdmaSetupPreHs();
 
-        int sock = tcp_connect(server_ip);
+        int sock = tcpConnect(server_ip);
         if (sock < 0)
         {
             std::cerr << "Failed to connect to server: " << strerror(errno) << "\n";
-            throw runtime_error("tcp_connect failed");
+            throw runtime_error("tcpConnect failed");
         }
 
         conn_info remote;
@@ -285,7 +285,7 @@ namespace rdma
         lock.unlock();
     }
 
-    int RdmaContext::tcp_connect(uint32_t ip)
+    int RdmaContext::tcpConnect(uint32_t ip)
     {
         // Convert IP address from uint32_t to string
         string ip_str;
@@ -316,7 +316,7 @@ namespace rdma
         return fd;
     }
 
-    int RdmaContext::tcp_server_listen()
+    int RdmaContext::tcpWaitForConnection()
     {
         addrinfo hints = {};
         hints.ai_family = AF_INET;
@@ -337,7 +337,7 @@ namespace rdma
         return fd;
     }
 
-    ibv_context *RdmaContext::open_device()
+    ibv_context *RdmaContext::openDevice()
     {
         int num_devices = 0;
         ibv_device **device_list = ibv_get_device_list(&num_devices);
@@ -357,7 +357,7 @@ namespace rdma
         return ctx;
     }
 
-    uint32_t RdmaContext::gen_psn()
+    uint32_t RdmaContext::getPsn()
     {
         return lrand48() & 0xffffff;
     }
@@ -367,34 +367,25 @@ namespace rdma
     RdmaContext::RdmaContext()
     {
         is_ready.store(false);
-        remote_ip = 0;
+        flush_threshold.store(THRESHOLD_NOT_AUTOSCALER);
+        n_msg_sent.store(0);
         buffer = nullptr;
         pd = nullptr;
         mr = nullptr;
         recv_cq = nullptr;
         send_cq = nullptr;
-        remote_rkey = 0;
-        remote_addr = 0;
-
         ringbuffer_client = nullptr;
         ringbuffer_server = nullptr;
-
+        remote_rkey = 0;
+        remote_addr = 0;
         last_flush_ms = 0;
-        is_flushing = FALSE;
-
-        flush_threshold.store(THRESHOLD_NOT_AUTOSCALER);
-
-        n_msg_sent.store(0);
-        flush_threshold_set_time = 0;
-
-        time_last_recv = 0;
-        n_recv_msg = 0;
-
-        fulsh_index ^= fulsh_index; // reset the flush index
+        remote_ip = 0;
     }
 
     RdmaContext::~RdmaContext()
     {
+        is_ready.store(false);
+
         if (send_cq)
             ibv_destroy_cq(send_cq);
         if (recv_cq)
@@ -412,15 +403,15 @@ namespace rdma
 
         pd = nullptr;
         mr = nullptr;
+        buffer = nullptr;
         remote_ip = 0;
         remote_addr = 0;
         remote_rkey = 0;
-        buffer = nullptr;
     }
 
     // NOTIFICATIONS
 
-    void RdmaContext::rdma_send_notification(CommunicationCode code)
+    void RdmaContext::sendNotification(CommunicationCode code)
     {
         notification_t *notification = (notification_t *)buffer;
 
@@ -448,21 +439,21 @@ namespace rdma
         // Post send with ibv_post_send
         struct ibv_send_wr *bad_send_wr;
         if (ibv_post_send(qp, &send_wr, &bad_send_wr) != 0) // Post the send work request
-            throw runtime_error("Failed to post send - rdma_send_notification");
+            throw runtime_error("Failed to post send - sendNotification");
 
         // Poll the completion queue
-        rdma_poll_cq_send();
-        cout << "Sent notification: " << get_op_name(code) << endl;
+        pollCqSend();
+        cout << "Sent notification: " << getOpName(code) << endl;
     }
 
-    void RdmaContext::rdma_send_data_ready()
+    void RdmaContext::sendDataReady()
     {
-        rdma_send_notification(CommunicationCode::RDMA_DATA_READY);
+        sendNotification(CommunicationCode::RDMA_DATA_READY);
     }
 
     // WRITE
 
-    void RdmaContext::rdma_post_write_(uintptr_t remote_addr_2, uintptr_t local_addr, size_t size_to_write, int signaled)
+    void RdmaContext::postWriteOp(uintptr_t remote_addr_2, uintptr_t local_addr, size_t size_to_write, int signaled)
     {
         struct ibv_send_wr send_wr_data = {};
         struct ibv_sge sge_data;
@@ -493,10 +484,10 @@ namespace rdma
 
         // Poll the completion queue
         if (signaled == TRUE)
-            rdma_poll_cq_send();
+            pollCqSend();
     }
 
-    void RdmaContext::rdma_flush_buffer(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx)
+    void RdmaContext::flushRingbuffer(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx)
     {
         uint32_t w_idx = RING_IDX(end_idx);   // local write index
         uint32_t r_idx = RING_IDX(start_idx); // remote read index
@@ -509,14 +500,14 @@ namespace rdma
 
             uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
 
-            rdma_post_write_(remote_addr_2, batch_start, batch_size, TRUE);
+            postWriteOp(remote_addr_2, batch_start, batch_size, TRUE);
 
             batch_start = (uintptr_t)&ringbuffer.data[0];
             batch_size = w_idx * sizeof(rdma_msg_t);
 
             remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
 
-            rdma_post_write_(remote_addr_2, batch_start, batch_size, TRUE);
+            postWriteOp(remote_addr_2, batch_start, batch_size, TRUE);
         }
         else
         {
@@ -526,7 +517,7 @@ namespace rdma
 
             uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
 
-            rdma_post_write_(remote_addr_2, batch_start, batch_size, TRUE);
+            postWriteOp(remote_addr_2, batch_start, batch_size, TRUE);
         }
 
         // calculate the offset
@@ -546,25 +537,25 @@ namespace rdma
         // Update the write index
         ringbuffer.remote_write_index.store(end_idx);
 
-        rdma_post_write_(remote_addr_write_index,
-                         (uintptr_t)(buffer + write_index_offset),
-                         sizeof(ringbuffer.remote_write_index), TRUE);
+        postWriteOp(remote_addr_write_index,
+                    (uintptr_t)(buffer + write_index_offset),
+                    sizeof(ringbuffer.remote_write_index), TRUE);
 
         auto flags = peer_rb->flags.flags.load(std::memory_order_acquire);
 
         if ((flags & static_cast<unsigned int>(RingBufferFlag::RING_BUFFER_POLLING)) == 0)
-            rdma_send_data_ready();
+            sendDataReady();
 
         cond_commit_flush.notify_all();
         // std::unique_lock will automatically unlock mtx_commit_flush when it goes out of scope
     }
 
-    int RdmaContext::rdma_write_msg(int src_fd, struct sock_id original_socket)
+    int RdmaContext::writeMsg(int src_fd, struct sock_id original_socket)
     {
         rdma_ringbuffer_t *ringbuffer = (is_server == true) ? ringbuffer_server : ringbuffer_client;
 
         if (!ringbuffer)
-            throw runtime_error("ringbuffer is nullptr - rdma_write_msg");
+            throw runtime_error("ringbuffer is nullptr - writeMsg");
 
         uint32_t start_w_index, end_w_index, available_space;
 
@@ -616,7 +607,7 @@ namespace rdma
         return 1;
     }
 
-    void RdmaContext::rdma_parse_msg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg)
+    void RdmaContext::parseMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg)
     {
         // retrive the proxy_fd
         int fd;
@@ -666,16 +657,16 @@ namespace rdma
                      << msg.original_sk_id.sip << ":" << msg.original_sk_id.sport
                      << " -> " << msg.original_sk_id.dip << ":" << msg.original_sk_id.dport
                      << endl;
-                throw runtime_error("Socket not found in the list - rdma_parse_msg");
+                throw runtime_error("Socket not found in the list - parseMsg");
             }
         }
 
         int err = send(fd, msg.msg, msg.msg_size, 0);
         if (err != (int)msg.msg_size)
-            throw runtime_error("Failed to send message - rdma_parse_msg");
+            throw runtime_error("Failed to send message - parseMsg");
     }
 
-    void RdmaContext::rdma_update_remote_read_idx(rdma_ringbuffer_t &ringbuffer, uint32_t r_idx)
+    void RdmaContext::updateRemoteReadIndex(rdma_ringbuffer_t &ringbuffer, uint32_t r_idx)
     {
         // COMMIT the read index
         ringbuffer.remote_read_index.store(r_idx);
@@ -685,18 +676,18 @@ namespace rdma
 
         uintptr_t remote_addr_read_index = remote_addr + read_index_offset;
 
-        rdma_post_write_(remote_addr_read_index,
-                         (uintptr_t)(buffer + read_index_offset),
-                         sizeof(ringbuffer.remote_read_index),
-                         TRUE);
+        postWriteOp(remote_addr_read_index,
+                    (uintptr_t)(buffer + read_index_offset),
+                    sizeof(ringbuffer.remote_read_index),
+                    TRUE);
     }
 
-    void RdmaContext::rdma_read_msg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index)
+    void RdmaContext::readMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index)
     {
         rdma_ringbuffer_t *ringbuffer = is_server ? ringbuffer_client : ringbuffer_server;
 
         if (!ringbuffer)
-            throw runtime_error("ringbuffer is nullptr - rdma_read_msg");
+            throw runtime_error("ringbuffer is nullptr - readMsg");
 
         if (start_read_index == end_read_index)
         {
@@ -714,14 +705,14 @@ namespace rdma
         {
             int idx = RING_IDX(start_read_index + i);
             rdma_msg_t *msg = &ringbuffer->data[idx];
-            rdma_parse_msg(bpf_ctx, client_sks, *msg);
+            parseMsg(bpf_ctx, client_sks, *msg);
             i += msg->number_of_slots;
         }
     }
 
     // UTILS
 
-    void RdmaContext::rdma_set_polling_status(uint32_t is_polling)
+    void RdmaContext::setPollingStatus(uint32_t is_polling)
     {
         rdma_ringbuffer_t *ringbuffer = (is_server == true) ? ringbuffer_server : ringbuffer_client;
         unsigned int f = ringbuffer->flags.flags.load();
@@ -747,18 +738,18 @@ namespace rdma
         size_t offset = (size_t)((char *)ringbuffer - (char *)buffer);
         uintptr_t remote_addr_2 = remote_addr + offset;
 
-        rdma_post_write_(remote_addr_2,
-                         (uintptr_t)(buffer + offset),
-                         sizeof(ringbuffer->flags.flags),
-                         TRUE);
+        postWriteOp(remote_addr_2,
+                    (uintptr_t)(buffer + offset),
+                    sizeof(ringbuffer->flags.flags),
+                    TRUE);
 
         cout << "Polling status updated: " << (is_polling ? "ON" : "OFF") << endl;
     }
 
-    void RdmaContext::rdma_poll_cq_send()
+    void RdmaContext::pollCqSend()
     {
         if (send_cq == nullptr)
-            throw runtime_error("send_cq is nullptr - rdma_poll_cq_send");
+            throw runtime_error("send_cq is nullptr - pollCqSend");
 
         struct ibv_wc wc;
         int num_completions;
@@ -770,17 +761,17 @@ namespace rdma
         if (num_completions < 0)
         {
             fprintf(stderr, "CQ error_1: %s (%d)\n", ibv_wc_status_str(wc.status), wc.status);
-            throw runtime_error("Failed to poll CQ - rdma_poll_cq_send");
+            throw runtime_error("Failed to poll CQ - pollCqSend");
         }
 
         if (wc.status != IBV_WC_SUCCESS)
         {
             fprintf(stderr, "CQ error_2: %s (%d)\n", ibv_wc_status_str(wc.status), wc.status);
-            throw runtime_error("Failed to poll CQ - rdma_poll_cq_send");
+            throw runtime_error("Failed to poll CQ - pollCqSend");
         }
     }
 
-    const string RdmaContext::get_op_name(CommunicationCode code)
+    const string RdmaContext::getOpName(CommunicationCode code)
     {
         switch (code)
         {
@@ -795,14 +786,14 @@ namespace rdma
         }
     }
 
-    uint64_t RdmaContext::get_time_ms()
+    uint64_t RdmaContext::getTimeMS()
     {
         struct timespec ts;
         clock_gettime(CLOCK_MONOTONIC, &ts);
         return (uint64_t)ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000;
     }
 
-    void RdmaContext::wait_for_context_ready()
+    void RdmaContext::waitForContextToBeReady()
     {
         std::unique_lock<std::mutex> lock(mtx_tx);
         cond_tx.wait(lock, [&]()
