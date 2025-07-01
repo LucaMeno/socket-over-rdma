@@ -5,12 +5,8 @@ using namespace std;
 
 namespace bpf
 {
-    BpfMng::BpfMng(EventHandler event_handler, const std::vector<uint16_t> &target_ports_to_set, uint16_t proxy_port, const std::vector<sk::client_sk_t> &client_sks)
+    BpfMng::BpfMng()
     {
-        // set the event handler
-        new_sk_event_handler.ctx = event_handler.ctx;
-        new_sk_event_handler.handle_event = event_handler.handle_event;
-
         // open the BPF object file
         obj = bpf_object__open_file(PATH_TO_BPF_OBJ_FILE, NULL);
 
@@ -117,13 +113,14 @@ namespace bpf
         prog_tcp_destroy_sock = bpf_object__find_program_by_name(obj, "tcp_destroy_sock_prog");
         if (!prog_tcp_destroy_sock)
             throw runtime_error("Failed to find tcp_destroy_sock_prog");
-
-        setTargetPort(target_ports_to_set, proxy_port);
-        pushSockToMap(client_sks);
     }
 
-    void BpfMng::run()
+    void BpfMng::init(EventHandler event_handler, const std::vector<uint16_t> &target_ports_to_set, uint16_t proxy_port, const std::vector<sk::client_sk_t> &client_sks)
     {
+        // set the event handler
+        new_sk_event_handler.ctx = event_handler.ctx;
+        new_sk_event_handler.handle_event = event_handler.handle_event;
+
         int err = 0;
 
         // attach sockops_prog to the cgroup
@@ -144,6 +141,9 @@ namespace bpf
         // create a thread to poll the ring buffer
         thread t = thread(&BpfMng::threadPollRb, this);
         t.detach();
+
+        pushSockToMap(client_sks);
+        setTargetPort(target_ports_to_set, proxy_port);
 
         cout << "BPF programs attached successfully." << endl;
     }
@@ -271,7 +271,10 @@ namespace bpf
             // add the socket to the intercepted_sockets map
             err = bpf_map_update_elem(intercepted_sk_fd, &client_sk.sk_id, &client_sk.fd, BPF_ANY);
             if (err != 0)
+            {
+                cerr << "Error on update intercepted_sockets map: " << strerror(errno) << endl;
                 throw runtime_error("Failed to add socket to intercepted_sockets map");
+            }
         }
     }
 
@@ -326,7 +329,7 @@ namespace bpf
 
         int err = bpf_map_lookup_elem(socket_association_fd, &proxy, &app);
 
-        if(err != 0)
+        if (err != 0)
             throw runtime_error("Failed to lookup socket association map");
 
         return app.app;

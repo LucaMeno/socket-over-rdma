@@ -6,11 +6,17 @@ using namespace rdma;
 
 namespace rdmaMng
 {
-    RdmaMng::RdmaMng(uint16_t srv_port, vector<sk::client_sk_t> &proxy_sks, bpf::BpfMng &bpf) : bpf_ctx{bpf},
-                                                                                                rdma_port{srv_port},
-                                                                                                client_sks{proxy_sks}
+    RdmaMng::RdmaMng(uint16_t proxy_port, uint32_t proxy_ip, uint16_t rdma_port, const std::vector<uint16_t> &target_ports_to_set)
     {
         stop_threads.store(false);
+        rdma_port = rdma_port;
+
+        sk_ctx.init(proxy_port, proxy_ip);
+
+        bpf::EventHandler handler = {
+            .ctx = this,
+            .handle_event = &RdmaMng::wrapper};
+        bpf_ctx.init(handler, target_ports_to_set, proxy_port, sk_ctx.client_sk_fd);
 
         // setup the pool
         thPool = make_unique<ThreadPool>(N_WRITER_THREADS);
@@ -94,7 +100,7 @@ namespace rdmaMng
             std::vector<sk::client_sk_t> sockets;
             sockets.reserve(n_fd);
             for (int k = 0; k < n_fd; ++k)
-                sockets.push_back(client_sks[idx++]);
+                sockets.push_back(sk_ctx.client_sk_fd[idx++]);
 
             // Launch the writer thread; capture *this and move the socket list in
             try
@@ -127,6 +133,9 @@ namespace rdmaMng
             vector<int> fds = {sc.fd};
             while (stop_threads.load() == false && waitOnSelect(fds).empty())
                 ;
+
+            if (stop_threads.load() == true)
+                return; // Exit if stop_threads is set
 
             ctx->serverHandleNewClient(sc);
 
@@ -331,7 +340,7 @@ namespace rdmaMng
 
                 rb_remote.local_read_index.store(remote_w); // reset the local write index
 
-                ctx.readMsg(bpf_ctx, client_sks, start_read_index, end_read_index);
+                ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index);
                 ctx.updateRemoteReadIndex(rb_remote, end_read_index);
             }
             else

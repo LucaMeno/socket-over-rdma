@@ -12,6 +12,7 @@
 #include <poll.h>
 #include <iostream>
 #include <stdexcept>
+#include <format>
 
 #include "RdmaContext.h"
 #include "ThreadPool.h"
@@ -28,18 +29,63 @@ namespace rdmaMng
         const int FLUSH_INTERVAL_MS = 100;              // ms
 
     public:
-        RdmaMng(uint16_t srv_port, std::vector<sk::client_sk_t> &proxy_sks, bpf::BpfMng &bpf);
+        RdmaMng(uint16_t proxy_port, uint32_t proxy_ip, uint16_t rdma_port, const std::vector<uint16_t> &target_ports_to_set);
         ~RdmaMng();
 
         void run();
         void connect(struct sock_id original_socket, int proxy_sk_fd);
 
+        static int wrapper(void *ctx, void *data, size_t len)
+        {
+            auto *self = static_cast<RdmaMng *>(ctx);
+            return self->onNewSocket(data, len);
+        }
+
+        int onNewSocket(void *data, size_t len)
+        {
+            struct userspace_data_t *user_data = (struct userspace_data_t *)data;
+
+            std::cout << "New : ["
+                      << user_data->association.app.sip << ":"
+                      << user_data->association.app.sport << " -> "
+                      << user_data->association.app.dip << ":"
+                      << user_data->association.app.dport << "] <-> ["
+                      << user_data->association.proxy.sip << ":"
+                      << user_data->association.proxy.sport << " -> "
+                      << user_data->association.proxy.dip << ":"
+                      << user_data->association.proxy.dport << "]"
+                      << std::endl;
+
+            // start the RDMA connection
+            // only the client start the connection
+            if (user_data->sockops_op == BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB)
+            {
+                int ret;
+                int proxy_fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
+
+                if (proxy_fd < 0)
+                {
+                    std::cerr << "Error: Proxy fd not found for association: "
+                              << user_data->association.proxy.sip << ":"
+                              << user_data->association.proxy.sport << std::endl;
+                    throw std::runtime_error("Proxy fd not found");
+                }
+
+                std::cout << "Proxy fd: " << proxy_fd << std::endl;
+                std::cout << "App socket: " << user_data->association.app.sip << ":" << user_data->association.app.sport << std::endl;
+
+                connect(user_data->association.app, proxy_fd);
+            }
+
+            return 0;
+        }
+
     private:
         std::vector<std::unique_ptr<rdma::RdmaContext>> ctxs; // vector of active RDMA contexts
         uint16_t rdma_port;                                   // port used for RDMA
         std::unique_ptr<ThreadPool> thPool;                   // thread pool
-        std::vector<sk::client_sk_t> &client_sks;             // vector of client sockets to monitor
-        bpf::BpfMng &bpf_ctx;                                 // reference to the BPF manager
+        bpf::BpfMng bpf_ctx;                                  // reference to the BPF manager
+        sk::SocketMng sk_ctx;                                 // reference to the socket manager
         std::thread notification_thread;                      // thread for the notification
         std::thread server_thread;                            // thread for the server
         std::thread polling_thread;                           // thread for polling the circular buffer

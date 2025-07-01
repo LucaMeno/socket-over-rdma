@@ -51,10 +51,10 @@ namespace bpf
         int stop_threads;
         EventHandler new_sk_event_handler;
 
-        BpfMng(EventHandler event_handler, const std::vector<uint16_t> &target_ports_to_set, uint16_t proxy_port, const std::vector<sk::client_sk_t> &client_sks);
+        BpfMng();
         ~BpfMng();
 
-        void run();
+        void init(EventHandler event_handler, const std::vector<uint16_t> &target_ports_to_set, uint16_t proxy_port, const std::vector<sk::client_sk_t> &client_sks);
 
         struct sock_id getProxySkFromAppSk(struct sock_id app_sk);
         struct sock_id getAppSkFromProxyFd(const std::vector<sk::client_sk_t> &client_sks, int target_fd);

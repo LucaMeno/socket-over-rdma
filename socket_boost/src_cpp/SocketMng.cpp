@@ -4,13 +4,16 @@ using namespace std;
 
 namespace sk
 {
-    SocketMng::SocketMng(uint16_t port, uint32_t ip)
+    SocketMng::SocketMng()
     {
         client_sk_fd.resize(NUMBER_OF_SOCKETS);
         server_sk_fd = -1;
         server_port = 0;
         server_ip = 0;
+    }
 
+    void SocketMng::init(uint16_t port, uint32_t ip)
+    {
         server_port = port;
         server_ip = ip;
 
@@ -109,7 +112,7 @@ namespace sk
 
     void SocketMng::clientThread(int client_id)
     {
-        this_thread::sleep_for(chrono::seconds(2));
+        this_thread::sleep_for(chrono::seconds(1));
 
         int client_fd = socket(AF_INET, SOCK_STREAM, 0);
         if (client_fd < 0)

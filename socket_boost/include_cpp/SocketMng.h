@@ -32,9 +32,10 @@ namespace sk
         uint16_t server_port;
         uint32_t server_ip;
 
-        SocketMng(uint16_t port, uint32_t ip);
+        SocketMng();
         ~SocketMng();
 
+        void init(uint16_t port, uint32_t ip);
         int getProxyFdFromSockid(struct sock_id sk_id);
 
     private:
