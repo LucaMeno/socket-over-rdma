@@ -315,7 +315,7 @@ namespace bpf
 
         int ret = bpf_map_lookup_elem(socket_association_fd, &sk_assoc_k, &sk_assoc_v);
         if (ret != 0)
-            throw runtime_error("Failed to lookup socket association map");
+            throw runtime_error("Failed to lookup socket association map - getAppSkFromProxyFd");
 
         return sk_assoc_v.app;
     }
@@ -330,7 +330,7 @@ namespace bpf
         int err = bpf_map_lookup_elem(socket_association_fd, &proxy, &app);
 
         if (err != 0)
-            throw runtime_error("Failed to lookup socket association map");
+            throw runtime_error("Failed to lookup socket association map - getAppSkFromProxySk");
 
         return app.app;
     }

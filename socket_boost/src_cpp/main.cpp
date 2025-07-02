@@ -18,7 +18,7 @@ int main()
         signal(SIGINT, handle_signal);
         signal(SIGTSTP, handle_signal);
 
-        rdmaMng::RdmaMng r(PROXY_PORT, inet_addr(SERVER_IP), RDMA_PORT, {TARGET_PORT});
+        rdmaMng::RdmaMng r(PROXY_PORT, inet_addr(SERVER_IP), RDMA_PORT, {TARGET_PORT_1, TARGET_PORT_2, TARGET_PORT_3});
         r.run();
 
         cout << "Waiting for messages, press Ctrl+C to exit..." << endl;

@@ -56,6 +56,11 @@ int main()
     }
     std::cout << "Client connected, waiting for data…\n";
 
+    char start_buf[16] = {};
+
+    recv(client_fd, start_buf, sizeof(start_buf), 0);
+    send(client_fd, start_buf, sizeof(start_buf), 0);
+
     char *buf = new char[BUFFER_SIZE_BYTES];
     uint64_t tot_bytes = 0;
 
@@ -87,7 +92,7 @@ int main()
         ++counter;
 
         // waste time for testing purposes
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        // std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
         if (tot_bytes >= BYTES_PER_GB * i)
         {

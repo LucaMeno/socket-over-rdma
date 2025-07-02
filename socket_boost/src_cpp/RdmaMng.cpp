@@ -206,7 +206,7 @@ namespace rdmaMng
                 perror("select error");
                 break;
             }
-            else if (stop_threads == true)
+            else if (stop_threads.load() == true)
             {
                 break; // stop the thread if stop_threads is set
             }
@@ -354,13 +354,14 @@ namespace rdmaMng
     {
         uint32_t start_idx = rb.local_read_index.load();
         uint32_t end_idx = rb.local_write_index.load();
+        rb.local_read_index.store(rb.local_write_index.load());
 
         thPool->enqueue([this, &ctx, &rb, start_idx, end_idx]()
                         { flushThreadWorker(ctx, rb, start_idx, end_idx); });
 
-        rb.local_read_index.store(rb.local_write_index.load());
-
         ctx.last_flush_ms = ctx.getTimeMS();
+
+        // ctx.flushRingbuffer(rb, start_idx, end_idx);
     }
 
     void RdmaMng::flushThreadWorker(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb, uint32_t start_idx, uint32_t end_idx)

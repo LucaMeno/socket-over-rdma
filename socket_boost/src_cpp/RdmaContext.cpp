@@ -492,6 +492,8 @@ namespace rdma
         uint32_t w_idx = RING_IDX(end_idx);   // local write index
         uint32_t r_idx = RING_IDX(start_idx); // remote read index
 
+        // cout << "F: " << end_idx - start_idx << endl;
+
         if (r_idx > w_idx)
         {
             // wrap-around
@@ -547,6 +549,7 @@ namespace rdma
             sendDataReady();
 
         cond_commit_flush.notify_all();
+        //cout << "Flush completed: in = " << in << ", out = " << out << endl;
         // std::unique_lock will automatically unlock mtx_commit_flush when it goes out of scope
     }
 
@@ -581,7 +584,10 @@ namespace rdma
 
                 if (COUNT % 100 == 0)
                 {
-                    printf("No space in the ringbuffer, waiting... %d - %d\n", COUNT, c);
+                    cout << "Waiting for space in the ringbuffer (" << COUNT << ")... "
+                         << "Used: " << used << ", Available: " << available_space
+                         << ", Start Index: " << start_w_index
+                         << ", End Index: " << end_w_index << endl;
                     c++;
                 }
             }
@@ -661,9 +667,14 @@ namespace rdma
             }
         }
 
-        int err = send(fd, msg.msg, msg.msg_size, 0);
-        if (err != (int)msg.msg_size)
-            throw runtime_error("Failed to send message - parseMsg");
+        uint32_t sent_size = 0;
+        while (sent_size < msg.msg_size)
+        {
+            uint32_t size = send(fd, msg.msg, msg.msg_size, 0);
+            sent_size += size;
+            if (size <= 0)
+                throw runtime_error("Failed to send message, code: " + to_string(size) + " - parseMsg");
+        }
     }
 
     void RdmaContext::updateRemoteReadIndex(rdma_ringbuffer_t &ringbuffer, uint32_t r_idx)

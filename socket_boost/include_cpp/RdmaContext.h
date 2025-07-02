@@ -28,7 +28,7 @@
 #define MR_SIZE ((sizeof(rdma_ringbuffer_t) * 2) + NOTIFICATION_OFFSET_SIZE)
 
 constexpr int MAX_MSG_BUFFER = (1024 * 8); // POWER OF 2!!!!!!!!!!!
-constexpr int THRESHOLD_NOT_AUTOSCALER = 256;
+constexpr int THRESHOLD_NOT_AUTOSCALER = 64;
 constexpr int TIME_TO_WAIT_IF_NO_SPACE_MS = 10;
 constexpr int MAX_PAYLOAD_SIZE = (128 * 1024);
 

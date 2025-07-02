@@ -44,7 +44,7 @@ int main(int argc, char *argv[])
     sockaddr_in srv{};
     srv.sin_family = AF_INET;
     srv.sin_port = htons(PORT);
-    if (inet_pton(AF_INET, "127.0.0.1", &srv.sin_addr) <= 0)
+    if (inet_pton(AF_INET, "192.168.17.95", &srv.sin_addr) <= 0)
     {
         perror("inet_pton");
         return 1;
@@ -56,6 +56,14 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    this_thread::sleep_for(chrono::seconds(1));
+    char start_buf[16] = {};
+
+    send(sock, start_buf, sizeof(start_buf), 0); // Notify server that client is ready
+    recv(sock, start_buf, sizeof(start_buf), 0); // Wait for server to be ready
+
+    this_thread::sleep_for(chrono::seconds(1));
+    
     char *buf = new char[BUFFER_SIZE_BYTES];
     std::memset(buf, 'A', BUFFER_SIZE_BYTES);
 
