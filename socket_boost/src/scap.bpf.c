@@ -11,6 +11,9 @@
 #define AF_INET 2
 #define AF_INET6 10
 
+// #define EBPF_DEBUG_SOCKET
+// #define EBPF_DEBUG_MSG
+
 struct
 {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -156,7 +159,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 			goto is_target;
 
 		// check if SRC or DST IP is the one of the target IPs
-		/*key = sk_id.dip;
+		key = sk_id.dip;
 		int *is_ip_target_1 = bpf_map_lookup_elem(&target_ip, &key);
 		if (is_ip_target_1 != NULL)
 			goto is_target;
@@ -164,7 +167,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		key = sk_id.sip;
 		int *is_ip_target_2 = bpf_map_lookup_elem(&target_ip, &key);
 		if (is_ip_target_2 != NULL)
-			goto is_target;*/
+			goto is_target;
 
 #ifdef EBPF_DEBUG_SOCKET
 		bpf_printk("SKIP [SRC: %u:%u, DST: %u:%u] - not target port", sk_id.sip, sk_id.sport, sk_id.dip, sk_id.dport);
@@ -268,7 +271,10 @@ int sk_msg_prog(struct sk_msg_md *msg)
 
 	// Only process IPv4 packets
 	if (msg->family != AF_INET)
+	{
+		bpf_printk("Not IPv4 family, family: %d", msg->family);
 		return SK_PASS;
+	}
 
 	int k = 0; // Key for retrieving the server port
 	int ret = 0;
@@ -313,7 +319,7 @@ int sk_msg_prog(struct sk_msg_md *msg)
 	if (!sk_association_val)
 	{
 		bpf_printk("Error on lookup socket association");
-		return SK_PASS;
+		return SK_DROP;
 	}
 
 	// Determine the destination socket ID based on the direction
@@ -324,18 +330,17 @@ int sk_msg_prog(struct sk_msg_md *msg)
 #endif // EBPF_DEBUG_MSG
 
 	// Redirect the message to the associated socket
-	ret = bpf_msg_redirect_hash(msg, &intercepted_sockets, &dest_sk_id, BPF_F_INGRESS);
-	if (ret != SK_PASS)
+	int verdict = bpf_msg_redirect_hash(msg, &intercepted_sockets, &dest_sk_id, BPF_F_INGRESS);
+	if (verdict == SK_DROP)
 	{
-		bpf_printk("Error on redirect msg %ld", ret);
-		return SK_PASS;
+		bpf_printk("Error on redirect msg %ld", verdict);
 	}
 
 #ifdef EBPF_DEBUG_MSG
 	bpf_printk("Redirect msg to %s", (sk_id.dport == *server_port_ptr) ? "app" : "proxy");
 #endif // EBPF_DEBUG_MSG
 
-	return SK_PASS;
+	return verdict;
 }
 
 SEC("tracepoint/tcp/tcp_destroy_sock")

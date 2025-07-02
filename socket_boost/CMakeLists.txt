@@ -7,18 +7,18 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-include_directories(include_cpp)
+include_directories(include)
 link_libraries(bpf rdmacm ibverbs)
 
 # === MAIN PROGRAM ===
 
 add_executable(scap
-    src_cpp/main.cpp
-    src_cpp/SocketMng.cpp
-    src_cpp/BpfMng.cpp
-    src_cpp/RdmaContext.cpp
-    src_cpp/ThreadPool.cpp
-    src_cpp/RdmaMng.cpp
+    src/main.cpp
+    src/SocketMng.cpp
+    src/BpfMng.cpp
+    src/RdmaContext.cpp
+    src/ThreadPool.cpp
+    src/RdmaMng.cpp
 )
 
 # === BPF ===
@@ -30,8 +30,8 @@ file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/obj)
 
 add_custom_command(
     OUTPUT ${BPF_OBJ}
-    COMMAND clang -g -O2 -target bpf -I${CMAKE_SOURCE_DIR}/include -c ${CMAKE_SOURCE_DIR}/src_cpp/scap.bpf.c -o ${BPF_OBJ}
-    DEPENDS ${CMAKE_SOURCE_DIR}/src_cpp/scap.bpf.c
+    COMMAND clang -g -O2 -target bpf -I${CMAKE_SOURCE_DIR}/include -c ${CMAKE_SOURCE_DIR}/src/scap.bpf.c -o ${BPF_OBJ}
+    DEPENDS ${CMAKE_SOURCE_DIR}/src/scap.bpf.c
 )
 
 add_custom_command(
