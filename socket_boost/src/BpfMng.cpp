@@ -161,13 +161,13 @@ namespace bpf
             throw runtime_error("Failed to create ring buffer");
 
         // poll the ring buffer for events
-        while (stop_threads == FALSE)
+        while (stop_threads == false)
         {
             int err = ring_buffer__poll(rb, POOL_RB_INTERVAL);
 
             if (err < 0)
             {
-                if (stop_threads == TRUE)
+                if (stop_threads == true)
                 {
                     // if we are stopping, just exit the loop
                     break;
@@ -182,7 +182,7 @@ namespace bpf
     {
         cout << "Cleaning up BPF resources..." << endl;
 
-        stop_threads = TRUE;
+        stop_threads = true;
         int err = 0;
 
         // Detach sk_msg_prog from sockmap

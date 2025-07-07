@@ -120,6 +120,7 @@ namespace rdma
 
         bool is_server;             // TRUE if server, FALSE if client
         std::atomic<bool> is_ready; // TRUE if the context is ready
+        std::atomic<bool> stop;     // TRUE if the context should stop
 
         std::mutex mtx_tx;               // used to wait for the context to be ready
         std::condition_variable cond_tx; // used to signal the context is ready
@@ -166,7 +167,7 @@ namespace rdma
         void sendNotification(CommunicationCode code);
         void pollCqSend();
         void parseMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg);
-        void postWriteOp(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, int signaled);
+        void postWriteOp(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
         void sendDataReady();
         conn_info rdmaSetupPreHs();
         void rdmaSetupPostHs(conn_info remote, conn_info local);

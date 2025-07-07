@@ -36,6 +36,9 @@ namespace rdmaMng
     {
         stop_threads = true;
 
+        for (auto &ctx : ctxs)
+            ctx->stop.store(true);
+
         if (server_thread.joinable())
             server_thread.join();
 
@@ -256,14 +259,14 @@ namespace rdmaMng
                     {
                         int ret = ctx.writeMsg(fd, app);
 
-                        if (ret == 0)
+                        if (ret <= 0)
                         {
-                            cout << "0" << endl;
-                            throw runtime_error("Connection closed - writerThread");
-                        }
-                        else if (ret < 0)
-                        {
-                            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                            if (ret == 0)
+                            {
+                                cout << "0" << endl;
+                                throw runtime_error("Connection closed - writerThread");
+                            }
+                            else if (errno == EAGAIN || errno == EWOULDBLOCK)
                             {
                                 break;
                             }
@@ -273,6 +276,10 @@ namespace rdmaMng
                                 perror("recv error");
                                 throw runtime_error("Connection closed - writerThread");
                             }
+                        }
+                        else if (ret == 1)
+                        {
+                            break;
                         }
                     }
                 }
@@ -408,7 +415,7 @@ namespace rdmaMng
     void RdmaMng::startPolling(rdma::RdmaContext &ctx)
     {
         // Try to set polling status
-        ctx.setPollingStatus(TRUE);
+        ctx.setPollingStatus(true);
 
         // wake up the polling thread
         unique_lock<mutex> lock(mtx_polling);
@@ -419,7 +426,7 @@ namespace rdmaMng
     void RdmaMng::stopPolling(rdma::RdmaContext &ctx)
     {
         // Try to set polling status
-        ctx.setPollingStatus(FALSE);
+        ctx.setPollingStatus(false);
     }
 
     void RdmaMng::parseNotification(rdma::RdmaContext &ctx)

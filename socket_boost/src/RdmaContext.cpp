@@ -240,7 +240,7 @@ namespace rdma
         rdmaSetupPostHs(remote, local);
 
         unique_lock<mutex> lock(mtx_tx);
-        is_ready.store(TRUE, std::memory_order_release);
+        is_ready.store(true, std::memory_order_release);
         cond_tx.notify_all();
         lock.unlock();
     }
@@ -367,6 +367,7 @@ namespace rdma
     RdmaContext::RdmaContext()
     {
         is_ready.store(false);
+        stop.store(false);
         flush_threshold.store(THRESHOLD_NOT_AUTOSCALER);
         n_msg_sent.store(0);
         buffer = nullptr;
@@ -453,7 +454,7 @@ namespace rdma
 
     // WRITE
 
-    void RdmaContext::postWriteOp(uintptr_t remote_addr_2, uintptr_t local_addr, size_t size_to_write, int signaled)
+    void RdmaContext::postWriteOp(uintptr_t remote_addr_2, uintptr_t local_addr, size_t size_to_write, bool signaled)
     {
         struct ibv_send_wr send_wr_data = {};
         struct ibv_sge sge_data;
@@ -469,7 +470,7 @@ namespace rdma
         send_wr_data.wr.rdma.rkey = remote_rkey;
         send_wr_data.sg_list = &sge_data;
         send_wr_data.num_sge = 1;
-        if (signaled == TRUE)
+        if (signaled == true)
             send_wr_data.send_flags = IBV_SEND_SIGNALED;
 
         // Post send in SQ with ibv_post_send
@@ -483,7 +484,7 @@ namespace rdma
         }
 
         // Poll the completion queue
-        if (signaled == TRUE)
+        if (signaled == true)
             pollCqSend();
     }
 
@@ -502,14 +503,14 @@ namespace rdma
 
             uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
 
-            postWriteOp(remote_addr_2, batch_start, batch_size, TRUE);
+            postWriteOp(remote_addr_2, batch_start, batch_size, true);
 
             batch_start = (uintptr_t)&ringbuffer.data[0];
             batch_size = w_idx * sizeof(rdma_msg_t);
 
             remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
 
-            postWriteOp(remote_addr_2, batch_start, batch_size, TRUE);
+            postWriteOp(remote_addr_2, batch_start, batch_size, true);
         }
         else
         {
@@ -519,7 +520,7 @@ namespace rdma
 
             uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
 
-            postWriteOp(remote_addr_2, batch_start, batch_size, TRUE);
+            postWriteOp(remote_addr_2, batch_start, batch_size, true);
         }
 
         // calculate the offset
@@ -541,7 +542,7 @@ namespace rdma
 
         postWriteOp(remote_addr_write_index,
                     (uintptr_t)(buffer + write_index_offset),
-                    sizeof(ringbuffer.remote_write_index), TRUE);
+                    sizeof(ringbuffer.remote_write_index), true);
 
         auto flags = peer_rb->flags.flags.load(std::memory_order_acquire);
 
@@ -549,8 +550,8 @@ namespace rdma
             sendDataReady();
 
         cond_commit_flush.notify_all();
-        //cout << "Flush completed: in = " << in << ", out = " << out << endl;
-        // std::unique_lock will automatically unlock mtx_commit_flush when it goes out of scope
+        // cout << "Flush completed: in = " << in << ", out = " << out << endl;
+        //  std::unique_lock will automatically unlock mtx_commit_flush when it goes out of scope
     }
 
     int RdmaContext::writeMsg(int src_fd, struct sock_id original_socket)
@@ -590,6 +591,12 @@ namespace rdma
                          << ", End Index: " << end_w_index << endl;
                     c++;
                 }
+
+                if (stop.load() == true)
+                {
+                    cout << "Stopping writeMsg due to stop signal." << endl;
+                    return 1; // stop the thread
+                }
             }
 
             // modulo the indexes
@@ -608,6 +615,8 @@ namespace rdma
 
             n_msg_sent.fetch_add(1);
             ringbuffer->local_write_index.fetch_add(1);
+
+            // this_thread::sleep_for(chrono::nanoseconds(1)); // simulate some processing delay
         }
 
         return 1;
@@ -690,7 +699,7 @@ namespace rdma
         postWriteOp(remote_addr_read_index,
                     (uintptr_t)(buffer + read_index_offset),
                     sizeof(ringbuffer.remote_read_index),
-                    TRUE);
+                    true);
     }
 
     void RdmaContext::readMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index)
@@ -752,7 +761,7 @@ namespace rdma
         postWriteOp(remote_addr_2,
                     (uintptr_t)(buffer + offset),
                     sizeof(ringbuffer->flags.flags),
-                    TRUE);
+                    true);
 
         cout << "Polling status updated: " << (is_polling ? "ON" : "OFF") << endl;
     }
@@ -764,10 +773,20 @@ namespace rdma
 
         struct ibv_wc wc;
         int num_completions;
-        do
+
+        // poll until we get a completion
+        while (1)
         {
             num_completions = ibv_poll_cq(send_cq, 1, &wc);
-        } while (num_completions == 0); // poll until we get a completion
+            if (num_completions != 0 || stop.load() == true)
+                break;
+        }
+
+        if (num_completions == 0)
+        {
+            cout << "Interrupted while polling CQ, no completions found." << endl;
+            return; // no completions found, just return
+        }
 
         if (num_completions < 0)
         {

@@ -48,7 +48,7 @@ namespace bpf
         int sock_proxyfd_association_fd;
 
         pthread_t thread_pool_rb;
-        int stop_threads;
+        bool stop_threads;
         EventHandler new_sk_event_handler;
 
         BpfMng();

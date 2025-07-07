@@ -11,9 +11,6 @@
 #define AF_INET 2
 #define AF_INET6 10
 
-// #define EBPF_DEBUG_SOCKET
-// #define EBPF_DEBUG_MSG
-
 struct
 {
 	__uint(type, BPF_MAP_TYPE_HASH);
