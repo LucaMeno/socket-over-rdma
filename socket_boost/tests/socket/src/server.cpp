@@ -17,6 +17,7 @@ ssize_t recv_all(int socket, void *buffer, size_t length)
         ssize_t bytes = recv(socket, (char *)buffer + total_received, length - total_received, 0);
         if (bytes <= 0)
         {
+            cerr << "Error receiving data: " << strerror(errno) << "\n";
             return bytes; // error or disconnect
         }
         total_received += bytes;
@@ -73,15 +74,15 @@ int main()
     while (quantity_of_data_to_rx > 0)
     {
         ssize_t n = recv_all(client_fd, buf, BUFFER_SIZE_BYTES);
-        tot_bytes += static_cast<uint64_t>(n);
-        quantity_of_data_to_rx -= static_cast<uint64_t>(n);
-
         if (n <= 0)
         {
             if (n < 0)
                 perror("recv");
             break;
         }
+
+        tot_bytes += static_cast<uint64_t>(n);
+        quantity_of_data_to_rx -= static_cast<uint64_t>(n);
 
         // check if the data is valid
         memcpy(&counter_test, buf, sizeof(counter_test));

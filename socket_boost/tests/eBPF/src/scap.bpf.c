@@ -326,6 +326,12 @@ int sk_msg_prog(struct sk_msg_md *msg)
 	bpf_printk("DST -- [SRC: %u:%u, DST: %u:%u]", dest_sk_id.sip, dest_sk_id.sport, dest_sk_id.dip, dest_sk_id.dport);
 #endif // EBPF_DEBUG_MSG
 
+	if (bpf_msg_apply_bytes(msg, 16 * 1024))
+	{
+		bpf_printk("Error on apply bytes to msg");
+		return SK_DROP;
+	}
+
 	// Redirect the message to the associated socket
 	ret = bpf_msg_redirect_hash(msg, &intercepted_sockets, &dest_sk_id, BPF_F_INGRESS);
 	if (ret != SK_PASS)

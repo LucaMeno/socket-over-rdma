@@ -9,7 +9,13 @@
 
 using namespace std;
 
-ssize_t send_all(int socket, void *buffer, size_t length)
+struct retErr
+{
+    ssize_t writtenUpToNow;
+    ssize_t err;
+};
+
+struct retErr send_all(int socket, void *buffer, size_t length)
 {
     size_t total_received = 0;
     while (total_received < length)
@@ -17,11 +23,17 @@ ssize_t send_all(int socket, void *buffer, size_t length)
         ssize_t bytes = send(socket, (char *)buffer + total_received, length - total_received, 0);
         if (bytes <= 0)
         {
-            return bytes; // error or disconnect
+            struct retErr result;
+            result.writtenUpToNow = total_received;
+            result.err = bytes;
+            return result; // error or disconnect
         }
         total_received += bytes;
     }
-    return total_received;
+    struct retErr result;
+    result.writtenUpToNow = total_received;
+    result.err = 1; // no error
+    return result;
 }
 
 int main(int argc, char *argv[])
@@ -63,7 +75,7 @@ int main(int argc, char *argv[])
     recv(sock, start_buf, sizeof(start_buf), 0); // Wait for server to be ready
 
     this_thread::sleep_for(chrono::seconds(1));
-    
+
     char *buf = new char[BUFFER_SIZE_BYTES];
     std::memset(buf, 'A', BUFFER_SIZE_BYTES);
 
@@ -74,29 +86,33 @@ int main(int argc, char *argv[])
 
     uint64_t counter = 0;
     uint64_t remaining = total_bytes;
+
+    uint64_t remaining_bytes = BUFFER_SIZE_BYTES;
     while (remaining > 0)
     {
         memcpy(buf, &counter, sizeof(counter));
-        ++counter;
 
-        // size_t chunk = remaining < BUFFER_SIZE_BYTES ? remaining : BUFFER_SIZE_BYTES;
-        ssize_t n = send_all(sock, buf, BUFFER_SIZE_BYTES);
+        struct retErr n = send_all(sock, buf, remaining_bytes);
 
-        if (n < 0)
+        if (n.err < 0)
         {
             cerr << "Errno: " << errno << "\n";
             perror("send");
+            remaining_bytes -= n.writtenUpToNow;
             std::this_thread::sleep_for(std::chrono::seconds(5));
             continue;
         }
-        else if (n == 0)
+        else if (n.err == 0)
         {
             std::cerr << "Connection closed by peer\n";
             break;
         }
 
-        sent_bytes += static_cast<uint64_t>(n);
-        remaining -= static_cast<uint64_t>(n);
+        ++counter;
+        remaining_bytes = BUFFER_SIZE_BYTES;
+
+        sent_bytes += static_cast<uint64_t>(BUFFER_SIZE_BYTES);
+        remaining -= static_cast<uint64_t>(BUFFER_SIZE_BYTES);
 
         if (sent_bytes % (BYTES_PER_GB) == 0)
         {
@@ -116,14 +132,22 @@ int main(int argc, char *argv[])
     double gbyte = sent_bytes / static_cast<double>(BYTES_PER_GB);
     double gbps = gbyte / sec;
 
-    if (ackn > 0 && std::string(ack).find(ACK_MESSAGE) != std::string::npos)
+    if (ackn < 0)
+    {
+        perror("recv");
+        std::cerr << "Error on ACK rx\n";
+        close(sock);
+        delete[] buf;
+        return 1;
+    }
+    else if (std::string(ack).find(ACK_MESSAGE) != std::string::npos)
     {
         std::cout << "ACK\n";
         std::cout << "TX " << gbyte << " GB in " << sec << " s (" << gbps << " GB/s)\n";
     }
     else
     {
-        std::cerr << "ACK non ricevuto!\n";
+        std::cerr << "ACK not received!\n";
     }
 
     close(sock);
