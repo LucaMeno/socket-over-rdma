@@ -570,7 +570,7 @@ namespace rdmaMng
                 recv_wr.next = nullptr;
 
                 ibv_recv_wr *bad_wr = nullptr;
-                if (ibv_post_recv(ctx->qp, &recv_wr, &bad_wr) != 0 || bad_wr)
+                if (ibv_post_srq_recv(ctx->srq, &recv_wr, &bad_wr) != 0 || bad_wr)
                 {
                     std::cerr << "Error posting recv: " << strerror(errno) << "\n";
                     break;

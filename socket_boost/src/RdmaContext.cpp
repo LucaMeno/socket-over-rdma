@@ -25,13 +25,28 @@ namespace rdma
         if (!comp_channel)
             throw runtime_error("Failed to create completion channel");
 
-        send_cq = ibv_create_cq(ctx, 16, nullptr, nullptr, 0);
-        if (!send_cq)
-            throw runtime_error("Failed to create send CQ");
+        // Create multiple send CQs for load balancing
+        for (int i = 0; i < QP_N; i++)
+        {
+            send_cqs[i] = ibv_create_cq(ctx, 16, nullptr, nullptr, 0);
+            if (!send_cqs[i])
+                throw runtime_error("Failed to create send CQ " + to_string(i));
+        }
 
+        // create receive CQ
         recv_cq = ibv_create_cq(ctx, 16, nullptr, comp_channel, 0);
         if (!recv_cq)
             throw runtime_error("Failed to create receive CQ");
+
+        // Create a shared receive CQ
+        struct ibv_srq_init_attr srq_attr = {
+            .attr = {
+                .max_wr = 1024,
+                .max_sge = 1}};
+
+        srq = ibv_create_srq(pd, &srq_attr);
+        if (!srq)
+            throw runtime_error("Failed to create shared receive CQ");
 
         if (ibv_req_notify_cq(recv_cq, 0))
             throw runtime_error("Failed to request notification on receive CQ");
@@ -47,48 +62,55 @@ namespace rdma
         if (!mr)
             throw runtime_error("Failed to register memory region");
 
-        ibv_qp_init_attr qpa = {};
-        qpa.send_cq = send_cq;
-        qpa.recv_cq = recv_cq;
-        qpa.qp_type = IBV_QPT_RC;
-        qpa.cap = {
-            .max_send_wr = 16,
-            .max_recv_wr = 16,
-            .max_send_sge = 1,
-            .max_recv_sge = 1};
+        // Create QPs for the connection
+        for (int i = 0; i < QP_N; i++)
+        {
+            ibv_qp_init_attr qpa = {};
+            qpa.send_cq = send_cqs[i];
+            qpa.recv_cq = recv_cq;
+            qpa.srq = srq; // Use the shared receive CQ
+            qpa.qp_type = IBV_QPT_RC;
+            qpa.cap = {
+                .max_send_wr = 16,
+                .max_recv_wr = 0, // ignored since we use SRQ
+                .max_send_sge = 1,
+                .max_recv_sge = 0};
 
-        qp = ibv_create_qp(pd, &qpa);
-        if (!qp)
-            throw runtime_error("Failed to create QP");
+            qps[i] = ibv_create_qp(pd, &qpa);
+            if (!qps[i])
+                throw runtime_error("Failed to create QP " + to_string(i));
 
-        ibv_qp_attr attr = {};
-        attr.qp_state = IBV_QPS_INIT;
-        attr.pkey_index = 0;
-        attr.port_num = 1;
-        attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE;
+            ibv_qp_attr attr = {};
+            attr.qp_state = IBV_QPS_INIT;
+            attr.pkey_index = 0;
+            attr.port_num = 1;
+            attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE;
 
-        int err = ibv_modify_qp(qp, &attr,
-                                IBV_QP_STATE | IBV_QP_PKEY_INDEX |
-                                    IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
-
-        if (err)
-            throw runtime_error("Failed to modify QP to INIT state");
+            int err = ibv_modify_qp(qps[i], &attr,
+                                    IBV_QP_STATE | IBV_QP_PKEY_INDEX |
+                                        IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
+            if (err)
+                throw runtime_error("Failed to modify QP to INIT state");
+        }
 
         ibv_port_attr pattr;
         ibv_query_port(ctx, 1, &pattr);
 
         union ibv_gid gid;
-        err = ibv_query_gid(ctx, 1, 0, &gid);
+        int err = ibv_query_gid(ctx, 1, 0, &gid);
         if (err)
             throw runtime_error("ibv_query_gid failed");
 
         conn_info local = {};
         local.lid = pattr.lid;
-        local.qp_num = qp->qp_num;
-        local.psn = getPsn();
         local.rkey = mr->rkey;
         local.addr = reinterpret_cast<uintptr_t>(buffer);
         local.gid = gid;
+        for (int i = 0; i < QP_N; i++)
+        {
+            local.qp_num[i] = qps[i]->qp_num;
+            local.rq_psn[i] = getPsn();
+        }
 
         return local;
     }
@@ -100,76 +122,81 @@ namespace rdma
 
         cout << " ==================== CONNECTION INFO ====================\n";
 
-        std::cout << "Local QPN: " << local.qp_num << "\n"
-                  << "Local PSN: " << local.psn << "\n"
-                  << "Local LID: " << local.lid << "\n"
-                  << "Local BUFFER: " << std::hex << local.addr << std::dec << "\n"
-                  << "Local RKEY: " << local.rkey << "\n"
-                  << "Local GID: ";
+        std::cout << "Local QPN and PSN: " << endl;
+        for (int i = 0; i < QP_N; i++)
+            std::cout << "- QPN[" << i << "]: " << local.qp_num[i] << " PSN: " << local.rq_psn[i] << "\n";
+        cout << "Local LID: " << local.lid << "\n"
+             << "Local BUFFER: " << std::hex << local.addr << std::dec << "\n"
+             << "Local RKEY: " << local.rkey << "\n"
+             << "Local GID: ";
         for (int i = 0; i < 16; i++)
             std::printf("%02x", local.gid.raw[i]);
 
-        std::cout << "Remote QPN: " << remote.qp_num << "\n"
-                  << "Remote PSN: " << remote.psn << "\n"
-                  << "Remote LID: " << remote.lid << "\n"
-                  << "Remote BUFFER: " << std::hex << remote.addr << std::dec << "\n"
-                  << "Remote RKEY: " << remote.rkey << "\n"
-                  << "Remote GID: ";
+        std::cout << "Remote QPN and PSN: " << endl;
+        for (int i = 0; i < QP_N; i++)
+            std::cout << "- QPN[" << i << "]: " << remote.qp_num[i] << " PSN: " << remote.rq_psn[i] << "\n";
+        cout << "Remote LID: " << remote.lid << "\n"
+             << "Remote BUFFER: " << std::hex << remote.addr << std::dec << "\n"
+             << "Remote RKEY: " << remote.rkey << "\n"
+             << "Remote GID: ";
         for (int i = 0; i < 16; i++)
             std::printf("%02x", remote.gid.raw[i]);
 
         std::cout << "\n ==========================================================\n";
 
-        ibv_qp_attr rtr = {};
-        rtr.qp_state = IBV_QPS_RTR;
-        rtr.path_mtu = IBV_MTU_1024;
-        rtr.dest_qp_num = remote.qp_num;
-        rtr.rq_psn = remote.psn;
-        rtr.max_dest_rd_atomic = 1;
-        rtr.min_rnr_timer = 12;
-        memset(&rtr.ah_attr, 0, sizeof(rtr.ah_attr));
-        rtr.ah_attr.is_global = 1;
-        rtr.ah_attr.port_num = 1;
-        rtr.ah_attr.dlid = 0;
-        rtr.ah_attr.grh.dgid = remote.gid;
-        rtr.ah_attr.grh.sgid_index = 0;
-        rtr.ah_attr.grh.hop_limit = 1;
+        for (int i = 0; i < QP_N; i++)
+        {
+            ibv_qp_attr rtr = {};
+            rtr.qp_state = IBV_QPS_RTR;
+            rtr.path_mtu = IBV_MTU_1024;
+            rtr.dest_qp_num = remote.qp_num[i];
+            rtr.rq_psn = remote.rq_psn[i];
+            rtr.max_dest_rd_atomic = 1;
+            rtr.min_rnr_timer = 12;
+            memset(&rtr.ah_attr, 0, sizeof(rtr.ah_attr));
+            rtr.ah_attr.is_global = 1;
+            rtr.ah_attr.port_num = 1;
+            rtr.ah_attr.dlid = 0;
+            rtr.ah_attr.grh.dgid = remote.gid;
+            rtr.ah_attr.grh.sgid_index = 0;
+            rtr.ah_attr.grh.hop_limit = 1;
 
-        int err = ibv_modify_qp(qp, &rtr,
-                                IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
-                                    IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
-                                    IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
+            int err = ibv_modify_qp(qps[i], &rtr,
+                                    IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
+                                        IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
+                                        IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
 
-        if (err)
-            throw runtime_error("Failed to modify QP to RTR state");
+            if (err)
+                throw runtime_error("Failed to modify QP to RTR state");
 
-        ibv_qp_attr rts = {};
-        rts.qp_state = IBV_QPS_RTS;
-        rts.sq_psn = local.psn;
-        rts.timeout = 14;
-        rts.retry_cnt = 7;
-        rts.rnr_retry = 7;
-        rts.max_rd_atomic = 1;
+            ibv_qp_attr rts = {};
+            rts.qp_state = IBV_QPS_RTS;
+            rts.sq_psn = local.rq_psn[i];
+            rts.timeout = 14;
+            rts.retry_cnt = 7;
+            rts.rnr_retry = 7;
+            rts.max_rd_atomic = 1;
 
-        err = ibv_modify_qp(qp, &rts,
-                            IBV_QP_STATE |
-                                IBV_QP_TIMEOUT |
-                                IBV_QP_RETRY_CNT |
-                                IBV_QP_RNR_RETRY |
-                                IBV_QP_SQ_PSN |
-                                IBV_QP_MAX_QP_RD_ATOMIC);
+            err = ibv_modify_qp(qps[i], &rts,
+                                IBV_QP_STATE |
+                                    IBV_QP_TIMEOUT |
+                                    IBV_QP_RETRY_CNT |
+                                    IBV_QP_RNR_RETRY |
+                                    IBV_QP_SQ_PSN |
+                                    IBV_QP_MAX_QP_RD_ATOMIC);
 
-        if (err)
-            throw std::runtime_error("ibv_modify_qp failed");
+            if (err)
+                throw std::runtime_error("ibv_modify_qp failed");
 
-        ibv_qp_attr attr2;
-        ibv_qp_init_attr iattr = {};
-        err = ibv_query_qp(qp, &attr2, IBV_QP_STATE, &iattr);
-        if (err)
-            throw std::runtime_error("ibv_query_qp failed");
+            ibv_qp_attr attr2;
+            ibv_qp_init_attr iattr = {};
+            err = ibv_query_qp(qps[i], &attr2, IBV_QP_STATE, &iattr);
+            if (err)
+                throw std::runtime_error("ibv_query_qp failed");
 
-        if (attr2.qp_state != IBV_QPS_RTS)
-            throw std::runtime_error("QP is not in RTS state after modification");
+            if (attr2.qp_state != IBV_QPS_RTS)
+                throw std::runtime_error("QP is not in RTS state after modification");
+        }
 
         ringbuffer_server = (rdma_ringbuffer_t *)(buffer + NOTIFICATION_OFFSET_SIZE);
         ringbuffer_server->local_read_index.store(0);
@@ -198,7 +225,7 @@ namespace rdma
         recv_wr.next = nullptr;
 
         struct ibv_recv_wr *bad_wr = nullptr;
-        if (ibv_post_recv(qp, &recv_wr, &bad_wr) != 0 || bad_wr)
+        if (ibv_post_srq_recv(srq, &recv_wr, &bad_wr) != 0 || bad_wr)
             throw std::runtime_error("Failed to post initial receive work request");
     }
 
@@ -374,31 +401,42 @@ namespace rdma
         pd = nullptr;
         mr = nullptr;
         recv_cq = nullptr;
-        send_cq = nullptr;
+        comp_channel = nullptr;
+        for (int i = 0; i < QP_N; i++)
+        {
+            send_cqs[i] = nullptr;
+            qps[i] = nullptr;
+        }
+        srq = nullptr;
         ringbuffer_client = nullptr;
         ringbuffer_server = nullptr;
         remote_rkey = 0;
         remote_addr = 0;
         last_flush_ms = 0;
         remote_ip = 0;
+        send_q_index = 0;
     }
 
     RdmaContext::~RdmaContext()
     {
         is_ready.store(false);
 
-        if (send_cq)
-            ibv_destroy_cq(send_cq);
-        if (recv_cq)
-            ibv_destroy_cq(recv_cq);
+        for (int i = 0; i < QP_N; i++)
+        {
+            if (send_cqs[i])
+                ibv_destroy_cq(send_cqs[i]);
+            if (qps[i])
+                ibv_destroy_qp(qps[i]);
+        }
+
+        if (srq)
+            ibv_destroy_srq(srq);
         if (mr)
             ibv_dereg_mr(mr);
         if (pd)
             ibv_dealloc_pd(pd);
         if (buffer)
             free(buffer);
-        if (qp)
-            ibv_destroy_qp(qp);
         if (comp_channel)
             ibv_destroy_comp_channel(comp_channel);
 
@@ -438,12 +476,14 @@ namespace rdma
         send_wr.next = nullptr;
 
         // Post send with ibv_post_send
+        uint32_t qp_index = getNextSendQIndex(); // Get the next QP index for round-robin load balancing
+
         struct ibv_send_wr *bad_send_wr;
-        if (ibv_post_send(qp, &send_wr, &bad_send_wr) != 0) // Post the send work request
+        if (ibv_post_send(qps[qp_index], &send_wr, &bad_send_wr) != 0) // Post the send work request
             throw runtime_error("Failed to post send - sendNotification");
 
         // Poll the completion queue
-        pollCqSend();
+        pollCqSend(send_cqs[qp_index]);
         cout << "Sent notification: " << getOpName(code) << endl;
     }
 
@@ -474,8 +514,10 @@ namespace rdma
             send_wr_data.send_flags = IBV_SEND_SIGNALED;
 
         // Post send in SQ with ibv_post_send
+        uint32_t qp_index = getNextSendQIndex(); // Get the next QP index for round-robin load balancing
+
         struct ibv_send_wr *bad_send_wr_data;
-        int ret = ibv_post_send(qp, &send_wr_data, &bad_send_wr_data);
+        int ret = ibv_post_send(qps[qp_index], &send_wr_data, &bad_send_wr_data);
         if (ret != 0) // Post the send work request
         {
             cerr << "Failed to post write - rdma_post_write: " << strerror(errno) << endl;
@@ -485,7 +527,7 @@ namespace rdma
 
         // Poll the completion queue
         if (signaled == true)
-            pollCqSend();
+            pollCqSend(send_cqs[qp_index]);
     }
 
     void RdmaContext::flushRingbuffer(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx)
@@ -766,9 +808,9 @@ namespace rdma
         cout << "Polling status updated: " << (is_polling ? "ON" : "OFF") << endl;
     }
 
-    void RdmaContext::pollCqSend()
+    void RdmaContext::pollCqSend(ibv_cq *send_cq_to_poll)
     {
-        if (send_cq == nullptr)
+        if (send_cq_to_poll == nullptr)
             throw runtime_error("send_cq is nullptr - pollCqSend");
 
         struct ibv_wc wc;
@@ -777,7 +819,7 @@ namespace rdma
         // poll until we get a completion
         while (1)
         {
-            num_completions = ibv_poll_cq(send_cq, 1, &wc);
+            num_completions = ibv_poll_cq(send_cq_to_poll, 1, &wc);
             if (num_completions != 0 || stop.load() == true)
                 break;
         }
@@ -828,6 +870,14 @@ namespace rdma
         std::unique_lock<std::mutex> lock(mtx_tx);
         cond_tx.wait(lock, [&]()
                      { return is_ready.load() == true; });
+    }
+
+    uint32_t RdmaContext::getNextSendQIndex()
+    {
+        unique_lock<std::mutex> lock(mtx_send_q);
+        uint32_t index = send_q_index;
+        send_q_index = (send_q_index + 1) % QP_N; // round-robin
+        return index;
     }
 
 }

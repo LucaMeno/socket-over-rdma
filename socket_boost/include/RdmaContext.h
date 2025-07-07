@@ -32,13 +32,15 @@ constexpr int THRESHOLD_NOT_AUTOSCALER = 64;
 constexpr int TIME_TO_WAIT_IF_NO_SPACE_MS = 10;
 constexpr int MAX_PAYLOAD_SIZE = (128 * 1024);
 
+constexpr int QP_N = 4;
+
 namespace rdma
 {
     struct conn_info
     {
         uint16_t lid;
-        uint32_t qp_num;
-        uint32_t psn;
+        uint32_t qp_num[QP_N];
+        uint32_t rq_psn[QP_N];
         uint32_t rkey;
         uint64_t addr;
         union ibv_gid gid;
@@ -106,10 +108,13 @@ namespace rdma
     public:
         ibv_context *ctx;
         ibv_pd *pd;
-        ibv_cq *send_cq;
-        ibv_cq *recv_cq;
         ibv_mr *mr;
-        ibv_qp *qp;
+
+        ibv_qp *qps[QP_N];
+        struct ibv_srq *srq;
+        ibv_cq *send_cqs[QP_N];
+        ibv_cq *recv_cq;
+
         char *buffer;
         uintptr_t remote_addr;
         uint32_t remote_rkey;
@@ -135,6 +140,9 @@ namespace rdma
         rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
 
         std::unordered_map<sock_id_t, int> sockid_to_fd_map; // Map of sock_id to fd for fast access
+
+        std::mutex mtx_send_q; // Mutex to protect the send_q_index
+        uint32_t send_q_index;
 
         // CLIENT - SERVER
 
@@ -165,12 +173,13 @@ namespace rdma
         ibv_context *openDevice();
         uint32_t getPsn();
         void sendNotification(CommunicationCode code);
-        void pollCqSend();
+        void pollCqSend(ibv_cq *send_cq_to_poll);
         void parseMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg);
         void postWriteOp(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
         void sendDataReady();
         conn_info rdmaSetupPreHs();
         void rdmaSetupPostHs(conn_info remote, conn_info local);
+        uint32_t getNextSendQIndex();
     };
 
 } // namespace rdma
