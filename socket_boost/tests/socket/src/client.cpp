@@ -56,7 +56,7 @@ int main(int argc, char *argv[])
     sockaddr_in srv{};
     srv.sin_family = AF_INET;
     srv.sin_port = htons(PORT);
-    if (inet_pton(AF_INET, "192.168.17.95", &srv.sin_addr) <= 0)
+    if (inet_pton(AF_INET, "127.0.0.1", &srv.sin_addr) <= 0)
     {
         perror("inet_pton");
         return 1;

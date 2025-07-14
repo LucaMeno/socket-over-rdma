@@ -38,6 +38,8 @@ struct th_param
     int wait;
 };
 
+#define BUFFER_SIZE 1024 * 1024 // 1 MB
+
 void *th_fun(void *arg)
 {
     struct th_param *param = (struct th_param *)arg;
@@ -45,14 +47,24 @@ void *th_fun(void *arg)
     int fd2 = param->fd2;
     int wait = param->wait;
 
-    char buf[64000];
+    int i = 0;
+
+    char buf[BUFFER_SIZE];
     while (!STOP)
     {
         /*if (wait == 1)
         {
             //usleep(500 * 1000); // wait for 500 ms
         }*/
+        if (i == 1)
+        {
+            continue;
+        }
         int len = recv(fd1, buf, sizeof(buf), 0);
+        if (len > 0)
+        {
+            i++;
+        }
         while (len > 0)
         {
             int sent = 0;

@@ -11,9 +11,6 @@
 #define AF_INET 2
 #define AF_INET6 10
 
-// #define EBPF_DEBUG_SOCKET
-// #define EBPF_DEBUG_MSG
-
 struct
 {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -106,6 +103,14 @@ struct
 	__type(value, __u16);
 } server_port SEC(".maps");
 
+struct
+{
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 10);
+	__type(key, __u16);
+	__type(value, __u32);
+} counter SEC(".maps");
+
 SEC("sockops")
 int sockops_prog(struct bpf_sock_ops *skops)
 {
@@ -159,7 +164,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 			goto is_target;
 
 		// check if SRC or DST IP is the one of the target IPs
-		/*key = sk_id.dip;
+		key = sk_id.dip;
 		int *is_ip_target_1 = bpf_map_lookup_elem(&target_ip, &key);
 		if (is_ip_target_1 != NULL)
 			goto is_target;
@@ -167,7 +172,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		key = sk_id.sip;
 		int *is_ip_target_2 = bpf_map_lookup_elem(&target_ip, &key);
 		if (is_ip_target_2 != NULL)
-			goto is_target;*/
+			goto is_target;
 
 #ifdef EBPF_DEBUG_SOCKET
 		bpf_printk("SKIP [SRC: %u:%u, DST: %u:%u] - not target port", sk_id.sip, sk_id.sport, sk_id.dip, sk_id.dport);
@@ -271,7 +276,10 @@ int sk_msg_prog(struct sk_msg_md *msg)
 
 	// Only process IPv4 packets
 	if (msg->family != AF_INET)
-		bpf_printk("Not IPv4 family");
+	{
+		bpf_printk("Not IPv4 family, family: %d", msg->family);
+		return SK_PASS;
+	}
 
 	int k = 0; // Key for retrieving the server port
 	int ret = 0;
@@ -281,7 +289,7 @@ int sk_msg_prog(struct sk_msg_md *msg)
 	if (!server_port_ptr)
 	{
 		bpf_printk("Error on lookup server port");
-		return SK_DROP;
+		return SK_PASS;
 	}
 
 	// Prepare the key for the sockmap
@@ -326,24 +334,18 @@ int sk_msg_prog(struct sk_msg_md *msg)
 	bpf_printk("DST -- [SRC: %u:%u, DST: %u:%u]", dest_sk_id.sip, dest_sk_id.sport, dest_sk_id.dip, dest_sk_id.dport);
 #endif // EBPF_DEBUG_MSG
 
-	if (bpf_msg_apply_bytes(msg, 16 * 1024))
-	{
-		bpf_printk("Error on apply bytes to msg");
-		return SK_DROP;
-	}
-
 	// Redirect the message to the associated socket
-	ret = bpf_msg_redirect_hash(msg, &intercepted_sockets, &dest_sk_id, BPF_F_INGRESS);
-	if (ret != SK_PASS)
+	int verdict = bpf_msg_redirect_hash(msg, &intercepted_sockets, &dest_sk_id, BPF_F_INGRESS);
+	if (verdict == SK_DROP)
 	{
-		bpf_printk("Error on redirect msg %ld", ret);
+		bpf_printk("Error on redirect msg %ld", verdict);
 	}
 
 #ifdef EBPF_DEBUG_MSG
 	bpf_printk("Redirect msg to %s", (sk_id.dport == *server_port_ptr) ? "app" : "proxy");
 #endif // EBPF_DEBUG_MSG
 
-	return ret;
+	return verdict;
 }
 
 SEC("tracepoint/tcp/tcp_destroy_sock")

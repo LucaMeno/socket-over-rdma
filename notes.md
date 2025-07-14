@@ -89,3 +89,31 @@ clean:
 	rm -rf $(BUILD)
 
 ```
+
+
+
+
+
+
+``` c++
+
+// writer thread
+while (true) {
+	select(socketToReadFrom[]);
+
+	if(ISSET(socketToReadFrom[i])) {
+		// retrrieve the context to reach the destination
+		ctx = getContext(socketToReadFrom[i]);
+		// read the msg and write it into the buffer
+		ctx.writeMsg(socketToReadFrom[i]);
+	}
+}
+
+```
+
+
+
+
+
+
+

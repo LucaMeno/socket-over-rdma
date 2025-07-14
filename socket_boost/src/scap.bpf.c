@@ -6,10 +6,13 @@
 #include <bpf/bpf_endian.h>
 
 #include "common.h"
-#include "config.h"
 
 #define AF_INET 2
 #define AF_INET6 10
+
+// #define EBPF_DEBUG_SOCKET
+// #define EBPF_DEBUG_MSG
+// #define INTERCEPT_EVERYTHING
 
 struct
 {

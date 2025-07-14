@@ -124,30 +124,39 @@ namespace rdmaMng
 
     void RdmaMng::serverThread()
     {
-        cout << "Server thread started" << endl;
-
-        while (stop_threads.load() == false)
+        try
         {
-            unique_ptr<rdma::RdmaContext> ctx = make_unique<rdma::RdmaContext>();
+            cout << "Server thread started" << endl;
 
-            serverConnection_t sc = ctx->serverSetup();
-
-            int ready = 0;
-            vector<int> fds = {sc.fd};
-            while (stop_threads.load() == false && waitOnSelect(fds).empty())
-                ;
-
-            if (stop_threads.load() == true)
-                return; // Exit if stop_threads is set
-
-            ctx->serverHandleNewClient(sc);
-
-            ctxs.push_back(std::move(ctx));
-
-            if (!notification_thread.joinable())
+            while (stop_threads.load() == false)
             {
-                launchBackbroundThread();
+                unique_ptr<rdma::RdmaContext> ctx = make_unique<rdma::RdmaContext>();
+
+                serverConnection_t sc = ctx->serverSetup();
+
+                int ready = 0;
+                vector<int> fds = {sc.fd};
+                while (stop_threads.load() == false && waitOnSelect(fds).empty())
+                    ;
+
+                if (stop_threads.load() == true)
+                    return; // Exit if stop_threads is set
+
+                ctx->serverHandleNewClient(sc);
+
+                ctxs.push_back(std::move(ctx));
+
+                if (!notification_thread.joinable())
+                {
+                    launchBackbroundThread();
+                }
             }
+        }
+        catch (const std::exception &e)
+        {
+            cerr << "Exception in serverThread: " << e.what() << endl;
+            perror("Details");
+            throw; // Re-throw the exception to be handled by the caller
         }
     }
 
@@ -159,176 +168,194 @@ namespace rdmaMng
 
     void RdmaMng::writerThread(vector<sk::client_sk_t> sk_to_monitor)
     {
-        if (sk_to_monitor.empty())
+        try
         {
-            cout << "No sockets to monitor in writer thread" << endl;
-            return;
-        }
-
-        fd_set read_fds, temp_fds;
-        ssize_t bytes_received;
-
-        // Initialize the file descriptor set
-        FD_ZERO(&read_fds);
-
-        int max_fd = -1;
-
-        for (int i = 0; i < sk_to_monitor.size(); i++)
-        {
-            if (sk_to_monitor[i].fd >= 0)
+            if (sk_to_monitor.empty())
             {
-                FD_SET(sk_to_monitor[i].fd, &read_fds);
-                if (sk_to_monitor[i].fd > max_fd)
-                    max_fd = sk_to_monitor[i].fd;
+                cout << "No sockets to monitor in writer thread" << endl;
+                return;
             }
-        }
 
-        if (max_fd < 0)
-        {
-            cout << "No valid sockets to monitor in writer thread" << endl;
-            return;
-        }
+            fd_set read_fds, temp_fds;
+            ssize_t bytes_received;
 
-        int k = 1;
-        while (atomic_load(&stop_threads) == false)
-        {
-            temp_fds = read_fds;
+            // Initialize the file descriptor set
+            FD_ZERO(&read_fds);
 
-            struct timeval tv;
-            tv.tv_sec = TIME_STOP_SELECT_SEC;
-            tv.tv_usec = 0;
+            int max_fd = -1;
 
-            int activity = select(max_fd + 1, &temp_fds, nullptr, nullptr, &tv);
-            if (activity == -1)
+            for (int i = 0; i < sk_to_monitor.size(); i++)
             {
-                if (errno == EINTR)
+                if (sk_to_monitor[i].fd >= 0)
                 {
-                    cout << "Select interrupted by signal in writer_thread" << endl;
+                    FD_SET(sk_to_monitor[i].fd, &read_fds);
+                    if (sk_to_monitor[i].fd > max_fd)
+                        max_fd = sk_to_monitor[i].fd;
+                }
+            }
+
+            if (max_fd < 0)
+            {
+                cout << "No valid sockets to monitor in writer thread" << endl;
+                return;
+            }
+
+            int k = 1;
+            while (atomic_load(&stop_threads) == false)
+            {
+                temp_fds = read_fds;
+
+                struct timeval tv;
+                tv.tv_sec = TIME_STOP_SELECT_SEC;
+                tv.tv_usec = 0;
+
+                int activity = select(max_fd + 1, &temp_fds, nullptr, nullptr, &tv);
+                if (activity == -1)
+                {
+                    if (errno == EINTR)
+                    {
+                        cout << "Select interrupted by signal in writer_thread" << endl;
+                        break;
+                    }
+                    perror("select error");
                     break;
                 }
-                perror("select error");
-                break;
-            }
-            else if (stop_threads.load() == true)
-            {
-                break; // stop the thread if stop_threads is set
-            }
-
-            // Handle data on client sockets
-            for (int fd = 0; fd <= max_fd; fd++)
-            {
-                if (FD_ISSET(fd, &temp_fds))
+                else if (stop_threads.load() == true)
                 {
-                    //  retrieve the proxy socket id
-                    int j = 0;
-                    for (; j < sk_to_monitor.size(); j++)
-                        if (sk_to_monitor[j].fd == fd)
-                            break;
-                    if (j == sk_to_monitor.size())
+                    break; // stop the thread if stop_threads is set
+                }
+
+                // Handle data on client sockets
+                for (int fd = 0; fd <= max_fd; fd++)
+                {
+                    if (FD_ISSET(fd, &temp_fds))
                     {
-                        cout << "Socket not found in the list - writer_thread" << endl;
-                        continue;
-                    }
-
-                    struct sock_id app = bpf_ctx.getAppSkFromProxySk(sk_to_monitor[j].sk_id);
-                    if (app.sip == 0)
-                    {
-                        cout << "No app socket found for fd: " << fd << endl;
-                        FD_CLR(fd, &read_fds);
-                        continue;
-                    }
-
-                    // get the context
-                    auto ctxIt = ctxs.begin();
-                    for (; ctxIt != ctxs.end(); ++ctxIt)
-                        if ((*ctxIt)->remote_ip == app.dip)
-                            break; // found the context for this fd
-
-                    if (ctxIt == ctxs.end())
-                    {
-                        cout << "Context not found - writer_thread" << endl;
-                        continue; // no context for this IP
-                    }
-
-                    auto &ctx = **ctxIt;
-
-                    // Wait for the context to be ready
-                    ctx.waitForContextToBeReady();
-
-                    while (1)
-                    {
-                        int ret = ctx.writeMsg(fd, app);
-
-                        if (ret <= 0)
+                        //  retrieve the proxy socket id
+                        int j = 0;
+                        for (; j < sk_to_monitor.size(); j++)
+                            if (sk_to_monitor[j].fd == fd)
+                                break;
+                        if (j == sk_to_monitor.size())
                         {
-                            if (ret == 0)
+                            cout << "Socket not found in the list - writer_thread" << endl;
+                            continue;
+                        }
+
+                        struct sock_id app = bpf_ctx.getAppSkFromProxySk(sk_to_monitor[j].sk_id);
+                        if (app.sip == 0)
+                        {
+                            cout << "No app socket found for fd: " << fd << endl;
+                            FD_CLR(fd, &read_fds);
+                            continue;
+                        }
+
+                        // get the context
+                        auto ctxIt = ctxs.begin();
+                        for (; ctxIt != ctxs.end(); ++ctxIt)
+                            if ((*ctxIt)->remote_ip == app.dip)
+                                break; // found the context for this fd
+
+                        if (ctxIt == ctxs.end())
+                        {
+                            cout << "Context not found - writer_thread" << endl;
+                            continue; // no context for this IP
+                        }
+
+                        auto &ctx = **ctxIt;
+
+                        // Wait for the context to be ready
+                        ctx.waitForContextToBeReady();
+
+                        while (1)
+                        {
+                            int ret = ctx.writeMsg(fd, app);
+
+                            if (ret <= 0)
                             {
-                                cout << "0" << endl;
-                                throw runtime_error("Connection closed - writerThread");
+                                if (ret == 0)
+                                {
+                                    cout << "0" << endl;
+                                    throw runtime_error("Connection closed - writerThread");
+                                }
+                                else if (errno == EAGAIN || errno == EWOULDBLOCK)
+                                {
+                                    break;
+                                }
+                                else
+                                {
+                                    cerr << "recv error" << endl;
+                                    perror("recv error");
+                                    throw runtime_error("Connection closed - writerThread");
+                                }
                             }
-                            else if (errno == EAGAIN || errno == EWOULDBLOCK)
+                            else if (ret == 1)
                             {
                                 break;
                             }
-                            else
-                            {
-                                cerr << "recv error" << endl;
-                                perror("recv error");
-                                throw runtime_error("Connection closed - writerThread");
-                            }
-                        }
-                        else if (ret == 1)
-                        {
-                            break;
                         }
                     }
                 }
             }
+        }
+        catch (const std::exception &e)
+        {
+            cerr << "Exception in writerThread: " << e.what() << endl;
+            perror("Details");
+            throw; // Re-throw the exception to be handled by the caller
         }
     }
 
     void RdmaMng::pollingThread()
     {
-        cout << "Polling thread started" << endl;
-
-        unique_lock<mutex> lock(mtx_polling);
-        is_polling_thread_running = false;
-        while (is_polling_thread_running == false && stop_threads.load() == false)
+        try
         {
-            cout << "Waiting for polling thread to start..." << endl;
-            cond_polling.wait(lock);
+            cout << "Polling thread started" << endl;
+
+            unique_lock<mutex> lock(mtx_polling);
+            is_polling_thread_running = false;
+            while (is_polling_thread_running == false && stop_threads.load() == false)
+            {
+                cout << "Waiting for polling thread to start..." << endl;
+                cond_polling.wait(lock);
+            }
+            lock.unlock();
+
+            auto ctxIt = ctxs.begin();
+
+            cout << "Polling thread is running" << endl;
+
+            while (stop_threads.load() == false)
+            {
+                auto &ctx = **ctxIt;
+                int ret;
+                try
+                {
+                    ret = consumeRingbuffer(ctx, ctx.is_server ? *ctx.ringbuffer_client : *ctx.ringbuffer_server);
+                }
+                catch (const std::exception &e)
+                {
+                    cerr << "Exception in pollingThread: " << e.what() << endl;
+                }
+                if (ret < 0)
+                {
+                    throw runtime_error("Error consuming ring buffer - pollingThread");
+                }
+                else if (ret == 1)
+                {
+                    // no msg to read
+                    // break;
+                }
+
+                ctxIt++;
+                if (ctxIt == ctxs.end())
+                    ctxIt = ctxs.begin(); // reset the iterator to the beginning
+            }
         }
-        lock.unlock();
-
-        auto ctxIt = ctxs.begin();
-
-        cout << "Polling thread is running" << endl;
-
-        while (stop_threads.load() == false)
+        catch (const std::exception &e)
         {
-            auto &ctx = **ctxIt;
-            int ret;
-            try
-            {
-                ret = consumeRingbuffer(ctx, ctx.is_server ? *ctx.ringbuffer_client : *ctx.ringbuffer_server);
-            }
-            catch (const std::exception &e)
-            {
-                cerr << "Exception in pollingThread: " << e.what() << endl;
-            }
-            if (ret < 0)
-            {
-                throw runtime_error("Error consuming ring buffer - pollingThread");
-            }
-            else if (ret == 1)
-            {
-                // no msg to read
-                // break;
-            }
-
-            ctxIt++;
-            if (ctxIt == ctxs.end())
-                ctxIt = ctxs.begin(); // reset the iterator to the beginning
+            cerr << "Exception in pollingThread: " << e.what() << endl;
+            perror("Details");
+            throw; // Re-throw the exception to be handled by the caller
         }
     }
 
@@ -464,120 +491,129 @@ namespace rdmaMng
 
     void RdmaMng::listenThread()
     {
-        std::cout << "Listening for notifications..." << std::endl;
-
-        while (!stop_threads)
+        try
         {
-            fd_set fds;
-            FD_ZERO(&fds);
-            int max_fd = -1;
+            std::cout << "Listening for notifications..." << std::endl;
 
-            for (const auto &ctx_ptr : ctxs)
+            while (!stop_threads)
             {
-                RdmaContext *ctx = ctx_ptr.get();
-                if (!ctx->recv_cq || !ctx->comp_channel)
+                fd_set fds;
+                FD_ZERO(&fds);
+                int max_fd = -1;
+
+                for (const auto &ctx_ptr : ctxs)
                 {
-                    std::cerr << "Context not ready, skipping\n";
-                    continue;
-                }
-
-                FD_SET(ctx->comp_channel->fd, &fds);
-                max_fd = std::max(max_fd, ctx->comp_channel->fd);
-            }
-
-            if (max_fd < 0)
-            {
-                throw std::runtime_error("No valid contexts to monitor");
-            }
-
-            timeval tv{TIME_STOP_SELECT_SEC, 0};
-
-            int activity = select(max_fd + 1, &fds, nullptr, nullptr, &tv);
-            if (activity == -1)
-            {
-                if (errno == EINTR)
-                {
-                    std::cout << "Select interrupted by signal\n";
-                    break;
-                }
-                perror("select error");
-                break;
-            }
-
-            for (int fd = 0; fd <= max_fd; ++fd)
-            {
-                if (!FD_ISSET(fd, &fds))
-                    continue;
-
-                RdmaContext *ctx = nullptr;
-                for (const auto &c : ctxs)
-                {
-                    if (c->comp_channel && c->comp_channel->fd == fd)
+                    RdmaContext *ctx = ctx_ptr.get();
+                    if (!ctx->recv_cq || !ctx->comp_channel)
                     {
-                        ctx = c.get();
+                        std::cerr << "Context not ready, skipping\n";
+                        continue;
+                    }
+
+                    FD_SET(ctx->comp_channel->fd, &fds);
+                    max_fd = std::max(max_fd, ctx->comp_channel->fd);
+                }
+
+                if (max_fd < 0)
+                {
+                    throw std::runtime_error("No valid contexts to monitor");
+                }
+
+                timeval tv{TIME_STOP_SELECT_SEC, 0};
+
+                int activity = select(max_fd + 1, &fds, nullptr, nullptr, &tv);
+                if (activity == -1)
+                {
+                    if (errno == EINTR)
+                    {
+                        std::cout << "Select interrupted by signal\n";
                         break;
                     }
-                }
-
-                if (!ctx)
-                {
-                    throw std::runtime_error("Context not found for fd");
-                }
-
-                struct ibv_cq *ev_cq = nullptr;
-                void *ev_ctx = nullptr;
-                if (ibv_get_cq_event(ctx->comp_channel, &ev_cq, &ev_ctx))
-                {
-                    perror("ibv_get_cq_event");
-                    continue;
-                }
-
-                ibv_ack_cq_events(ev_cq, 1);
-
-                if (ibv_req_notify_cq(ctx->recv_cq, 0))
-                {
-                    perror("ibv_req_notify_cq");
-                    continue;
-                }
-
-                struct ibv_wc wc{};
-                int num_completions = ibv_poll_cq(ctx->recv_cq, 1, &wc);
-                if (num_completions < 0)
-                {
-                    std::cerr << "Failed to poll CQ: " << strerror(errno) << std::endl;
-                    continue;
-                }
-
-                if (num_completions == 0)
-                    continue;
-
-                if (wc.status != IBV_WC_SUCCESS)
-                {
-                    std::cerr << "CQ error: " << ibv_wc_status_str(wc.status) << "\n";
-                    continue;
-                }
-
-                // Repost receive
-                ibv_sge sge{
-                    .addr = reinterpret_cast<uintptr_t>(ctx->buffer),
-                    .length = sizeof(notification_t),
-                    .lkey = ctx->mr->lkey};
-
-                ibv_recv_wr recv_wr = {};
-                recv_wr.wr_id = 0;
-                recv_wr.sg_list = &sge;
-                recv_wr.num_sge = 1;
-                recv_wr.next = nullptr;
-
-                ibv_recv_wr *bad_wr = nullptr;
-                if (ibv_post_srq_recv(ctx->srq, &recv_wr, &bad_wr) != 0 || bad_wr)
-                {
-                    std::cerr << "Error posting recv: " << strerror(errno) << "\n";
+                    perror("select error");
                     break;
                 }
 
-                parseNotification(*ctx);
+                for (int fd = 0; fd <= max_fd; ++fd)
+                {
+                    if (!FD_ISSET(fd, &fds))
+                        continue;
+
+                    RdmaContext *ctx = nullptr;
+                    for (const auto &c : ctxs)
+                    {
+                        if (c->comp_channel && c->comp_channel->fd == fd)
+                        {
+                            ctx = c.get();
+                            break;
+                        }
+                    }
+
+                    if (!ctx)
+                    {
+                        throw std::runtime_error("Context not found for fd");
+                    }
+
+                    struct ibv_cq *ev_cq = nullptr;
+                    void *ev_ctx = nullptr;
+                    if (ibv_get_cq_event(ctx->comp_channel, &ev_cq, &ev_ctx))
+                    {
+                        perror("ibv_get_cq_event");
+                        continue;
+                    }
+
+                    ibv_ack_cq_events(ev_cq, 1);
+
+                    if (ibv_req_notify_cq(ctx->recv_cq, 0))
+                    {
+                        perror("ibv_req_notify_cq");
+                        continue;
+                    }
+
+                    struct ibv_wc wc{};
+                    int num_completions = ibv_poll_cq(ctx->recv_cq, 1, &wc);
+                    if (num_completions < 0)
+                    {
+                        std::cerr << "Failed to poll CQ: " << strerror(errno) << std::endl;
+                        continue;
+                    }
+
+                    if (num_completions == 0)
+                        continue;
+
+                    if (wc.status != IBV_WC_SUCCESS)
+                    {
+                        std::cerr << "CQ error: " << ibv_wc_status_str(wc.status) << "\n";
+                        continue;
+                    }
+
+                    // Repost receive
+                    ibv_sge sge{
+                        .addr = reinterpret_cast<uintptr_t>(ctx->buffer),
+                        .length = sizeof(notification_t),
+                        .lkey = ctx->mr->lkey};
+
+                    ibv_recv_wr recv_wr = {};
+                    recv_wr.wr_id = 0;
+                    recv_wr.sg_list = &sge;
+                    recv_wr.num_sge = 1;
+                    recv_wr.next = nullptr;
+
+                    ibv_recv_wr *bad_wr = nullptr;
+                    if (ibv_post_srq_recv(ctx->srq, &recv_wr, &bad_wr) != 0 || bad_wr)
+                    {
+                        std::cerr << "Error posting recv: " << strerror(errno) << "\n";
+                        break;
+                    }
+
+                    parseNotification(*ctx);
+                }
             }
+        }
+        catch (const std::exception &e)
+        {
+            cerr << "Exception in listenThread: " << e.what() << endl;
+            perror("Details");
+            throw; // Re-throw the exception to be handled by the caller
         }
     }
 

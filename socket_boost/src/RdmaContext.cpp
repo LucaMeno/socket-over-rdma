@@ -374,12 +374,16 @@ namespace rdma
             return nullptr;
         }
 
-        /*for (int i = 0; i < num_devices; ++i)
+        for (int i = 0; i < num_devices; ++i)
         {
             std::cout << "Device " << i << ": " << ibv_get_device_name(device_list[i]) << "\n";
-        }*/
+        }
 
-        ibv_context *ctx = ibv_open_device(device_list[0]);
+        int devIndex = Config::getDeviceIndex();
+
+        cout << "Using device: " << ibv_get_device_name(device_list[devIndex]) << "\n";
+
+        ibv_context *ctx = ibv_open_device(device_list[devIndex]);
         ibv_free_device_list(device_list);
         return ctx;
     }

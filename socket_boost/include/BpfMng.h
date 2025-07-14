@@ -12,7 +12,6 @@
 
 #include <common.h>
 #include <SocketMng.h>
-#include <config.h>
 
 using RawCallback = int (*)(void *, std::size_t);
 

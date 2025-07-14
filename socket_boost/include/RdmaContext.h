@@ -18,7 +18,7 @@
 
 #include "BpfMng.h"
 #include "SocketMng.h"
-#include "config.h"
+#include "Config.hpp"
 #include "SockMap.hpp"
 
 #define RING_IDX(i) ((i) & (MAX_MSG_BUFFER - 1))

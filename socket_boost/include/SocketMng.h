@@ -12,7 +12,7 @@
 #include <iostream>
 
 #include <common.h>
-#include <config.h>
+#include <Config.hpp>
 
 constexpr int NUMBER_OF_SOCKETS = 16;
 
