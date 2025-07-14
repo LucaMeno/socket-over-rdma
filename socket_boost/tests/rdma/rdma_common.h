@@ -7,6 +7,10 @@
 #include <stdint.h>
 #include <infiniband/verbs.h>
 #include <iostream>
+#include <vector>
+#include <arpa/inet.h>
+#include <stdio.h>
+#include <string.h>
 
 struct conn_info
 {
@@ -35,8 +39,8 @@ typedef struct
 } rdma_ctx_t;
 
 
-ibv_context *open_device();
+ibv_context *open_device(int devIndex);
 uint32_t gen_psn();
-
+int select_gid_index(struct ibv_context *ctx, uint8_t port_num);
 
 #endif // RDMA_COMMON_H

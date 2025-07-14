@@ -88,7 +88,7 @@ int main()
         memcpy(&counter_test, buf, sizeof(counter_test));
         if (counter_test != counter)
         {
-            std::cerr << "Data mismatch: expected " << counter << ", got " << counter_test << "\n";
+            //std::cerr << "Data mismatch: expected " << counter << ", got " << counter_test << "\n";
         }
         ++counter;
 
@@ -106,8 +106,9 @@ int main()
     double sec = std::chrono::duration<double>(t1 - t0).count();
     double gbyte = tot_bytes / static_cast<double>(BYTES_PER_GB);
     double gbps = gbyte / sec;
+    gbps *= 8; // Convert to Gb/s
 
-    std::cout << "Rx " << gbyte << " GB in " << sec << " s (" << gbps << " GB/s)\n";
+    std::cout << "Rx " << gbyte << " GB in " << sec << " s (" << gbps << " Gb/s)\n";
 
     send(client_fd, ACK_MESSAGE, std::strlen(ACK_MESSAGE), 0);
 

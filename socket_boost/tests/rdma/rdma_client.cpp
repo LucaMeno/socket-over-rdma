@@ -16,6 +16,8 @@
 #define TCP_PORT "7471"
 #define SIZE 1024
 
+using namespace std;
+
 int tcp_connect(const std::string &ip)
 {
     struct addrinfo hints = {};
@@ -41,18 +43,19 @@ int tcp_connect(const std::string &ip)
     return fd;
 }
 
-
 int main(int argc, char **argv)
 {
-    if (argc != 2)
+    if (argc != 3)
     {
-        std::cerr << "Usage: " << argv[0] << " <server-ip>\n";
+        std::cerr << "Usage: " << argv[0] << " <server-ip> <dev-index>\n";
         return 1;
     }
 
+    int devIndex = std::atoi(argv[2]);
+
     srand48(getpid());
 
-    auto *ctx = open_device();
+    auto *ctx = open_device(devIndex);
     if (!ctx)
         return 1;
 
@@ -93,7 +96,8 @@ int main(int argc, char **argv)
     ibv_query_port(ctx, 1, &pattr);
 
     union ibv_gid gid;
-    if (ibv_query_gid(ctx, 1, 0, &gid))
+    int gid_index = select_gid_index(ctx, 1);
+    if (ibv_query_gid(ctx, 1, gid_index, &gid))
     {
         perror("ibv_query_gid");
         return 1;
@@ -106,18 +110,6 @@ int main(int argc, char **argv)
     local.rkey = mr->rkey;
     local.addr = reinterpret_cast<uintptr_t>(buf);
     local.gid = gid;
-
-    std::cout << "Local connection info:\n"
-              << "LID: " << local.lid << "\n"
-              << "QP number: " << local.qp_num << "\n"
-              << "PSN: " << local.psn << "\n"
-              << "RKEY: " << local.rkey << "\n"
-              << "GID: ";
-    for (int i = 0; i < 16; i++)
-    {
-        printf("%02x", local.gid.raw[i]);
-    }
-    std::cout << "\nBuffer address: 0x" << std::hex << local.addr << std::dec << "\n";
 
     int sock = tcp_connect(argv[1]);
     if (sock < 0)
@@ -140,12 +132,30 @@ int main(int argc, char **argv)
 
     close(sock);
 
-    std::cout << "Remote QPN: " << remote.qp_num << "\n"
-              << "Remote PSN: " << remote.psn << "\n"
-              << "Remote LID: " << remote.lid << "\n"
-              << "Remote GID: "
-              << std::hex << int(remote.gid.raw[0]) << ":"
-              << int(remote.gid.raw[1]) << std::dec << "\n";
+    cout << " ==================== CONNECTION INFO ====================\n";
+
+    std::cout << "Local QPN and PSN: " << endl;
+    for (int i = 0; i < 1; i++)
+        std::cout << "- QPN[" << i << "]: " << local.qp_num << " PSN: " << local.psn << "\n";
+    cout << "Local LID: " << local.lid << "\n"
+         << "Local BUFFER: " << std::hex << local.addr << std::dec << "\n"
+         << "Local RKEY: " << local.rkey << "\n"
+         << "Local GID: ";
+    for (int i = 0; i < 16; i++)
+        std::printf("%02x", local.gid.raw[i]);
+
+    std::cout << endl
+              << "Remote QPN and PSN: " << endl;
+    for (int i = 0; i < 1; i++)
+        std::cout << "- QPN[" << i << "]: " << remote.qp_num << " PSN: " << remote.psn << "\n";
+    cout << "Remote LID: " << remote.lid << "\n"
+         << "Remote BUFFER: " << std::hex << remote.addr << std::dec << "\n"
+         << "Remote RKEY: " << remote.rkey << "\n"
+         << "Remote GID: ";
+    for (int i = 0; i < 16; i++)
+        std::printf("%02x", remote.gid.raw[i]);
+
+    std::cout << "\n ==========================================================\n";
 
     ibv_qp_attr rtr = {};
     rtr.qp_state = IBV_QPS_RTR;
@@ -158,16 +168,17 @@ int main(int argc, char **argv)
     rtr.ah_attr.port_num = 1;
     rtr.ah_attr.dlid = 0;
     rtr.ah_attr.grh.dgid = remote.gid;
-    rtr.ah_attr.grh.sgid_index = 0;
+    rtr.ah_attr.grh.sgid_index = gid_index;
     rtr.ah_attr.grh.hop_limit = 1;
 
     err = ibv_modify_qp(qp, &rtr,
                         IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
                             IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
                             IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
-    if (err)
+    if (err || rtr.qp_state != IBV_QPS_RTR)
     {
         std::cerr << "Failed to modify QP to RTR state: " << err << "\n";
+        perror("ibv_modify_qp");
         return 1;
     }
 
@@ -182,7 +193,7 @@ int main(int argc, char **argv)
     err = ibv_modify_qp(qp, &rts,
                         IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
                             IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
-    if (err)
+    if (err || rts.qp_state != IBV_QPS_RTS)
     {
         std::cerr << "Failed to modify QP to RTS state: " << err << "\n";
         return 1;

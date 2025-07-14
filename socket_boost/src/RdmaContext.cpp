@@ -45,8 +45,12 @@ namespace rdma
                 .max_sge = 1}};
 
         srq = ibv_create_srq(pd, &srq_attr);
+        // srq = nullptr;
         if (!srq)
-            throw runtime_error("Failed to create shared receive CQ");
+        {
+            cerr << "WARNING: Failed to create shared receive queue, using default receive CQ\n";
+            srq = nullptr; // Use default receive CQ if SRQ creation fails
+        }
 
         if (ibv_req_notify_cq(recv_cq, 0))
             throw runtime_error("Failed to request notification on receive CQ");
@@ -68,13 +72,14 @@ namespace rdma
             ibv_qp_init_attr qpa = {};
             qpa.send_cq = send_cqs[i];
             qpa.recv_cq = recv_cq;
-            qpa.srq = srq; // Use the shared receive CQ
+            if (srq)
+                qpa.srq = srq; // Use the shared receive CQ only if it was created successfully
             qpa.qp_type = IBV_QPT_RC;
             qpa.cap = {
                 .max_send_wr = 16,
-                .max_recv_wr = 0, // ignored since we use SRQ
+                .max_recv_wr = 16,
                 .max_send_sge = 1,
-                .max_recv_sge = 0};
+                .max_recv_sge = 1};
 
             qps[i] = ibv_create_qp(pd, &qpa);
             if (!qps[i])
@@ -97,7 +102,7 @@ namespace rdma
         ibv_query_port(ctx, 1, &pattr);
 
         union ibv_gid gid;
-        int err = ibv_query_gid(ctx, 1, 0, &gid);
+        int err = ibv_query_gid(ctx, 1, Config::getRdmaDevGidIdx(), &gid);
         if (err)
             throw runtime_error("ibv_query_gid failed");
 
@@ -132,7 +137,8 @@ namespace rdma
         for (int i = 0; i < 16; i++)
             std::printf("%02x", local.gid.raw[i]);
 
-        std::cout << "Remote QPN and PSN: " << endl;
+        std::cout << endl
+                  << "Remote QPN and PSN: " << endl;
         for (int i = 0; i < QP_N; i++)
             std::cout << "- QPN[" << i << "]: " << remote.qp_num[i] << " PSN: " << remote.rq_psn[i] << "\n";
         cout << "Remote LID: " << remote.lid << "\n"
@@ -158,7 +164,7 @@ namespace rdma
             rtr.ah_attr.port_num = 1;
             rtr.ah_attr.dlid = 0;
             rtr.ah_attr.grh.dgid = remote.gid;
-            rtr.ah_attr.grh.sgid_index = 0;
+            rtr.ah_attr.grh.sgid_index = Config::getRdmaDevGidIdx();
             rtr.ah_attr.grh.hop_limit = 1;
 
             int err = ibv_modify_qp(qps[i], &rtr,
@@ -225,8 +231,17 @@ namespace rdma
         recv_wr.next = nullptr;
 
         struct ibv_recv_wr *bad_wr = nullptr;
-        if (ibv_post_srq_recv(srq, &recv_wr, &bad_wr) != 0 || bad_wr)
-            throw std::runtime_error("Failed to post initial receive work request");
+        if (srq)
+        {
+            if (ibv_post_srq_recv(srq, &recv_wr, &bad_wr) != 0 || bad_wr)
+                throw std::runtime_error("Failed to post initial receive work request in SRQ");
+        }
+        else
+        {
+            for (int i = 0; i < QP_N; ++i)
+                if (ibv_post_recv(qps[i], &recv_wr, &bad_wr) != 0 || bad_wr)
+                    throw std::runtime_error("Failed to post initial receive work request to QP " + std::to_string(i));
+        }
     }
 
     serverConnection_t RdmaContext::serverSetup()
@@ -374,16 +389,71 @@ namespace rdma
             return nullptr;
         }
 
+        std::vector<bool> active_devices;
+        int active_count = 0;
+
         for (int i = 0; i < num_devices; ++i)
         {
-            std::cout << "Device " << i << ": " << ibv_get_device_name(device_list[i]) << "\n";
+            ibv_context *ctx = ibv_open_device(device_list[i]);
+            if (!ctx)
+                continue;
+
+            ibv_port_attr port_attr;
+            if (ibv_query_port(ctx, Config::RDMA_DEV_PORT, &port_attr) == 0)
+            {
+                if (port_attr.state == IBV_PORT_ACTIVE)
+                {
+                    std::cout << "[" << i << "] device UP: " << ibv_get_device_name(device_list[i]) << "\n";
+                    active_devices.push_back(true);
+                    active_count++;
+                }
+                else
+                {
+                    std::cout << "[" << i << "] device DOWN: " << ibv_get_device_name(device_list[i]) << "\n";
+                    active_devices.push_back(false);
+                }
+            }
+
+            ibv_close_device(ctx);
         }
 
-        int devIndex = Config::getDeviceIndex();
+        if (active_count == 0)
+        {
+            std::cerr << "No active RDMA devices found.\n";
+            ibv_free_device_list(device_list);
+            return nullptr;
+        }
 
-        cout << "Using device: " << ibv_get_device_name(device_list[devIndex]) << "\n";
+        int devIndex = Config::getDevIdx();
+        if (devIndex >= active_devices.size())
+        {
+            std::cerr << "Invalid device index (only " << active_devices.size() << " active devices available).\n";
+            ibv_free_device_list(device_list);
+            throw std::runtime_error("Invalid device index");
+        }
+
+        if (!active_devices[devIndex])
+        {
+            std::cerr << "Selected device is not active, trying to use the first active device...\n";
+            for (int i = 0; i < active_devices.size(); ++i)
+            {
+                if (active_devices[i])
+                {
+                    devIndex = i;
+                    break;
+                }
+            }
+        }
 
         ibv_context *ctx = ibv_open_device(device_list[devIndex]);
+        if (!ctx)
+        {
+            std::cerr << "Failed to open selected RDMA device.\n";
+            ibv_free_device_list(device_list);
+            return nullptr;
+        }
+
+        std::cout << "Using device " << devIndex << ": " << ibv_get_device_name(device_list[devIndex]) << "\n";
         ibv_free_device_list(device_list);
         return ctx;
     }

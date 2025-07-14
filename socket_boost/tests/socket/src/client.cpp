@@ -56,7 +56,7 @@ int main(int argc, char *argv[])
     sockaddr_in srv{};
     srv.sin_family = AF_INET;
     srv.sin_port = htons(PORT);
-    if (inet_pton(AF_INET, "127.0.0.1", &srv.sin_addr) <= 0)
+    if (inet_pton(AF_INET, "192.168.17.95", &srv.sin_addr) <= 0)
     {
         perror("inet_pton");
         return 1;
@@ -131,6 +131,7 @@ int main(int argc, char *argv[])
     double sec = std::chrono::duration<double>(t1 - t0).count();
     double gbyte = sent_bytes / static_cast<double>(BYTES_PER_GB);
     double gbps = gbyte / sec;
+    gbps *= 8; // Convert to Gb/s
 
     if (ackn < 0)
     {
@@ -143,7 +144,7 @@ int main(int argc, char *argv[])
     else if (std::string(ack).find(ACK_MESSAGE) != std::string::npos)
     {
         std::cout << "ACK\n";
-        std::cout << "TX " << gbyte << " GB in " << sec << " s (" << gbps << " GB/s)\n";
+        std::cout << "TX " << gbyte << " GB in " << sec << " s (" << gbps << " Gb/s)\n";
     }
     else
     {

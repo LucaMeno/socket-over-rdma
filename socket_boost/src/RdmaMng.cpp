@@ -599,12 +599,16 @@ namespace rdmaMng
                     recv_wr.next = nullptr;
 
                     ibv_recv_wr *bad_wr = nullptr;
-                    if (ibv_post_srq_recv(ctx->srq, &recv_wr, &bad_wr) != 0 || bad_wr)
+                    if (ctx->srq)
                     {
-                        std::cerr << "Error posting recv: " << strerror(errno) << "\n";
-                        break;
+                        if (ibv_post_srq_recv(ctx->srq, &recv_wr, &bad_wr) != 0 || bad_wr)
+                            throw std::runtime_error("Failed to post SRQ receive work request");
                     }
-
+                    else
+                    {
+                        if (ibv_post_recv(ctx->qps[0], &recv_wr, &bad_wr) != 0 || bad_wr)
+                            throw std::runtime_error("Failed to post receive work request");
+                    }
                     parseNotification(*ctx);
                 }
             }

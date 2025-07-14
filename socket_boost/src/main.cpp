@@ -13,7 +13,7 @@ void handle_signal(int signal)
     STOP = true;
 }
 
-std::optional<uint32_t> parseServerNumber(const string &arg)
+std::optional<uint32_t> parseNumber(const string &arg)
 {
     try
     {
@@ -39,28 +39,34 @@ int main(int argc, char *argv[])
         signal(SIGINT, handle_signal);
         signal(SIGTSTP, handle_signal);
 
-        if (argc > 2)
+        if (argc != 1 && argc != 3)
         {
-            cerr << "Usage: " << argv[0] << " [server_number]" << endl;
+            cerr << "Usage: " << argv[0] << " [RDMA_dev_idx] [RDMA_dev_GID_idx]" << endl;
             return EXIT_FAILURE;
         }
 
-        std::optional<uint32_t> serverNum;
-        if (argc == 2)
+        std::optional<uint32_t> devIdx;
+        std::optional<uint32_t> devGidIdx;
+
+        if (argc == 3)
         {
-            serverNum = parseServerNumber(argv[1]);
-            if (!serverNum)
+            devIdx = parseNumber(argv[1]);
+            devGidIdx = parseNumber(argv[2]);
+            if (!devIdx || !devGidIdx)
             {
                 cerr << "Invalid server number: " << argv[1] << " Setting to default (0)." << endl;
-                serverNum = 0; // Default if parsing fails
+                devIdx = Config::DEFAULT_DEV_INDEX;
+                devGidIdx = Config::DEFAULT_DEV_GID_INDEX;
             }
         }
         else
         {
-            serverNum = 0; // Default if no argument provided
+            devIdx = Config::DEFAULT_DEV_INDEX;
+            devGidIdx = Config::DEFAULT_DEV_GID_INDEX;
         }
 
-        Config::setServerNumber(*serverNum);
+        Config::setDevIdx(*devIdx);
+        Config::setRdmaDevGidIdx(*devGidIdx);
 
         rdmaMng::RdmaMng r(Config::PROXY_PORT,
                            inet_addr(Config::SERVER_IP),

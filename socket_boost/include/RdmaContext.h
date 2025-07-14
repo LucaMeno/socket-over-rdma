@@ -110,10 +110,10 @@ namespace rdma
         ibv_pd *pd;
         ibv_mr *mr;
 
-        ibv_qp *qps[QP_N];
-        struct ibv_srq *srq;
-        ibv_cq *send_cqs[QP_N];
-        ibv_cq *recv_cq;
+        ibv_qp *qps[QP_N];      // queue pairs
+        struct ibv_srq *srq;    // shared receive queue
+        ibv_cq *send_cqs[QP_N]; // send completion queues
+        ibv_cq *recv_cq;        // receive completion queue
 
         char *buffer;
         uintptr_t remote_addr;
