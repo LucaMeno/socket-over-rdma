@@ -8,7 +8,7 @@ namespace bpf
     BpfMng::BpfMng()
     {
         // open the BPF object file
-        obj = bpf_object__open_file(PATH_TO_BPF_OBJ_FILE, NULL);
+        obj = bpf_object__open_file(Config::BPF_PATH_TO_BPF_OBJ_FILE, NULL);
 
         if (!obj)
             throw runtime_error("Failed to open BPF object");
@@ -106,7 +106,7 @@ namespace bpf
         if (prog_fd_sk_msg < 0)
             throw runtime_error("Failed to load prog_fd_sk_msg");
 
-        cgroup_fd = open(CGROUP_PATH, O_RDONLY);
+        cgroup_fd = open(Config::BPF_CGROUP_PATH, O_RDONLY);
         if (cgroup_fd < 0)
             throw runtime_error("Failed to open cgroup");
 
@@ -163,7 +163,7 @@ namespace bpf
         // poll the ring buffer for events
         while (stop_threads == false)
         {
-            int err = ring_buffer__poll(rb, POOL_RB_INTERVAL);
+            int err = ring_buffer__poll(rb, Config::BPF_POOL_RB_INTERVAL);
 
             if (err < 0)
             {
@@ -296,11 +296,11 @@ namespace bpf
 
         // get the socket info
         int j = 0;
-        for (; j < NUMBER_OF_SOCKETS; j++)
+        for (; j < Config::NUMBER_OF_SOCKETS; j++)
             if (client_sks[j].fd == target_fd)
                 break;
 
-        if (j == NUMBER_OF_SOCKETS)
+        if (j == Config::NUMBER_OF_SOCKETS)
         {
             perror("Failed to find socket in client_sks");
             return app_sk;

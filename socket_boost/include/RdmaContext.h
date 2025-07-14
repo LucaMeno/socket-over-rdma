@@ -21,26 +21,19 @@
 #include "Config.hpp"
 #include "SockMap.hpp"
 
-#define RING_IDX(i) ((i) & (MAX_MSG_BUFFER - 1))
+#define RING_IDX(i) ((i) & (Config::MAX_MSG_BUFFER - 1))
 
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
 #define MR_SIZE ((sizeof(rdma_ringbuffer_t) * 2) + NOTIFICATION_OFFSET_SIZE)
-
-constexpr int MAX_MSG_BUFFER = (1024 * 8); // POWER OF 2!!!!!!!!!!!
-constexpr int THRESHOLD_NOT_AUTOSCALER = 64;
-constexpr int TIME_TO_WAIT_IF_NO_SPACE_MS = 10;
-constexpr int MAX_PAYLOAD_SIZE = (128 * 1024);
-
-constexpr int QP_N = 4;
 
 namespace rdma
 {
     struct conn_info
     {
         uint16_t lid;
-        uint32_t qp_num[QP_N];
-        uint32_t rq_psn[QP_N];
+        uint32_t qp_num[Config::QP_N];
+        uint32_t rq_psn[Config::QP_N];
         uint32_t rkey;
         uint64_t addr;
         union ibv_gid gid;
@@ -78,11 +71,11 @@ namespace rdma
 
     typedef struct
     {
-        uint32_t msg_flags;            // flags
-        struct sock_id original_sk_id; // id of the socket
-        uint32_t msg_size;             // size of the message
-        uint32_t number_of_slots;      // number of slots
-        char msg[MAX_PAYLOAD_SIZE];    // message
+        uint32_t msg_flags;                 // flags
+        struct sock_id original_sk_id;      // id of the socket
+        uint32_t msg_size;                  // size of the message
+        uint32_t number_of_slots;           // number of slots
+        char msg[Config::MAX_PAYLOAD_SIZE]; // message
     } rdma_msg_t;
 
     typedef struct
@@ -92,7 +85,7 @@ namespace rdma
         std::atomic<uint32_t> remote_read_index;
         std::atomic<uint32_t> local_write_index;
         std::atomic<uint32_t> local_read_index;
-        rdma_msg_t data[MAX_MSG_BUFFER];
+        rdma_msg_t data[Config::MAX_MSG_BUFFER];
     } rdma_ringbuffer_t;
 
     typedef struct
@@ -110,10 +103,10 @@ namespace rdma
         ibv_pd *pd;
         ibv_mr *mr;
 
-        ibv_qp *qps[QP_N];      // queue pairs
-        struct ibv_srq *srq;    // shared receive queue
-        ibv_cq *send_cqs[QP_N]; // send completion queues
-        ibv_cq *recv_cq;        // receive completion queue
+        ibv_qp *qps[Config::QP_N];      // queue pairs
+        struct ibv_srq *srq;            // shared receive queue
+        ibv_cq *send_cqs[Config::QP_N]; // send completion queues
+        ibv_cq *recv_cq;                // receive completion queue
 
         char *buffer;
         uintptr_t remote_addr;

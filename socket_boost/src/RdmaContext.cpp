@@ -26,7 +26,7 @@ namespace rdma
             throw runtime_error("Failed to create completion channel");
 
         // Create multiple send CQs for load balancing
-        for (int i = 0; i < QP_N; i++)
+        for (int i = 0; i < Config::QP_N; i++)
         {
             send_cqs[i] = ibv_create_cq(ctx, 16, nullptr, nullptr, 0);
             if (!send_cqs[i])
@@ -67,7 +67,7 @@ namespace rdma
             throw runtime_error("Failed to register memory region");
 
         // Create QPs for the connection
-        for (int i = 0; i < QP_N; i++)
+        for (int i = 0; i < Config::QP_N; i++)
         {
             ibv_qp_init_attr qpa = {};
             qpa.send_cq = send_cqs[i];
@@ -111,7 +111,7 @@ namespace rdma
         local.rkey = mr->rkey;
         local.addr = reinterpret_cast<uintptr_t>(buffer);
         local.gid = gid;
-        for (int i = 0; i < QP_N; i++)
+        for (int i = 0; i < Config::QP_N; i++)
         {
             local.qp_num[i] = qps[i]->qp_num;
             local.rq_psn[i] = getPsn();
@@ -128,7 +128,7 @@ namespace rdma
         cout << " ==================== CONNECTION INFO ====================\n";
 
         std::cout << "Local QPN and PSN: " << endl;
-        for (int i = 0; i < QP_N; i++)
+        for (int i = 0; i < Config::QP_N; i++)
             std::cout << "- QPN[" << i << "]: " << local.qp_num[i] << " PSN: " << local.rq_psn[i] << "\n";
         cout << "Local LID: " << local.lid << "\n"
              << "Local BUFFER: " << std::hex << local.addr << std::dec << "\n"
@@ -139,7 +139,7 @@ namespace rdma
 
         std::cout << endl
                   << "Remote QPN and PSN: " << endl;
-        for (int i = 0; i < QP_N; i++)
+        for (int i = 0; i < Config::QP_N; i++)
             std::cout << "- QPN[" << i << "]: " << remote.qp_num[i] << " PSN: " << remote.rq_psn[i] << "\n";
         cout << "Remote LID: " << remote.lid << "\n"
              << "Remote BUFFER: " << std::hex << remote.addr << std::dec << "\n"
@@ -150,7 +150,7 @@ namespace rdma
 
         std::cout << "\n ==========================================================\n";
 
-        for (int i = 0; i < QP_N; i++)
+        for (int i = 0; i < Config::QP_N; i++)
         {
             ibv_qp_attr rtr = {};
             rtr.qp_state = IBV_QPS_RTR;
@@ -238,7 +238,7 @@ namespace rdma
         }
         else
         {
-            for (int i = 0; i < QP_N; ++i)
+            for (int i = 0; i < Config::QP_N; ++i)
                 if (ibv_post_recv(qps[i], &recv_wr, &bad_wr) != 0 || bad_wr)
                     throw std::runtime_error("Failed to post initial receive work request to QP " + std::to_string(i));
         }
@@ -469,14 +469,14 @@ namespace rdma
     {
         is_ready.store(false);
         stop.store(false);
-        flush_threshold.store(THRESHOLD_NOT_AUTOSCALER);
+        flush_threshold.store(Config::THRESHOLD_NOT_AUTOSCALER);
         n_msg_sent.store(0);
         buffer = nullptr;
         pd = nullptr;
         mr = nullptr;
         recv_cq = nullptr;
         comp_channel = nullptr;
-        for (int i = 0; i < QP_N; i++)
+        for (int i = 0; i < Config::QP_N; i++)
         {
             send_cqs[i] = nullptr;
             qps[i] = nullptr;
@@ -495,7 +495,7 @@ namespace rdma
     {
         is_ready.store(false);
 
-        for (int i = 0; i < QP_N; i++)
+        for (int i = 0; i < Config::QP_N; i++)
         {
             if (send_cqs[i])
                 ibv_destroy_cq(send_cqs[i]);
@@ -615,7 +615,7 @@ namespace rdma
         {
             // wrap-around
             uintptr_t batch_start = (uintptr_t)&ringbuffer.data[r_idx];
-            size_t batch_size = (MAX_MSG_BUFFER - r_idx) * sizeof(rdma_msg_t);
+            size_t batch_size = (Config::MAX_MSG_BUFFER - r_idx) * sizeof(rdma_msg_t);
 
             uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
 
@@ -688,14 +688,14 @@ namespace rdma
                 end_w_index = ringbuffer->remote_write_index.load();
 
                 uint32_t used = start_w_index - end_w_index; // wrap-around safe
-                available_space = MAX_MSG_BUFFER - used - 1;
+                available_space = Config::MAX_MSG_BUFFER - used - 1;
 
                 if (available_space >= 1)
                     break;
 
                 struct timespec ts;
                 ts.tv_sec = 0;
-                ts.tv_nsec = (TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
+                ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
                 nanosleep(&ts, nullptr);
                 COUNT++;
 
@@ -721,7 +721,7 @@ namespace rdma
 
             rdma_msg_t *msg = &ringbuffer->data[start_w_index];
 
-            msg->msg_size = recv(src_fd, msg->msg, MAX_PAYLOAD_SIZE, 0);
+            msg->msg_size = recv(src_fd, msg->msg, Config::MAX_PAYLOAD_SIZE, 0);
             if ((int)msg->msg_size <= 0)
                 return msg->msg_size;
 
@@ -763,7 +763,7 @@ namespace rdma
 
             // find the original socket in the lists
             int i = 0;
-            for (; i < NUMBER_OF_SOCKETS; i++)
+            for (; i < Config::NUMBER_OF_SOCKETS; i++)
             {
                 if (client_sks[i].sk_id.dip == proxy_sk_id.dip &&
                     client_sks[i].sk_id.sport == proxy_sk_id.sport &&
@@ -782,7 +782,7 @@ namespace rdma
                 }
             }
 
-            if (i == NUMBER_OF_SOCKETS)
+            if (i == Config::NUMBER_OF_SOCKETS)
             {
                 cout << "Socket not found in the list: "
                      << msg.original_sk_id.sip << ":" << msg.original_sk_id.sport
@@ -831,7 +831,7 @@ namespace rdma
             return;
         }
 
-        uint32_t number_of_msg = (end_read_index + MAX_MSG_BUFFER - start_read_index) % MAX_MSG_BUFFER;
+        uint32_t number_of_msg = (end_read_index + Config::MAX_MSG_BUFFER - start_read_index) % Config::MAX_MSG_BUFFER;
 
         start_read_index = RING_IDX(start_read_index);
         end_read_index = RING_IDX(end_read_index);
@@ -950,7 +950,7 @@ namespace rdma
     {
         unique_lock<std::mutex> lock(mtx_send_q);
         uint32_t index = send_q_index;
-        send_q_index = (send_q_index + 1) % QP_N; // round-robin
+        send_q_index = (send_q_index + 1) % Config::QP_N; // round-robin
         return index;
     }
 

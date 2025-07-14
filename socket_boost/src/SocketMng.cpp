@@ -6,7 +6,7 @@ namespace sk
 {
     SocketMng::SocketMng()
     {
-        client_sk_fd.resize(NUMBER_OF_SOCKETS);
+        client_sk_fd.resize(Config::NUMBER_OF_SOCKETS);
         server_sk_fd = -1;
         server_port = 0;
         server_ip = 0;
@@ -39,7 +39,7 @@ namespace sk
             throw std::runtime_error("Failed to bind server socket");
         }
 
-        if (listen(server_sk_fd, NUMBER_OF_SOCKETS) != 0)
+        if (listen(server_sk_fd, Config::NUMBER_OF_SOCKETS) != 0)
         {
             throw std::runtime_error("Failed to listen on server socket");
         }
@@ -49,12 +49,12 @@ namespace sk
         std::cout << "Server listening on " << inet_ntoa(ip_addr) << ":" << server_port << "\n";
         std::cout << "Launching client threads...\n";
 
-        for (int i = 0; i < NUMBER_OF_SOCKETS; ++i)
+        for (int i = 0; i < Config::NUMBER_OF_SOCKETS; ++i)
         {
             client_threads.emplace_back(&SocketMng::clientThread, this, i);
         }
 
-        for (int i = 0; i < NUMBER_OF_SOCKETS; ++i)
+        for (int i = 0; i < Config::NUMBER_OF_SOCKETS; ++i)
         {
             int tmp_fd = accept(server_sk_fd, nullptr, nullptr);
             if (tmp_fd < 0)
@@ -71,7 +71,7 @@ namespace sk
             thread.detach();
         }
 
-        std::cout << "All clients connected (" << NUMBER_OF_SOCKETS << ")\n";
+        std::cout << "All clients connected (" << Config::NUMBER_OF_SOCKETS << ")\n";
     }
 
     SocketMng::~SocketMng()
@@ -84,7 +84,7 @@ namespace sk
         cond_var.notify_all();
         lock.unlock();
 
-        for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
+        for (int i = 0; i < Config::NUMBER_OF_SOCKETS; i++)
         {
             if (client_sk_fd[i].fd >= 0)
                 close(client_sk_fd[i].fd);
@@ -152,7 +152,7 @@ namespace sk
 
     int SocketMng::getProxyFdFromSockid(struct sock_id sk_id)
     {
-        for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
+        for (int i = 0; i < Config::NUMBER_OF_SOCKETS; i++)
         {
             if (client_sk_fd[i].sk_id.sport == sk_id.sport &&
                 client_sk_fd[i].sk_id.sip == sk_id.sip &&

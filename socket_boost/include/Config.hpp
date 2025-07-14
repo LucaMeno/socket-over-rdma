@@ -7,11 +7,33 @@
 class Config
 {
 public:
+    // CONFIG
     inline static const uint16_t PROXY_PORT = 5555;
     inline static const uint16_t RDMA_SERVER_PORT = 7471;
     inline static const uint32_t RDMA_DEV_PORT = 1;         // Default port for RDMA device
     inline static const uint32_t DEFAULT_DEV_INDEX = 0;     // Default RDMA device index
     inline static const uint32_t DEFAULT_DEV_GID_INDEX = 0; // Default GID index for RDMA device
+
+    // BpfMng configuration
+    inline static const char *BPF_CGROUP_PATH = "/sys/fs/cgroup";
+    inline static const char *BPF_PATH_TO_BPF_OBJ_FILE = "obj/scap.bpf.o";
+    inline static const int BPF_POOL_RB_INTERVAL = 100; // milliseconds
+
+    // Socket manager
+    inline static const int NUMBER_OF_SOCKETS = 16;
+
+    // RDMA context
+    inline static const int MAX_MSG_BUFFER = (1024 * 8); // POWER OF 2!!!!!!!!!!!
+    inline static const int THRESHOLD_NOT_AUTOSCALER = 64;
+    inline static const int TIME_TO_WAIT_IF_NO_SPACE_MS = 10;
+    inline static const int MAX_PAYLOAD_SIZE = (128 * 1024); // 128 KB
+    inline static const int QP_N = 4;                        // Number of QPs
+
+    // RDMA manager
+    inline static const int N_WRITER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket
+    inline static const int TIME_STOP_SELECT_SEC = 5;             // 5 seconds
+    inline static const int FLUSH_INTERVAL_MS = 100;              // ms
+    inline static const int N_THREAD_POOL_THREADS = 16;
 
     inline static const char *SERVER_IP = "127.0.0.1";
     static std::vector<uint16_t> getTargetPorts()

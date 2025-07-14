@@ -24,9 +24,6 @@ namespace rdmaMng
 {
     class RdmaMng
     {
-        const int N_WRITER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket
-        const int TIME_STOP_SELECT_SEC = 5;             // 5 seconds
-        const int FLUSH_INTERVAL_MS = 100;              // ms
 
     public:
         RdmaMng(uint16_t proxy_port, uint32_t proxy_ip, uint16_t rdma_port, const std::vector<uint16_t> &target_ports_to_set);

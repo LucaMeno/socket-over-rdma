@@ -14,8 +14,6 @@
 #include <common.h>
 #include <Config.hpp>
 
-constexpr int NUMBER_OF_SOCKETS = 16;
-
 namespace sk
 {
     typedef struct

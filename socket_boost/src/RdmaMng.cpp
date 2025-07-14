@@ -19,16 +19,16 @@ namespace rdmaMng
         bpf_ctx.init(handler, target_ports_to_set, proxy_port, sk_ctx.client_sk_fd);
 
         // setup the pool
-        thPool = make_unique<ThreadPool>(N_WRITER_THREADS);
+        thPool = make_unique<ThreadPool>(Config::N_THREAD_POOL_THREADS);
 
         // polling thread
         is_polling_thread_running = false;
         cout << "Configuration:" << endl;
         cout << " RDMA port: " << rdma_port << endl;
-        cout << " MAX_PAYLOAD_SIZE: " << (MAX_PAYLOAD_SIZE / 1024) << "kB" << endl;
-        cout << " MAX_MSG_BUFFER: " << (MAX_MSG_BUFFER / 1024) << "k" << endl;
-        cout << " THRESHOLD: " << THRESHOLD_NOT_AUTOSCALER << endl;
-        cout << " N_WRITER_THREADS: " << N_WRITER_THREADS << endl;
+        cout << " MAX_PAYLOAD_SIZE: " << (Config::MAX_PAYLOAD_SIZE / 1024) << "kB" << endl;
+        cout << " MAX_MSG_BUFFER: " << (Config::MAX_MSG_BUFFER / 1024) << "k" << endl;
+        cout << " THRESHOLD: " << Config::THRESHOLD_NOT_AUTOSCALER << endl;
+        cout << " N_WRITER_THREADS: " << Config::N_WRITER_THREADS << endl;
         cout << " Port used for RDMA: " << rdma_port << endl;
     }
 
@@ -89,13 +89,13 @@ namespace rdmaMng
         cout << "Server th created" << endl;
 
         // start the writer threads
-        const int per_thread = NUMBER_OF_SOCKETS / N_WRITER_THREADS;
-        int leftover = NUMBER_OF_SOCKETS % N_WRITER_THREADS;
+        const int per_thread = Config::NUMBER_OF_SOCKETS / Config::N_WRITER_THREADS;
+        int leftover = Config::NUMBER_OF_SOCKETS % Config::N_WRITER_THREADS;
 
         std::size_t idx = 0;
-        writer_threads.reserve(N_WRITER_THREADS);
+        writer_threads.reserve(Config::N_WRITER_THREADS);
 
-        for (int i = 0; i < N_WRITER_THREADS; ++i)
+        for (int i = 0; i < Config::N_WRITER_THREADS; ++i)
         {
             int n_fd = per_thread + (leftover-- > 0 ? 1 : 0);
 
@@ -206,7 +206,7 @@ namespace rdmaMng
                 temp_fds = read_fds;
 
                 struct timeval tv;
-                tv.tv_sec = TIME_STOP_SELECT_SEC;
+                tv.tv_sec = Config::TIME_STOP_SELECT_SEC;
                 tv.tv_usec = 0;
 
                 int activity = select(max_fd + 1, &temp_fds, nullptr, nullptr, &tv);
@@ -519,7 +519,7 @@ namespace rdmaMng
                     throw std::runtime_error("No valid contexts to monitor");
                 }
 
-                timeval tv{TIME_STOP_SELECT_SEC, 0};
+                timeval tv{Config::TIME_STOP_SELECT_SEC, 0};
 
                 int activity = select(max_fd + 1, &fds, nullptr, nullptr, &tv);
                 if (activity == -1)
@@ -646,7 +646,7 @@ namespace rdmaMng
                     uint64_t now = ctx.getTimeMS();
 
                     if (msg_sent >= ctx.flush_threshold ||
-                        ((now - ctx.last_flush_ms >= FLUSH_INTERVAL_MS) && msg_sent > 0))
+                        ((now - ctx.last_flush_ms >= Config::FLUSH_INTERVAL_MS) && msg_sent > 0))
                     {
                         ctx.n_msg_sent.store(0); // reset the atomic counter
                         addFlushRingbufferJob(ctx, rb);
@@ -690,7 +690,7 @@ namespace rdmaMng
 
             // Prepare timeout.
             struct timeval tv;
-            tv.tv_sec = TIME_STOP_SELECT_SEC;
+            tv.tv_sec = Config::TIME_STOP_SELECT_SEC;
             tv.tv_usec = 0;
 
             int ready = ::select(max_fd + 1, &read_set, nullptr, nullptr, &tv);

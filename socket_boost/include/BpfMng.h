@@ -61,10 +61,6 @@ namespace bpf
         int getProxyFdFromAppSk(struct sock_id app_sk);
 
     private:
-        const char *CGROUP_PATH = "/sys/fs/cgroup";
-        const char *PATH_TO_BPF_OBJ_FILE = "obj/scap.bpf.o";
-        const int POOL_RB_INTERVAL = 100; // milliseconds
-
         void threadPollRb();
         void wrapClose(int fd);
         void setTargetPort(const std::vector<uint16_t> &target_ports, uint16_t server_port);
