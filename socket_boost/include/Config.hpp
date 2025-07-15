@@ -23,11 +23,13 @@ public:
     inline static const int NUMBER_OF_SOCKETS = 16;
 
     // RDMA context
+    inline static const char *RDMA_TCP_PORT = "7472";    // Default RDMA port for TCP parameters exchange
     inline static const int MAX_MSG_BUFFER = (1024 * 8); // POWER OF 2!!!!!!!!!!!
     inline static const int THRESHOLD_NOT_AUTOSCALER = 64;
     inline static const int TIME_TO_WAIT_IF_NO_SPACE_MS = 10;
-    inline static const int MAX_PAYLOAD_SIZE = (128 * 1024); // 128 KB
-    inline static const int QP_N = 4;                        // Number of QPs
+    inline static const int MAX_PAYLOAD_SIZE = (128 * 1024);                 // 128 KB
+    inline static const int QP_N = 4;                                        // Number of QPs
+    inline static const uint32_t TIME_BTW_DATA_READY_NOTIFICATIONS_MS = 500; // 500 ms
 
     // RDMA manager
     inline static const int N_WRITER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket

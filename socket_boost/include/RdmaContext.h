@@ -96,8 +96,6 @@ namespace rdma
 
     class RdmaContext
     {
-        const char *TCP_PORT = "7471"; // Default RDMA port for TCP parameters exchange
-
     public:
         ibv_context *ctx;
         ibv_pd *pd;
@@ -137,7 +135,7 @@ namespace rdma
         std::mutex mtx_send_q; // Mutex to protect the send_q_index
         uint32_t send_q_index;
 
-        // CLIENT - SERVER
+        uint64_t last_notification_data_ready_ns; // Last time a notification was sent
 
         RdmaContext();
         ~RdmaContext();
@@ -146,16 +144,13 @@ namespace rdma
         void serverHandleNewClient(serverConnection_t &sc);
         void clientConnect(uint32_t server_ip, uint16_t server_port);
 
-        // COMMUNICATION
         int writeMsg(int src_fd, struct sock_id original_socket);
         void readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index);
         void flushRingbuffer(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx);
         void updateRemoteReadIndex(rdma_ringbuffer_t &ringbuffer, uint32_t r_idx);
 
-        // POLLING
         void setPollingStatus(uint32_t is_polling);
 
-        // UTILS
         const std::string getOpName(CommunicationCode code);
         uint64_t getTimeMS();
         void waitForContextToBeReady();
@@ -173,6 +168,7 @@ namespace rdma
         conn_info rdmaSetupPreHs();
         void rdmaSetupPostHs(conn_info remote, conn_info local);
         uint32_t getNextSendQIndex();
+        void showDevices();
     };
 
 } // namespace rdma

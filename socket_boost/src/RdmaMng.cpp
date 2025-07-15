@@ -23,13 +23,26 @@ namespace rdmaMng
 
         // polling thread
         is_polling_thread_running = false;
+
+        cout << "==================  CONFIGURATION ==================" << endl;
+
         cout << "Configuration:" << endl;
         cout << " RDMA port: " << rdma_port << endl;
+        cout << " RDMA TCP port: " << Config::RDMA_TCP_PORT << endl;
+        cout << " Proxy port: " << Config::PROXY_PORT << endl;
+        cout << " Proxy IP: " << Config::SERVER_IP << endl;
         cout << " MAX_PAYLOAD_SIZE: " << (Config::MAX_PAYLOAD_SIZE / 1024) << "kB" << endl;
         cout << " MAX_MSG_BUFFER: " << (Config::MAX_MSG_BUFFER / 1024) << "k" << endl;
         cout << " THRESHOLD: " << Config::THRESHOLD_NOT_AUTOSCALER << endl;
         cout << " N_WRITER_THREADS: " << Config::N_WRITER_THREADS << endl;
-        cout << " Port used for RDMA: " << rdma_port << endl;
+        cout << " N_THREAD_POOL_THREADS: " << Config::N_THREAD_POOL_THREADS << endl;
+        cout << " Q pairs: " << Config::QP_N << endl;
+        cout << " Target ports: ";
+        for (const auto &port : Config::getTargetPorts())
+            cout << port << " ";
+
+        cout << endl
+             << "=======================================================" << endl;
     }
 
     RdmaMng::~RdmaMng()
@@ -40,7 +53,10 @@ namespace rdmaMng
             ctx->stop.store(true);
 
         if (server_thread.joinable())
+        {
+            cout << "Waiting for server thread to finish..." << endl;
             server_thread.join();
+        }
 
         cout << "Server thread joined" << endl;
 
@@ -53,7 +69,10 @@ namespace rdmaMng
         cout << "Writer threads joined" << endl;
 
         if (notification_thread.joinable())
+        {
+            cout << "Waiting for notification thread to finish..." << endl;
             notification_thread.join();
+        }
 
         cout << "Notification thread joined" << endl;
 
@@ -65,12 +84,18 @@ namespace rdmaMng
         }
 
         if (polling_thread.joinable())
+        {
+            cout << "Waiting for polling thread to finish..." << endl;
             polling_thread.join();
+        }
 
         cout << "Polling thread joined" << endl;
 
         if (flush_thread.joinable())
+        {
+            cout << "Waiting for flush thread to finish..." << endl;
             flush_thread.join();
+        }
 
         cout << "Flush thread joined" << endl;
 
@@ -334,7 +359,7 @@ namespace rdmaMng
                 }
                 catch (const std::exception &e)
                 {
-                    cerr << "Exception in pollingThread: " << e.what() << endl;
+                    cerr << "Exception in pollingThread1: " << e.what() << endl;
                 }
                 if (ret < 0)
                 {
@@ -353,7 +378,7 @@ namespace rdmaMng
         }
         catch (const std::exception &e)
         {
-            cerr << "Exception in pollingThread: " << e.what() << endl;
+            cerr << "Exception in pollingThread2: " << e.what() << endl;
             perror("Details");
             throw; // Re-throw the exception to be handled by the caller
         }
@@ -363,8 +388,8 @@ namespace rdmaMng
     {
         while (1)
         {
-            uint32_t remote_w = rb_remote.remote_write_index.load(); // atomic_load(&rb_remote->remote_write_index);
-            uint32_t local_r = rb_remote.local_read_index.load();    // atomic_load(&rb_remote->local_read_index);
+            uint32_t remote_w = rb_remote.remote_write_index.load();
+            uint32_t local_r = rb_remote.local_read_index.load();
 
             if (remote_w != local_r)
             {
@@ -394,8 +419,6 @@ namespace rdmaMng
                         { flushThreadWorker(ctx, rb, start_idx, end_idx); });
 
         ctx.last_flush_ms = ctx.getTimeMS();
-
-        // ctx.flushRingbuffer(rb, start_idx, end_idx);
     }
 
     void RdmaMng::flushThreadWorker(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb, uint32_t start_idx, uint32_t end_idx)

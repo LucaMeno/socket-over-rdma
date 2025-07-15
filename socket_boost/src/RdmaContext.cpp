@@ -127,6 +127,7 @@ namespace rdma
 
         cout << " ==================== CONNECTION INFO ====================\n";
 
+        cout << "## LOCAL ##" << endl;
         std::cout << "Local QPN and PSN: " << endl;
         for (int i = 0; i < Config::QP_N; i++)
             std::cout << "- QPN[" << i << "]: " << local.qp_num[i] << " PSN: " << local.rq_psn[i] << "\n";
@@ -138,7 +139,10 @@ namespace rdma
             std::printf("%02x", local.gid.raw[i]);
 
         std::cout << endl
-                  << "Remote QPN and PSN: " << endl;
+                  << endl
+                  << "## REMOTE ##" << endl;
+
+        cout << "Remote QPN and PSN: " << endl;
         for (int i = 0; i < Config::QP_N; i++)
             std::cout << "- QPN[" << i << "]: " << remote.qp_num[i] << " PSN: " << remote.rq_psn[i] << "\n";
         cout << "Remote LID: " << remote.lid << "\n"
@@ -147,6 +151,11 @@ namespace rdma
              << "Remote GID: ";
         for (int i = 0; i < 16; i++)
             std::printf("%02x", remote.gid.raw[i]);
+
+        std::cout << endl
+                  << endl
+                  << "## DEVICES ##" << endl;
+        showDevices();
 
         std::cout << "\n ==========================================================\n";
 
@@ -340,7 +349,7 @@ namespace rdma
         hints.ai_socktype = SOCK_STREAM;
         struct addrinfo *res;
 
-        if (getaddrinfo(ip_str.c_str(), TCP_PORT, &hints, &res) != 0)
+        if (getaddrinfo(ip_str.c_str(), Config::RDMA_TCP_PORT, &hints, &res) != 0)
         {
             perror("getaddrinfo");
             return -1;
@@ -365,7 +374,7 @@ namespace rdma
         hints.ai_socktype = SOCK_STREAM;
         hints.ai_flags = AI_PASSIVE;
         addrinfo *res;
-        getaddrinfo(nullptr, TCP_PORT, &hints, &res);
+        getaddrinfo(nullptr, Config::RDMA_TCP_PORT, &hints, &res);
 
         int fd = socket(res->ai_family, res->ai_socktype, 0);
         bind(fd, res->ai_addr, res->ai_addrlen);
@@ -377,6 +386,34 @@ namespace rdma
 
         freeaddrinfo(res);
         return fd;
+    }
+
+    void RdmaContext::showDevices()
+    {
+        int num_devices = 0;
+        ibv_device **device_list = ibv_get_device_list(&num_devices);
+        if (!device_list || num_devices == 0)
+            std::cerr << "No RDMA devices found.\n";
+
+        for (int i = 0; i < num_devices; ++i)
+        {
+            ibv_context *ctx = ibv_open_device(device_list[i]);
+            if (!ctx)
+                continue;
+
+            ibv_port_attr port_attr;
+            if (ibv_query_port(ctx, Config::RDMA_DEV_PORT, &port_attr) == 0)
+            {
+                if (port_attr.state == IBV_PORT_ACTIVE)
+                    std::cout << "[" << i << "] device UP: " << ibv_get_device_name(device_list[i]) << "\n";
+                else
+                    std::cout << "[" << i << "] device DOWN: " << ibv_get_device_name(device_list[i]) << "\n";
+            }
+
+            ibv_close_device(ctx);
+        }
+        cout << "Target RDMA device index: " << Config::getDevIdx() << " - GID: " << Config::getRdmaDevGidIdx() << "\n";
+        ibv_free_device_list(device_list);
     }
 
     ibv_context *RdmaContext::openDevice()
@@ -403,13 +440,11 @@ namespace rdma
             {
                 if (port_attr.state == IBV_PORT_ACTIVE)
                 {
-                    std::cout << "[" << i << "] device UP: " << ibv_get_device_name(device_list[i]) << "\n";
                     active_devices.push_back(true);
                     active_count++;
                 }
                 else
                 {
-                    std::cout << "[" << i << "] device DOWN: " << ibv_get_device_name(device_list[i]) << "\n";
                     active_devices.push_back(false);
                 }
             }
@@ -453,7 +488,6 @@ namespace rdma
             return nullptr;
         }
 
-        std::cout << "Using device " << devIndex << ": " << ibv_get_device_name(device_list[devIndex]) << "\n";
         ibv_free_device_list(device_list);
         return ctx;
     }
@@ -564,6 +598,7 @@ namespace rdma
     void RdmaContext::sendDataReady()
     {
         sendNotification(CommunicationCode::RDMA_DATA_READY);
+        last_notification_data_ready_ns = getTimeMS();
     }
 
     // WRITE
@@ -663,7 +698,14 @@ namespace rdma
         auto flags = peer_rb->flags.flags.load(std::memory_order_acquire);
 
         if ((flags & static_cast<unsigned int>(RingBufferFlag::RING_BUFFER_POLLING)) == 0)
-            sendDataReady();
+        {
+            if (last_notification_data_ready_ns == 0 ||
+                (getTimeMS() - last_notification_data_ready_ns) >= Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS)
+            {
+                // If the last notification was sent more than Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS ago
+                sendDataReady();
+            }
+        }
 
         cond_commit_flush.notify_all();
         // cout << "Flush completed: in = " << in << ", out = " << out << endl;
@@ -681,6 +723,9 @@ namespace rdma
 
         while (1)
         { // wait until there is enough space in the ringbuffer
+
+            unique_lock<mutex> lock(mtx_tx);
+
             int c = 0;
             while (1)
             {
@@ -732,6 +777,8 @@ namespace rdma
             n_msg_sent.fetch_add(1);
             ringbuffer->local_write_index.fetch_add(1);
 
+            lock.unlock();
+
             // this_thread::sleep_for(chrono::nanoseconds(1)); // simulate some processing delay
         }
 
@@ -771,10 +818,10 @@ namespace rdma
                     client_sks[i].sk_id.dport == proxy_sk_id.dport)
                 {
                     // update the map with the new socket
-                    printf("New entry: %u:%u - %u:%u -> %d\n",
-                           msg.original_sk_id.sip, msg.original_sk_id.sport,
-                           msg.original_sk_id.dip, msg.original_sk_id.dport,
-                           client_sks[i].fd);
+                    std::cout << "New entry: "
+                              << msg.original_sk_id.sip << ":" << msg.original_sk_id.sport
+                              << " - " << msg.original_sk_id.dip << ":" << msg.original_sk_id.dport
+                              << " -> " << client_sks[i].fd << std::endl;
                     // update the map with the new socket
                     sockid_to_fd_map[msg.original_sk_id] = client_sks[i].fd;
                     fd = client_sks[i].fd;
