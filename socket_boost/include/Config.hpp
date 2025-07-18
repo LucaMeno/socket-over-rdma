@@ -23,18 +23,29 @@ public:
     inline static const int NUMBER_OF_SOCKETS = 16;
 
     // RDMA context
-    inline static const char *RDMA_TCP_PORT = "7472";    // Default RDMA port for TCP parameters exchange
-    inline static const int MAX_MSG_BUFFER = (1024 * 8); // POWER OF 2!!!!!!!!!!!
-    inline static const int THRESHOLD_NOT_AUTOSCALER = 64;
-    inline static const int TIME_TO_WAIT_IF_NO_SPACE_MS = 10;
+    inline static const size_t MAX_SEND_WR = 512;
+    inline static const size_t MAX_RECV_WR = 16;
+    inline static const size_t MAX_SEND_SGE = 1;
+    inline static const size_t MAX_RECV_SGE = 1;
+
+    inline static const int MAX_CQ_ENTRIES = 256; // Maximum number of entries in the completion queue
+
+    inline static const char *RDMA_TCP_PORT = "7472";                        // Default RDMA port for TCP parameters exchange
+    inline static const int MAX_MSG_BUFFER = (1024 * 8);                     // POWER OF 2!!!!!!!!!!!
+    inline static const int THRESHOLD_NOT_AUTOSCALER = 16;                   // Threshold for flushing messages
+    inline static const int TIME_TO_WAIT_IF_NO_SPACE_MS = 10;                // ms
     inline static const int MAX_PAYLOAD_SIZE = (128 * 1024);                 // 128 KB
     inline static const int QP_N = 4;                                        // Number of QPs
+    inline static const size_t MAX_WR_PER_POST = 128;                        // Maximum number of work requests in a post
+    inline static const size_t BATCH_SIZE = (64 * 1024);                     // 64 KB per WR
     inline static const uint32_t TIME_BTW_DATA_READY_NOTIFICATIONS_MS = 500; // 500 ms
+
+    inline static const size_t MAX_WR_BEFORE_SIGNAL = 256; // Maximum number of work requests before signaling
 
     // RDMA manager
     inline static const int N_WRITER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket
     inline static const int TIME_STOP_SELECT_SEC = 5;             // 5 seconds
-    inline static const int FLUSH_INTERVAL_MS = 100;              // ms
+    inline static const int FLUSH_INTERVAL_MS = 10;               // ms
     inline static const int N_THREAD_POOL_THREADS = 16;
 
     inline static const char *SERVER_IP = "127.0.0.1";

@@ -28,13 +28,13 @@ namespace rdma
         // Create multiple send CQs for load balancing
         for (int i = 0; i < Config::QP_N; i++)
         {
-            send_cqs[i] = ibv_create_cq(ctx, 16, nullptr, nullptr, 0);
+            send_cqs[i] = ibv_create_cq(ctx, Config::MAX_CQ_ENTRIES, nullptr, nullptr, 0);
             if (!send_cqs[i])
                 throw runtime_error("Failed to create send CQ " + to_string(i));
         }
 
         // create receive CQ
-        recv_cq = ibv_create_cq(ctx, 16, nullptr, comp_channel, 0);
+        recv_cq = ibv_create_cq(ctx, Config::MAX_CQ_ENTRIES, nullptr, comp_channel, 0);
         if (!recv_cq)
             throw runtime_error("Failed to create receive CQ");
 
@@ -55,7 +55,7 @@ namespace rdma
         if (ibv_req_notify_cq(recv_cq, 0))
             throw runtime_error("Failed to request notification on receive CQ");
 
-        buffer = (char *)aligned_alloc(4096, MR_SIZE);
+        buffer = (char *)aligned_alloc(4096, MR_SIZE); // TODO: use a better allocator
         if (!buffer)
             throw runtime_error("Failed to allocate buffer");
 
@@ -76,10 +76,10 @@ namespace rdma
                 qpa.srq = srq; // Use the shared receive CQ only if it was created successfully
             qpa.qp_type = IBV_QPT_RC;
             qpa.cap = {
-                .max_send_wr = 16,
-                .max_recv_wr = 16,
-                .max_send_sge = 1,
-                .max_recv_sge = 1};
+                .max_send_wr = Config::MAX_SEND_WR,
+                .max_recv_wr = Config::MAX_RECV_WR,
+                .max_send_sge = Config::MAX_SEND_SGE,
+                .max_recv_sge = Config::MAX_RECV_SGE};
 
             qps[i] = ibv_create_qp(pd, &qpa);
             if (!qps[i])
@@ -497,8 +497,6 @@ namespace rdma
         return lrand48() & 0xffffff;
     }
 
-    // SETUP
-
     RdmaContext::RdmaContext()
     {
         is_ready.store(false);
@@ -556,8 +554,6 @@ namespace rdma
         remote_rkey = 0;
     }
 
-    // NOTIFICATIONS
-
     void RdmaContext::sendNotification(CommunicationCode code)
     {
         notification_t *notification = (notification_t *)buffer;
@@ -601,42 +597,85 @@ namespace rdma
         last_notification_data_ready_ns = getTimeMS();
     }
 
-    // WRITE
-
     void RdmaContext::postWriteOp(uintptr_t remote_addr_2, uintptr_t local_addr, size_t size_to_write, bool signaled)
     {
-        struct ibv_send_wr send_wr_data = {};
-        struct ibv_sge sge_data;
+        size_t remaining = size_to_write;
+        uintptr_t local_ptr = local_addr;
+        uintptr_t remote_ptr = remote_addr_2;
 
-        // Fill ibv_sge with local buffer
-        sge_data.addr = local_addr;      // Local address of the buffer
-        sge_data.length = size_to_write; // Length of the buffer
-        sge_data.lkey = mr->lkey;
+        vector<ibv_send_wr> wrs;
+        wrs.reserve(Config::MAX_WR_PER_POST); // Reserve space for the maximum number of WRs per post
+        vector<ibv_sge> sges;
+        sges.reserve(Config::MAX_WR_PER_POST); // Reserve space for the maximum number of SGEs
 
-        // Prepare ibv_send_wr with IBV_WR_RDMA_WRITE
-        send_wr_data.opcode = IBV_WR_RDMA_WRITE;
-        send_wr_data.wr.rdma.remote_addr = remote_addr_2;
-        send_wr_data.wr.rdma.rkey = remote_rkey;
-        send_wr_data.sg_list = &sge_data;
-        send_wr_data.num_sge = 1;
-        if (signaled == true)
-            send_wr_data.send_flags = IBV_SEND_SIGNALED;
+        uint32_t tot_wr = 0;
 
-        // Post send in SQ with ibv_post_send
-        uint32_t qp_index = getNextSendQIndex(); // Get the next QP index for round-robin load balancing
-
-        struct ibv_send_wr *bad_send_wr_data;
-        int ret = ibv_post_send(qps[qp_index], &send_wr_data, &bad_send_wr_data);
-        if (ret != 0) // Post the send work request
+        while (remaining > 0)
         {
-            cerr << "Failed to post write - rdma_post_write: " << strerror(errno) << endl;
-            cerr << "Error code: " << ret << endl;
-            throw runtime_error("Failed to post write - rdma_post_write");
-        }
+            size_t chunk_size = min(Config::BATCH_SIZE, remaining);
+            bool do_polling = false;
 
-        // Poll the completion queue
-        if (signaled == true)
-            pollCqSend(send_cqs[qp_index]);
+            ibv_sge sge = {};
+            sge.addr = local_ptr;
+            sge.length = chunk_size;
+            sge.lkey = mr->lkey;
+
+            sges.push_back(sge); // save the SGE
+
+            ibv_send_wr wr = {};
+            wr.opcode = IBV_WR_RDMA_WRITE;
+            wr.sg_list = &sges.back();
+            wr.num_sge = 1;
+            wr.wr.rdma.remote_addr = remote_ptr;
+            wr.wr.rdma.rkey = remote_rkey;
+
+            tot_wr++;
+
+            // Set IBV_SEND_SIGNALED only on the last WR of the last batch
+            if (signaled && (remaining - chunk_size == 0))
+            {
+                wr.send_flags = IBV_SEND_SIGNALED;
+                do_polling = true; // Indicate that we should poll the CQ after posting this WR
+            }
+
+            wrs.push_back(wr);
+
+            local_ptr += chunk_size;
+            remote_ptr += chunk_size;
+            remaining -= chunk_size;
+
+            // If we have reached a batch to post, send it
+            if (wrs.size() >= Config::MAX_WR_PER_POST || (remaining == 0))
+            {
+                // Link the WRs
+                for (size_t i = 0; i + 1 < wrs.size(); ++i)
+                    wrs[i].next = &wrs[i + 1];
+
+                if (!do_polling && tot_wr % Config::MAX_WR_BEFORE_SIGNAL == 0)
+                {
+                    wrs.back().send_flags |= IBV_SEND_SIGNALED; // Signal every Config::MAX_WR_BEFORE_SIGNAL WRs
+                    do_polling = true;                          // Indicate that we should poll the CQ after posting this
+                }
+
+                ibv_send_wr *bad_wr = nullptr;
+                uint32_t qp_index = getNextSendQIndex();
+                int ret = ibv_post_send(qps[qp_index], &wrs[0], &bad_wr);
+                if (ret != 0)
+                {
+                    cerr << "RDMA post_send failed: " << strerror(errno) << " (code " << ret << ")" << endl;
+                    throw runtime_error("Failed to post RDMA write batch");
+                }
+
+                cout << "Posted batch of " << wrs.size() << " WRs to QP " << qp_index << ", signaled: " << (do_polling ? "yes" : "no") << endl;
+
+                if (do_polling)
+                    pollCqSend(send_cqs[qp_index]);
+
+                // Clear for the next batch
+                wrs.clear();
+                sges.clear();
+            }
+        }
     }
 
     void RdmaContext::flushRingbuffer(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx)
@@ -778,8 +817,6 @@ namespace rdma
             ringbuffer->local_write_index.fetch_add(1);
 
             lock.unlock();
-
-            // this_thread::sleep_for(chrono::nanoseconds(1)); // simulate some processing delay
         }
 
         return 1;
@@ -892,8 +929,6 @@ namespace rdma
             i += msg->number_of_slots;
         }
     }
-
-    // UTILS
 
     void RdmaContext::setPollingStatus(uint32_t is_polling)
     {

@@ -413,7 +413,13 @@ namespace rdmaMng
     {
         uint32_t start_idx = rb.local_read_index.load();
         uint32_t end_idx = rb.local_write_index.load();
+
+        if (start_idx == end_idx)
+            return; // nothing to flush
+
         rb.local_read_index.store(rb.local_write_index.load());
+
+        // cout << "Flushing ringbuffer from " << start_idx << " to " << end_idx << " tot: " << (end_idx - start_idx) << endl;
 
         thPool->enqueue([this, &ctx, &rb, start_idx, end_idx]()
                         { flushThreadWorker(ctx, rb, start_idx, end_idx); });
@@ -423,7 +429,15 @@ namespace rdmaMng
 
     void RdmaMng::flushThreadWorker(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb, uint32_t start_idx, uint32_t end_idx)
     {
-        ctx.flushRingbuffer(rb, start_idx, end_idx);
+        try
+        {
+            ctx.flushRingbuffer(rb, start_idx, end_idx);
+        }
+        catch (const std::exception &e)
+        {
+            cerr << "Exception in flushThreadWorker: " << e.what() << endl;
+            perror("Details");
+        }
     }
 
     void RdmaMng::launchBackbroundThread()
@@ -661,7 +675,6 @@ namespace rdmaMng
                 }
 
                 uint32_t msg_sent = ctx.n_msg_sent.load();
-                uint32_t counter = 0;
                 rdma_ringbuffer_t &rb = *((ctx.is_server == true) ? ctx.ringbuffer_server : ctx.ringbuffer_client);
 
                 while (1)
@@ -669,16 +682,10 @@ namespace rdmaMng
                     uint64_t now = ctx.getTimeMS();
 
                     if (msg_sent >= ctx.flush_threshold ||
-                        ((now - ctx.last_flush_ms >= Config::FLUSH_INTERVAL_MS) && msg_sent > 0))
+                        (now - ctx.last_flush_ms >= Config::FLUSH_INTERVAL_MS))
                     {
                         ctx.n_msg_sent.store(0); // reset the atomic counter
                         addFlushRingbufferJob(ctx, rb);
-                    }
-
-                    msg_sent = ctx.n_msg_sent.load(); // reload the atomic counter
-                    if (msg_sent == 0)
-                    {
-                        // no messages to flush, break the loop
                         break;
                     }
                 }
