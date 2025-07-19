@@ -25,8 +25,16 @@ ssize_t recv_all(int socket, void *buffer, size_t length)
     return total_received;
 }
 
-int main()
+int main(int argc, char *argv[])
 {
+    if (argc > 2)
+    {
+        cout << "Usage: " << argv[0] << " <port>\n";
+        return 0;
+    }
+
+    int port = (argc == 2) ? atoi(argv[1]) : PORT;
+
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0)
     {
@@ -37,7 +45,7 @@ int main()
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(PORT);
+    addr.sin_port = htons(port);
 
     if (bind(server_fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0)
     {
@@ -88,7 +96,7 @@ int main()
         memcpy(&counter_test, buf, sizeof(counter_test));
         if (counter_test != counter)
         {
-            //std::cerr << "Data mismatch: expected " << counter << ", got " << counter_test << "\n";
+            // std::cerr << "Data mismatch: expected " << counter << ", got " << counter_test << "\n";
         }
         ++counter;
 

@@ -38,11 +38,13 @@ struct retErr send_all(int socket, void *buffer, size_t length)
 
 int main(int argc, char *argv[])
 {
-    if (argc != 2)
+    if (argc != 2 && argc != 3)
     {
-        std::cerr << "Usage: " << argv[0] << " <remote ip>\n";
+        std::cerr << "Usage: " << argv[0] << " <remote ip> <port>\n";
         return 1;
     }
+
+    uint16_t port = (argc == 3) ? static_cast<uint16_t>(atoi(argv[2])) : PORT;
 
     double gb_to_send = DEFAULT_TOTAL_GB;
     uint64_t total_bytes = static_cast<uint64_t>(gb_to_send * BYTES_PER_GB);
@@ -61,7 +63,7 @@ int main(int argc, char *argv[])
 
     sockaddr_in srv{};
     srv.sin_family = AF_INET;
-    srv.sin_port = htons(PORT);
+    srv.sin_port = htons(port);
     if (inet_pton(AF_INET, argv[1], &srv.sin_addr) <= 0)
     {
         perror("inet_pton");
