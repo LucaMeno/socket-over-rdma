@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <queue>
 
 #include "BpfMng.h"
 #include "SocketMng.h"
@@ -26,6 +27,8 @@
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
 #define MR_SIZE ((sizeof(rdma_ringbuffer_t) * 2) + NOTIFICATION_OFFSET_SIZE)
+
+#define MSG_HEADER_SIZE (sizeof(rdma_msg_t) - sizeof(rdma_msg_t::msg))
 
 namespace rdma
 {
@@ -94,6 +97,13 @@ namespace rdma
         struct conn_info conn_info_local; // connection info
     } serverConnection_t;
 
+    struct WorkRequest
+    {
+        ibv_send_wr wr;
+        ibv_sge sge;
+        uint32_t actual_write_index;
+    };
+
     class RdmaContext
     {
     public:
@@ -107,7 +117,7 @@ namespace rdma
         ibv_cq *recv_cq;                // receive completion queue
 
         char *buffer;
-        uintptr_t remote_addr;
+        uintptr_t remote_addr; // remote address of the buffer
         uint32_t remote_rkey;
         ibv_comp_channel *comp_channel;
 
@@ -130,12 +140,18 @@ namespace rdma
         rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server
         rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
 
+        rdma_ringbuffer_t *buffer_to_write; // buffer to write data
+        rdma_ringbuffer_t *buffer_to_read;  // buffer to read data
+
         std::unordered_map<sock_id_t, int> sockid_to_fd_map; // Map of sock_id to fd for fast access
 
         std::mutex mtx_send_q; // Mutex to protect the send_q_index
         uint32_t send_q_index;
 
         uint64_t last_notification_data_ready_ns; // Last time a notification was sent
+
+        std::queue<WorkRequest> work_reqs;
+        std::mutex mtx_wrs; // Mutex to protect the work requests queue
 
         RdmaContext();
         ~RdmaContext();
@@ -146,7 +162,7 @@ namespace rdma
 
         int writeMsg(int src_fd, struct sock_id original_socket);
         void readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index);
-        void flushRingbuffer(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx);
+        // void flushRingbuffer(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx);
         void updateRemoteReadIndex(rdma_ringbuffer_t &ringbuffer, uint32_t r_idx);
 
         void setPollingStatus(uint32_t is_polling);
@@ -154,6 +170,9 @@ namespace rdma
         const std::string getOpName(CommunicationCode code);
         uint64_t getTimeMS();
         void waitForContextToBeReady();
+
+        void flushWrQueue();
+        bool shouldFlushWrQueue();
 
     private:
         int tcpConnect(uint32_t ip);
@@ -163,12 +182,16 @@ namespace rdma
         void sendNotification(CommunicationCode code);
         void pollCqSend(ibv_cq *send_cq_to_poll);
         void parseMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg);
-        void postWriteOp(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
+        // void postWriteOp(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
         void sendDataReady();
         conn_info rdmaSetupPreHs();
         void rdmaSetupPostHs(conn_info remote, conn_info local);
         uint32_t getNextSendQIndex();
         void showDevices();
+        void updateRemoteWriteIndex(uint32_t pre_index, uint32_t new_index);
+
+        void enqueueWr(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx, size_t data_size);
+        void executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
     };
 
 } // namespace rdma

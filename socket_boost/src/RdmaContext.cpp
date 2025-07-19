@@ -7,8 +7,6 @@ namespace rdma
 {
     int COUNT = 0; // for debugging
 
-    // CLIENT - SERVER
-
     conn_info RdmaContext::rdmaSetupPreHs()
     {
         srand48(getpid());
@@ -125,40 +123,6 @@ namespace rdma
         remote_addr = remote.addr;
         remote_rkey = remote.rkey;
 
-        cout << " ==================== CONNECTION INFO ====================\n";
-
-        cout << "## LOCAL ##" << endl;
-        std::cout << "Local QPN and PSN: " << endl;
-        for (int i = 0; i < Config::QP_N; i++)
-            std::cout << "- QPN[" << i << "]: " << local.qp_num[i] << " PSN: " << local.rq_psn[i] << "\n";
-        cout << "Local LID: " << local.lid << "\n"
-             << "Local BUFFER: " << std::hex << local.addr << std::dec << "\n"
-             << "Local RKEY: " << local.rkey << "\n"
-             << "Local GID: ";
-        for (int i = 0; i < 16; i++)
-            std::printf("%02x", local.gid.raw[i]);
-
-        std::cout << endl
-                  << endl
-                  << "## REMOTE ##" << endl;
-
-        cout << "Remote QPN and PSN: " << endl;
-        for (int i = 0; i < Config::QP_N; i++)
-            std::cout << "- QPN[" << i << "]: " << remote.qp_num[i] << " PSN: " << remote.rq_psn[i] << "\n";
-        cout << "Remote LID: " << remote.lid << "\n"
-             << "Remote BUFFER: " << std::hex << remote.addr << std::dec << "\n"
-             << "Remote RKEY: " << remote.rkey << "\n"
-             << "Remote GID: ";
-        for (int i = 0; i < 16; i++)
-            std::printf("%02x", remote.gid.raw[i]);
-
-        std::cout << endl
-                  << endl
-                  << "## DEVICES ##" << endl;
-        showDevices();
-
-        std::cout << "\n ==========================================================\n";
-
         for (int i = 0; i < Config::QP_N; i++)
         {
             ibv_qp_attr rtr = {};
@@ -251,6 +215,52 @@ namespace rdma
                 if (ibv_post_recv(qps[i], &recv_wr, &bad_wr) != 0 || bad_wr)
                     throw std::runtime_error("Failed to post initial receive work request to QP " + std::to_string(i));
         }
+
+        if (is_server)
+        {
+            buffer_to_write = ringbuffer_server;
+            buffer_to_read = ringbuffer_client;
+        }
+        else
+        {
+            buffer_to_write = ringbuffer_client;
+            buffer_to_read = ringbuffer_server;
+        }
+
+        cout << " ==================== CONNECTION INFO ====================\n";
+
+        cout << "## LOCAL ##" << endl;
+        std::cout << "Local QPN and PSN: " << endl;
+        for (int i = 0; i < Config::QP_N; i++)
+            std::cout << "- QPN[" << i << "]: " << local.qp_num[i] << " PSN: " << local.rq_psn[i] << "\n";
+        cout << "Local LID: " << local.lid << "\n"
+             << "Local BUFFER client: " << std::hex << ringbuffer_client << std::dec << "\n"
+             << "Local BUFFER server: " << std::hex << ringbuffer_server << std::dec << "\n"
+             << "Local RKEY: " << local.rkey << "\n"
+             << "Local GID: ";
+        for (int i = 0; i < 16; i++)
+            std::printf("%02x", local.gid.raw[i]);
+
+        std::cout << endl
+                  << endl
+                  << "## REMOTE ##" << endl;
+
+        cout << "Remote QPN and PSN: " << endl;
+        for (int i = 0; i < Config::QP_N; i++)
+            std::cout << "- QPN[" << i << "]: " << remote.qp_num[i] << " PSN: " << remote.rq_psn[i] << "\n";
+        cout << "Remote LID: " << remote.lid << "\n"
+             << "Remote BUFFER: " << std::hex << remote.addr << std::dec << "\n"
+             << "Remote RKEY: " << remote.rkey << "\n"
+             << "Remote GID: ";
+        for (int i = 0; i < 16; i++)
+            std::printf("%02x", remote.gid.raw[i]);
+
+        std::cout << endl
+                  << endl
+                  << "## DEVICES ##" << endl;
+        showDevices();
+
+        std::cout << "\n ==========================================================\n";
     }
 
     serverConnection_t RdmaContext::serverSetup()
@@ -516,6 +526,8 @@ namespace rdma
         srq = nullptr;
         ringbuffer_client = nullptr;
         ringbuffer_server = nullptr;
+        buffer_to_read = nullptr;
+        buffer_to_write = nullptr;
         remote_rkey = 0;
         remote_addr = 0;
         last_flush_ms = 0;
@@ -549,6 +561,8 @@ namespace rdma
         pd = nullptr;
         mr = nullptr;
         buffer = nullptr;
+        buffer_to_read = nullptr;
+        buffer_to_write = nullptr;
         remote_ip = 0;
         remote_addr = 0;
         remote_rkey = 0;
@@ -597,144 +611,186 @@ namespace rdma
         last_notification_data_ready_ns = getTimeMS();
     }
 
-    void RdmaContext::postWriteOp(uintptr_t remote_addr_2, uintptr_t local_addr, size_t size_to_write, bool signaled)
+    void RdmaContext::enqueueWr(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx, size_t data_size)
     {
-        size_t remaining = size_to_write;
-        uintptr_t local_ptr = local_addr;
-        uintptr_t remote_ptr = remote_addr_2;
+        uint32_t w_idx = RING_IDX(end_idx);   // local write index
+        uint32_t r_idx = RING_IDX(start_idx); // remote read index
+
+        /*if (r_idx > w_idx)
+        {
+            cerr << "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" << endl;
+            cout << "r_idx: " << r_idx << ", w_idx: " << w_idx << endl;
+            cout << "start_idx: " << start_idx << ", end_idx: " << end_idx << endl;
+            cout << "data_size: " << data_size << endl;
+            throw runtime_error("Invalid indices: remote read index is greater than local write index");
+            // wrap-around
+            // form actual index to the end of the ring buffer
+            uintptr_t batch_start = (uintptr_t)&ringbuffer.data[r_idx];
+
+            // TODO
+            size_t batch_size = (Config::MAX_MSG_BUFFER - r_idx) * sizeof(rdma_msg_t);
+
+            uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
+
+            WorkRequest wr1, wr2;
+
+            wr1.sge.addr = batch_start;
+            wr1.sge.length = batch_size;
+            wr1.sge.lkey = mr->lkey;
+
+            wr1.wr.opcode = IBV_WR_RDMA_WRITE;
+            wr1.wr.sg_list = &wr1.sge;
+            wr1.wr.num_sge = 1;
+            wr1.wr.wr.rdma.remote_addr = remote_addr_2;
+            wr1.wr.wr.rdma.rkey = remote_rkey;
+
+            wr1.actual_write_index = batch_start + batch_size; // set the actual write index to the end of the first batch
+
+            // from the start of the ring buffer to the end index
+            batch_start = (uintptr_t)&ringbuffer.data[0];
+            batch_size = w_idx * sizeof(rdma_msg_t);
+            remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
+
+            wr2.sge.addr = batch_start;
+            wr2.sge.length = batch_size;
+            wr2.sge.lkey = mr->lkey;
+
+            wr2.wr.opcode = IBV_WR_RDMA_WRITE;
+            wr2.wr.sg_list = &wr2.sge;
+            wr2.wr.num_sge = 1;
+            wr2.wr.wr.rdma.remote_addr = remote_addr_2;
+            wr2.wr.wr.rdma.rkey = remote_rkey;
+
+            wr2.actual_write_index = end_idx; // set the actual write index to the end index
+
+            unique_lock<mutex> lock(mtx_wrs);
+            work_reqs.push(wr1);
+            work_reqs.push(wr2);
+            lock.unlock();
+        }
+        else
+        {*/
+        // normal case
+        uintptr_t batch_start = (uintptr_t)&ringbuffer.data[r_idx];
+        size_t batch_size = (w_idx - r_idx) * sizeof(rdma_msg_t);
+        uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
+
+        WorkRequest wr;
+        wr.sge.addr = batch_start;
+        wr.sge.length = data_size; // use data_size for the length
+        wr.sge.lkey = mr->lkey;
+
+        wr.wr.opcode = IBV_WR_RDMA_WRITE;
+        wr.wr.sg_list = &wr.sge;
+        wr.wr.num_sge = 1;
+        wr.wr.wr.rdma.remote_addr = remote_addr_2;
+        wr.wr.wr.rdma.rkey = remote_rkey;
+
+        wr.actual_write_index = end_idx; // set the actual write index to the end index
+
+        unique_lock<mutex> lock(mtx_wrs);
+        work_reqs.push(wr);
+
+        lock.unlock();
+        //}
+    }
+
+    void RdmaContext::executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled = true)
+    {
+        struct ibv_send_wr send_wr_data = {};
+        struct ibv_sge sge_data;
+
+        // Fill ibv_sge with local buffer
+        sge_data.addr = local_addr;      // Local address of the buffer
+        sge_data.length = size_to_write; // Length of the buffer
+        sge_data.lkey = mr->lkey;
+
+        // Prepare ibv_send_wr with IBV_WR_RDMA_WRITE
+        send_wr_data.opcode = IBV_WR_RDMA_WRITE;
+        send_wr_data.wr.rdma.remote_addr = remote_addr;
+        send_wr_data.wr.rdma.rkey = remote_rkey;
+        send_wr_data.sg_list = &sge_data;
+        send_wr_data.num_sge = 1;
+        if (signaled == true)
+            send_wr_data.send_flags = IBV_SEND_SIGNALED;
+
+        // Post send in SQ with ibv_post_send
+        uint32_t qp_index = getNextSendQIndex(); // Get the next QP index for round-robin load balancing
+
+        struct ibv_send_wr *bad_send_wr_data;
+        int ret = ibv_post_send(qps[qp_index], &send_wr_data, &bad_send_wr_data);
+        if (ret != 0) // Post the send work request
+            throw runtime_error("Failed to post write - executeWrNow - code: " + to_string(ret));
+
+        // Poll the completion queue
+        if (signaled == true)
+            pollCqSend(send_cqs[qp_index]);
+    }
+
+    void RdmaContext::flushWrQueue()
+    {
+        queue<WorkRequest> wrs_to_flush;
+
+        unique_lock<mutex> lock(mtx_wrs);
+        // Move all work requests to the local queue
+        wrs_to_flush.swap(work_reqs);
+        lock.unlock();
+
+        if (wrs_to_flush.empty())
+            return; // nothing to flush
+
+        cout << "Flushing " << wrs_to_flush.size() << " work requests" << endl;
+
+        size_t remaining = wrs_to_flush.size();
 
         vector<ibv_send_wr> wrs;
         wrs.reserve(Config::MAX_WR_PER_POST); // Reserve space for the maximum number of WRs per post
         vector<ibv_sge> sges;
         sges.reserve(Config::MAX_WR_PER_POST); // Reserve space for the maximum number of SGEs
-
-        uint32_t tot_wr = 0;
+        uint32_t end_index = 0;
+        uint32_t start_index = 0;
 
         while (remaining > 0)
         {
-            size_t chunk_size = min(Config::BATCH_SIZE, remaining);
-            bool do_polling = false;
+            size_t chunk_size = min(Config::MAX_WR_PER_POST, remaining);
 
-            ibv_sge sge = {};
-            sge.addr = local_ptr;
-            sge.length = chunk_size;
-            sge.lkey = mr->lkey;
+            end_index = wrs_to_flush.back().actual_write_index;
+            start_index = wrs_to_flush.front().actual_write_index;
 
-            sges.push_back(sge); // save the SGE
-
-            ibv_send_wr wr = {};
-            wr.opcode = IBV_WR_RDMA_WRITE;
-            wr.sg_list = &sges.back();
-            wr.num_sge = 1;
-            wr.wr.rdma.remote_addr = remote_ptr;
-            wr.wr.rdma.rkey = remote_rkey;
-
-            tot_wr++;
-
-            // Set IBV_SEND_SIGNALED only on the last WR of the last batch
-            if (signaled && (remaining - chunk_size == 0))
+            for (size_t i = 0; i < chunk_size; ++i)
             {
-                wr.send_flags = IBV_SEND_SIGNALED;
-                do_polling = true; // Indicate that we should poll the CQ after posting this WR
+                WorkRequest wr = wrs_to_flush.front();
+                wrs_to_flush.pop();
+                wrs.push_back(wr.wr);              // Add the WR to the batch
+                sges.push_back(wr.sge);            // Add the SGE to the batch
+                wrs.back().sg_list = &sges.back(); // Link the SGE to the WR
             }
 
-            wrs.push_back(wr);
+            wrs.back().next = nullptr;                 // Last WR does not have a next pointer
+            wrs.back().send_flags = IBV_SEND_SIGNALED; // Set the last WR to be signaled
 
-            local_ptr += chunk_size;
-            remote_ptr += chunk_size;
+            // Link the WRs
+            for (size_t i = 0; i + 1 < chunk_size; ++i)
+                wrs[i].next = &wrs[i + 1];
+
+            ibv_send_wr *bad_wr = nullptr;
+            uint32_t qp_index = getNextSendQIndex();
+
+            int ret = ibv_post_send(qps[qp_index], &wrs[0], &bad_wr);
+            if (ret != 0)
+                throw runtime_error("Failed to post RDMA write batch: code " + to_string(ret));
+
+            pollCqSend(send_cqs[qp_index]);
+
+            updateRemoteWriteIndex(start_index, end_index);
+
+            // Clear for the next batch
+            wrs.clear();
+            sges.clear();
             remaining -= chunk_size;
-
-            // If we have reached a batch to post, send it
-            if (wrs.size() >= Config::MAX_WR_PER_POST || (remaining == 0))
-            {
-                // Link the WRs
-                for (size_t i = 0; i + 1 < wrs.size(); ++i)
-                    wrs[i].next = &wrs[i + 1];
-
-                if (!do_polling && tot_wr % Config::MAX_WR_BEFORE_SIGNAL == 0)
-                {
-                    wrs.back().send_flags |= IBV_SEND_SIGNALED; // Signal every Config::MAX_WR_BEFORE_SIGNAL WRs
-                    do_polling = true;                          // Indicate that we should poll the CQ after posting this
-                }
-
-                ibv_send_wr *bad_wr = nullptr;
-                uint32_t qp_index = getNextSendQIndex();
-                int ret = ibv_post_send(qps[qp_index], &wrs[0], &bad_wr);
-                if (ret != 0)
-                {
-                    cerr << "RDMA post_send failed: " << strerror(errno) << " (code " << ret << ")" << endl;
-                    throw runtime_error("Failed to post RDMA write batch");
-                }
-
-                cout << "Posted batch of " << wrs.size() << " WRs to QP " << qp_index << ", signaled: " << (do_polling ? "yes" : "no") << endl;
-
-                if (do_polling)
-                    pollCqSend(send_cqs[qp_index]);
-
-                // Clear for the next batch
-                wrs.clear();
-                sges.clear();
-            }
-        }
-    }
-
-    void RdmaContext::flushRingbuffer(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx)
-    {
-        uint32_t w_idx = RING_IDX(end_idx);   // local write index
-        uint32_t r_idx = RING_IDX(start_idx); // remote read index
-
-        // cout << "F: " << end_idx - start_idx << endl;
-
-        if (r_idx > w_idx)
-        {
-            // wrap-around
-            uintptr_t batch_start = (uintptr_t)&ringbuffer.data[r_idx];
-            size_t batch_size = (Config::MAX_MSG_BUFFER - r_idx) * sizeof(rdma_msg_t);
-
-            uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
-
-            postWriteOp(remote_addr_2, batch_start, batch_size, true);
-
-            batch_start = (uintptr_t)&ringbuffer.data[0];
-            batch_size = w_idx * sizeof(rdma_msg_t);
-
-            remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
-
-            postWriteOp(remote_addr_2, batch_start, batch_size, true);
-        }
-        else
-        {
-            // normal case
-            uintptr_t batch_start = (uintptr_t)&ringbuffer.data[r_idx];
-            size_t batch_size = (w_idx - r_idx) * sizeof(rdma_msg_t);
-
-            uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
-
-            postWriteOp(remote_addr_2, batch_start, batch_size, true);
         }
 
-        // calculate the offset
-        size_t write_index_offset = (size_t)(reinterpret_cast<const char *>(&ringbuffer) - (char *)buffer) +
-                                    offsetof(rdma_ringbuffer_t, remote_write_index);
-
-        uintptr_t remote_addr_write_index = remote_addr + write_index_offset;
-
-        rdma_ringbuffer_t *peer_rb = (is_server == true) ? ringbuffer_client : ringbuffer_server;
-
-        // Critical region to update the write index using C++ std::mutex and std::condition_variable
-        std::unique_lock<std::mutex> lock(mtx_commit_flush);
-        // Wait until the previous flush is committed
-        cond_commit_flush.wait(lock, [&]()
-                               { return ringbuffer.remote_write_index.load() == start_idx; });
-
-        // Update the write index
-        ringbuffer.remote_write_index.store(end_idx);
-
-        postWriteOp(remote_addr_write_index,
-                    (uintptr_t)(buffer + write_index_offset),
-                    sizeof(ringbuffer.remote_write_index), true);
-
-        auto flags = peer_rb->flags.flags.load(std::memory_order_acquire);
+        auto flags = buffer_to_read->flags.flags.load();
 
         if ((flags & static_cast<unsigned int>(RingBufferFlag::RING_BUFFER_POLLING)) == 0)
         {
@@ -745,10 +801,16 @@ namespace rdma
                 sendDataReady();
             }
         }
+    }
 
-        cond_commit_flush.notify_all();
-        // cout << "Flush completed: in = " << in << ", out = " << out << endl;
-        //  std::unique_lock will automatically unlock mtx_commit_flush when it goes out of scope
+    bool RdmaContext::shouldFlushWrQueue()
+    {
+        unique_lock<mutex> lock(mtx_wrs);
+        if (work_reqs.empty())
+            return false;
+        if (work_reqs.size() >= flush_threshold.load())
+            return true;
+        return false;
     }
 
     int RdmaContext::writeMsg(int src_fd, struct sock_id original_socket)
@@ -799,11 +861,7 @@ namespace rdma
                 }
             }
 
-            // modulo the indexes
-            start_w_index = RING_IDX(start_w_index);
-            end_w_index = RING_IDX(end_w_index);
-
-            rdma_msg_t *msg = &ringbuffer->data[start_w_index];
+            rdma_msg_t *msg = &ringbuffer->data[RING_IDX(start_w_index)];
 
             msg->msg_size = recv(src_fd, msg->msg, Config::MAX_PAYLOAD_SIZE, 0);
             if ((int)msg->msg_size <= 0)
@@ -815,6 +873,8 @@ namespace rdma
 
             n_msg_sent.fetch_add(1);
             ringbuffer->local_write_index.fetch_add(1);
+
+            enqueueWr(*ringbuffer, start_w_index, start_w_index + msg->number_of_slots, msg->msg_size + MSG_HEADER_SIZE);
 
             lock.unlock();
         }
@@ -886,6 +946,46 @@ namespace rdma
         }
     }
 
+    int in = 0;
+    int eq = 0;
+    void RdmaContext::updateRemoteWriteIndex(uint32_t pre_index, uint32_t new_index)
+    {
+        // Critical region to update the write index
+        std::unique_lock<std::mutex> lock(mtx_commit_flush);
+        in++;
+        if (pre_index == new_index)
+        {
+            eq++;
+        }
+        cout << "IN - IN: " << in << " PRE: " << pre_index << ", NEW: " << new_index << endl;
+        // Wait until the previous flush is committed
+        cond_commit_flush.wait(lock, [&]()
+                               { return buffer_to_write->remote_write_index.load() == pre_index - 1 || stop.load() == true; });
+
+        if (stop.load() == true)
+        {
+            cout << "Stopping updateRemoteWriteIndex due to stop signal." << endl;
+            return; // stop the thread
+        }
+
+        buffer_to_write->remote_write_index.store(new_index);
+
+        // get the index offset
+        size_t write_index_offset = (size_t)((char *)buffer_to_write - (char *)buffer) +
+                                    offsetof(rdma_ringbuffer_t, remote_write_index);
+
+        uintptr_t remote_addr_write_index = remote_addr + write_index_offset;
+
+        executeWrNow(remote_addr_write_index,
+                     (uintptr_t)(buffer + write_index_offset),
+                     sizeof(buffer_to_write->remote_write_index),
+                     true);
+
+        in--;
+        cout << "OUT - IN: " << in << " PRE: " << pre_index << ", NEW: " << new_index << endl;
+        cond_commit_flush.notify_all(); // Notify that the flush is committed
+    }
+
     void RdmaContext::updateRemoteReadIndex(rdma_ringbuffer_t &ringbuffer, uint32_t r_idx)
     {
         // COMMIT the read index
@@ -896,10 +996,10 @@ namespace rdma
 
         uintptr_t remote_addr_read_index = remote_addr + read_index_offset;
 
-        postWriteOp(remote_addr_read_index,
-                    (uintptr_t)(buffer + read_index_offset),
-                    sizeof(ringbuffer.remote_read_index),
-                    true);
+        executeWrNow(remote_addr_read_index,
+                     (uintptr_t)(buffer + read_index_offset),
+                     sizeof(ringbuffer.remote_read_index),
+                     true);
     }
 
     void RdmaContext::readMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index)
@@ -956,10 +1056,10 @@ namespace rdma
         size_t offset = (size_t)((char *)ringbuffer - (char *)buffer);
         uintptr_t remote_addr_2 = remote_addr + offset;
 
-        postWriteOp(remote_addr_2,
-                    (uintptr_t)(buffer + offset),
-                    sizeof(ringbuffer->flags.flags),
-                    true);
+        executeWrNow(remote_addr_2,
+                     (uintptr_t)(buffer + offset),
+                     sizeof(ringbuffer->flags.flags),
+                     true);
 
         cout << "Polling status updated: " << (is_polling ? "ON" : "OFF") << endl;
     }
@@ -986,15 +1086,9 @@ namespace rdma
             return; // no completions found, just return
         }
 
-        if (num_completions < 0)
+        if (num_completions < 0 || wc.status != IBV_WC_SUCCESS)
         {
-            fprintf(stderr, "CQ error_1: %s (%d)\n", ibv_wc_status_str(wc.status), wc.status);
-            throw runtime_error("Failed to poll CQ - pollCqSend");
-        }
-
-        if (wc.status != IBV_WC_SUCCESS)
-        {
-            fprintf(stderr, "CQ error_2: %s (%d)\n", ibv_wc_status_str(wc.status), wc.status);
+            fprintf(stderr, "CQ error: %s (%d)\n", ibv_wc_status_str(wc.status), wc.status);
             throw runtime_error("Failed to poll CQ - pollCqSend");
         }
     }

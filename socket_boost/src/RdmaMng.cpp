@@ -414,29 +414,24 @@ namespace rdmaMng
         uint32_t start_idx = rb.local_read_index.load();
         uint32_t end_idx = rb.local_write_index.load();
 
-        if (start_idx == end_idx)
-            return; // nothing to flush
+        ctx.last_flush_ms = ctx.getTimeMS();
 
         rb.local_read_index.store(rb.local_write_index.load());
 
-        // cout << "Flushing ringbuffer from " << start_idx << " to " << end_idx << " tot: " << (end_idx - start_idx) << endl;
-
         thPool->enqueue([this, &ctx, &rb, start_idx, end_idx]()
                         { flushThreadWorker(ctx, rb, start_idx, end_idx); });
-
-        ctx.last_flush_ms = ctx.getTimeMS();
     }
 
     void RdmaMng::flushThreadWorker(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb, uint32_t start_idx, uint32_t end_idx)
     {
         try
         {
-            ctx.flushRingbuffer(rb, start_idx, end_idx);
+            ctx.flushWrQueue(); // Flush the work requests queue
         }
         catch (const std::exception &e)
         {
             cerr << "Exception in flushThreadWorker: " << e.what() << endl;
-            perror("Details");
+            throw;
         }
     }
 
@@ -681,7 +676,7 @@ namespace rdmaMng
                 {
                     uint64_t now = ctx.getTimeMS();
 
-                    if (msg_sent >= ctx.flush_threshold ||
+                    if (ctx.shouldFlushWrQueue() ||
                         (now - ctx.last_flush_ms >= Config::FLUSH_INTERVAL_MS))
                     {
                         ctx.n_msg_sent.store(0); // reset the atomic counter
