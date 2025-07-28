@@ -25,9 +25,12 @@ void error_and_exit(const char *msg);
 sk_context_t sk_ctx = {0};
 bpf_context_t bpf_ctx = {0};
 
+int counter = 1;
+
 int fun(void *ctx, void *data, size_t len)
 {
-    printf("Received event from eBPF program\n");
+    printf("%2d) Received event from eBPF program\n", counter);
+    counter++;
     return 0;
 }
 
@@ -46,25 +49,18 @@ void *th_fun(void *arg)
     int fd1 = param->fd1;
     int fd2 = param->fd2;
     int wait = param->wait;
-
-    int i = 0;
+    uint32_t idx = 0;
 
     char buf[BUFFER_SIZE];
     while (!STOP)
     {
-        /*if (wait == 1)
-        {
-            //usleep(500 * 1000); // wait for 500 ms
-        }*/
-        if (i == 1)
+        int len = recv(fd1, buf, sizeof(buf), 0);
+        if (len < 0)
         {
             continue;
         }
-        int len = recv(fd1, buf, sizeof(buf), 0);
-        if (len > 0)
-        {
-            i++;
-        }
+        if (idx++ % 10000 == 0)
+            printf("%d bytes from fd1: %d\n", len, fd1);
         while (len > 0)
         {
             int sent = 0;
