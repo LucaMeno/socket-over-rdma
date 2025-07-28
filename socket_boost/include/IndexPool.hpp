@@ -83,8 +83,11 @@ public:
     Guard getGuard()
     {
         std::unique_lock<std::mutex> lock(mutex_);
+        bool was_empty = free_idxs_.empty();
         cv_.wait(lock, [this]
                  { return !free_idxs_.empty(); });
+        if (was_empty)
+            std::cout << "Thread slept waiting for index\n";
 
         int index = free_idxs_.front();
         free_idxs_.pop();

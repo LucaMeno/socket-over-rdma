@@ -400,7 +400,7 @@ namespace rdmaMng
                 rb_remote.local_read_index.store(remote_w); // reset the local write index
 
                 ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index);
-                ctx.updateRemoteReadIndex(rb_remote, end_read_index);
+                ctx.updateRemoteReadIndex(end_read_index);
             }
             else
             {

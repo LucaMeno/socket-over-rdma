@@ -161,7 +161,7 @@ namespace rdma
 
         int writeMsg(int src_fd, struct sock_id original_socket);
         void readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index);
-        void updateRemoteReadIndex(rdma_ringbuffer_t &ringbuffer, uint32_t r_idx);
+        void updateRemoteReadIndex(uint32_t r_idx);
 
         void setPollingStatus(uint32_t is_polling);
 

@@ -619,60 +619,6 @@ namespace rdma
         uint32_t w_idx = RING_IDX(end_idx);   // local write index
         uint32_t r_idx = RING_IDX(start_idx); // remote read index
 
-        /*if (r_idx > w_idx)
-        {
-            cerr << "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" << endl;
-            cout << "r_idx: " << r_idx << ", w_idx: " << w_idx << endl;
-            cout << "start_idx: " << start_idx << ", end_idx: " << end_idx << endl;
-            cout << "data_size: " << data_size << endl;
-            throw runtime_error("Invalid indices: remote read index is greater than local write index");
-            // wrap-around
-            // form actual index to the end of the ring buffer
-            uintptr_t batch_start = (uintptr_t)&ringbuffer.data[r_idx];
-
-            // TODO
-            size_t batch_size = (Config::MAX_MSG_BUFFER - r_idx) * sizeof(rdma_msg_t);
-
-            uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
-
-            WorkRequest wr1, wr2;
-
-            wr1.sge.addr = batch_start;
-            wr1.sge.length = batch_size;
-            wr1.sge.lkey = mr->lkey;
-
-            wr1.wr.opcode = IBV_WR_RDMA_WRITE;
-            wr1.wr.sg_list = &wr1.sge;
-            wr1.wr.num_sge = 1;
-            wr1.wr.wr.rdma.remote_addr = remote_addr_2;
-            wr1.wr.wr.rdma.rkey = remote_rkey;
-
-            wr1.actual_write_index = batch_start + batch_size; // set the actual write index to the end of the first batch
-
-            // from the start of the ring buffer to the end index
-            batch_start = (uintptr_t)&ringbuffer.data[0];
-            batch_size = w_idx * sizeof(rdma_msg_t);
-            remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
-
-            wr2.sge.addr = batch_start;
-            wr2.sge.length = batch_size;
-            wr2.sge.lkey = mr->lkey;
-
-            wr2.wr.opcode = IBV_WR_RDMA_WRITE;
-            wr2.wr.sg_list = &wr2.sge;
-            wr2.wr.num_sge = 1;
-            wr2.wr.wr.rdma.remote_addr = remote_addr_2;
-            wr2.wr.wr.rdma.rkey = remote_rkey;
-
-            wr2.actual_write_index = end_idx; // set the actual write index to the end index
-
-            unique_lock<mutex> lock(mtx_wrs);
-            work_reqs.push(wr1);
-            work_reqs.push(wr2);
-            lock.unlock();
-        }
-        else
-        {*/
         // normal case
         uintptr_t batch_start = (uintptr_t)&ringbuffer.data[r_idx];
         // size_t batch_size = (w_idx - r_idx) * sizeof(rdma_msg_t);
@@ -762,7 +708,7 @@ namespace rdma
         }
 
         end_index = wr.new_idx; // Get the new write index from the last work request
-        //cout << "Flushing " << wrs.size() << " WR, " << "From: " << start_index << " To: " << end_index << endl;
+        // cout << "Flushing " << wrs.size() << " WR, " << "From: " << start_index << " To: " << end_index << endl;
         lock.unlock();
 
         // Prepare the work requests for posting
@@ -801,10 +747,8 @@ namespace rdma
 
     int RdmaContext::writeMsg(int src_fd, struct sock_id original_socket)
     {
-        rdma_ringbuffer_t *ringbuffer = (is_server == true) ? ringbuffer_server : ringbuffer_client;
-
-        if (!ringbuffer)
-            throw runtime_error("ringbuffer is nullptr - writeMsg");
+        if (!buffer_to_write)
+            throw runtime_error("buffer_to_write is nullptr - writeMsg");
 
         uint32_t start_w_index, end_w_index, available_space;
 
@@ -816,8 +760,8 @@ namespace rdma
             int c = 0;
             while (1)
             {
-                start_w_index = ringbuffer->local_write_index.load();
-                end_w_index = ringbuffer->remote_write_index.load();
+                start_w_index = buffer_to_write->local_write_index.load();
+                end_w_index = buffer_to_write->remote_write_index.load();
 
                 uint32_t used = start_w_index - end_w_index; // wrap-around safe
                 available_space = Config::MAX_MSG_BUFFER - used - 1;
@@ -847,7 +791,7 @@ namespace rdma
                 }
             }
 
-            rdma_msg_t *msg = &ringbuffer->data[RING_IDX(start_w_index)];
+            rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index)];
 
             msg->msg_size = recv(src_fd, msg->msg, Config::MAX_PAYLOAD_SIZE, 0);
             if ((int)msg->msg_size <= 0)
@@ -858,9 +802,9 @@ namespace rdma
             msg->number_of_slots = 1;
 
             n_msg_sent.fetch_add(1);
-            ringbuffer->local_write_index.fetch_add(1);
+            buffer_to_write->local_write_index.fetch_add(1);
 
-            enqueueWr(*ringbuffer, start_w_index, start_w_index + msg->number_of_slots, msg->msg_size + MSG_HEADER_SIZE);
+            enqueueWr(*buffer_to_write, start_w_index, start_w_index + msg->number_of_slots, msg->msg_size + MSG_HEADER_SIZE);
 
             /*
             // commit the mesage
@@ -996,34 +940,29 @@ namespace rdma
         cond_commit_flush.notify_all(); // Notify that the flush is committed
     }
 
-    void RdmaContext::updateRemoteReadIndex(rdma_ringbuffer_t &ringbuffer, uint32_t r_idx)
+    void RdmaContext::updateRemoteReadIndex(uint32_t r_idx)
     {
         // COMMIT the read index
-        ringbuffer.remote_read_index.store(r_idx);
+        buffer_to_read->remote_read_index.store(r_idx);
 
-        size_t read_index_offset = (size_t)(reinterpret_cast<const char *>(&ringbuffer) - (char *)buffer) +
+        size_t read_index_offset = (size_t)(reinterpret_cast<const char *>(buffer_to_read) - (char *)buffer) +
                                    offsetof(rdma_ringbuffer_t, remote_read_index);
 
         uintptr_t remote_addr_read_index = remote_addr + read_index_offset;
 
         executeWrNow(remote_addr_read_index,
                      (uintptr_t)(buffer + read_index_offset),
-                     sizeof(ringbuffer.remote_read_index),
+                     sizeof(buffer_to_read->remote_read_index),
                      true);
     }
 
     void RdmaContext::readMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index)
     {
-        rdma_ringbuffer_t *ringbuffer = is_server ? ringbuffer_client : ringbuffer_server;
-
-        if (!ringbuffer)
+        if (!buffer_to_read)
             throw runtime_error("ringbuffer is nullptr - readMsg");
 
         if (start_read_index == end_read_index)
-        {
-            // nothing to read
-            return;
-        }
+            return; // nothing to read
 
         uint32_t number_of_msg = (end_read_index + Config::MAX_MSG_BUFFER - start_read_index) % Config::MAX_MSG_BUFFER;
 
@@ -1034,7 +973,7 @@ namespace rdma
         for (int i = 0; i < number_of_msg;)
         {
             int idx = RING_IDX(start_read_index + i);
-            rdma_msg_t *msg = &ringbuffer->data[idx];
+            rdma_msg_t *msg = &buffer_to_read->data[idx];
             parseMsg(bpf_ctx, client_sks, *msg);
             i += msg->number_of_slots;
         }
@@ -1042,33 +981,32 @@ namespace rdma
 
     void RdmaContext::setPollingStatus(uint32_t is_polling)
     {
-        rdma_ringbuffer_t *ringbuffer = (is_server == true) ? ringbuffer_server : ringbuffer_client;
-        unsigned int f = ringbuffer->flags.flags.load();
+        unsigned int f = buffer_to_write->flags.flags.load();
 
         // is polling?
         if (f & static_cast<unsigned int>(RingBufferFlag::RING_BUFFER_POLLING) == is_polling)
             return;
 
-        uint32_t expected = ringbuffer->flags.flags.load(std::memory_order_relaxed);
+        uint32_t expected = buffer_to_write->flags.flags.load(std::memory_order_relaxed);
         uint32_t desired;
 
         do
         {
             desired = expected ^ static_cast<uint32_t>(RingBufferFlag::RING_BUFFER_POLLING); // toggle bit
             desired |= static_cast<uint32_t>(RingBufferFlag::RING_BUFFER_CAN_POLLING);       // set bit
-        } while (!ringbuffer->flags.flags.compare_exchange_weak(
+        } while (!buffer_to_write->flags.flags.compare_exchange_weak(
             expected,                  // -- on success this becomes the old value
             desired,                   // -- the new value you want to write
             std::memory_order_acq_rel, // success order
             std::memory_order_relaxed)); // failure order
 
         // update the polling status on the remote side
-        size_t offset = (size_t)((char *)ringbuffer - (char *)buffer);
+        size_t offset = (size_t)((char *)buffer_to_write - (char *)buffer);
         uintptr_t remote_addr_2 = remote_addr + offset;
 
         executeWrNow(remote_addr_2,
                      (uintptr_t)(buffer + offset),
-                     sizeof(ringbuffer->flags.flags),
+                     sizeof(buffer_to_write->flags.flags),
                      true);
 
         cout << "Polling status updated: " << (is_polling ? "ON" : "OFF") << endl;
