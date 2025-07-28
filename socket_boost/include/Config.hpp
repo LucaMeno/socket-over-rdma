@@ -34,13 +34,11 @@ public:
     inline static const int MAX_MSG_BUFFER = (1024 * 8);                     // POWER OF 2!!!!!!!!!!!
     inline static const int TIME_TO_WAIT_IF_NO_SPACE_MS = 10;                // ms
     inline static const int MAX_PAYLOAD_SIZE = (64 * 1024);                  // 64 KB
-    inline static const int QP_N = 4;                                        // Number of QPs
-    inline static const size_t MAX_WR_PER_POST = 256;                       // Maximum number of work requests in a post (wr per flight)
+    inline static const int QP_N = 8;                                        // Number of QPs
+    inline static const size_t MAX_WR_PER_POST = 256;                          // Maximum number of work requests in a post (wr per flight)
     inline static const size_t BATCH_SIZE = MAX_PAYLOAD_SIZE;                // size of the batch to send in one go
     inline static const uint32_t TIME_BTW_DATA_READY_NOTIFICATIONS_MS = 500; // 500 ms
     inline static const int THRESHOLD_NOT_AUTOSCALER = MAX_WR_PER_POST;      // Threshold for flushing messages
-
-    inline static const size_t MAX_WR_BEFORE_SIGNAL = 256; // Maximum number of work requests before signaling
 
     // RDMA manager
     inline static const int N_WRITER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket

@@ -21,6 +21,7 @@
 #include "SocketMng.h"
 #include "Config.hpp"
 #include "SockMap.hpp"
+#include "IndexPool.hpp"
 
 #define RING_IDX(i) ((i) & (Config::MAX_MSG_BUFFER - 1))
 
@@ -101,7 +102,8 @@ namespace rdma
     {
         ibv_send_wr wr;
         ibv_sge sge;
-        uint32_t actual_write_index;
+        uint32_t pre_idx;
+        uint32_t new_idx;
     };
 
     class RdmaContext
@@ -145,9 +147,6 @@ namespace rdma
 
         std::unordered_map<sock_id_t, int> sockid_to_fd_map; // Map of sock_id to fd for fast access
 
-        std::mutex mtx_send_q; // Mutex to protect the send_q_index
-        uint32_t send_q_index;
-
         uint64_t last_notification_data_ready_ns; // Last time a notification was sent
 
         std::queue<WorkRequest> work_reqs;
@@ -162,7 +161,6 @@ namespace rdma
 
         int writeMsg(int src_fd, struct sock_id original_socket);
         void readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index);
-        // void flushRingbuffer(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx);
         void updateRemoteReadIndex(rdma_ringbuffer_t &ringbuffer, uint32_t r_idx);
 
         void setPollingStatus(uint32_t is_polling);
@@ -175,6 +173,8 @@ namespace rdma
         bool shouldFlushWrQueue();
 
     private:
+        IndexPool idxPool;
+
         int tcpConnect(uint32_t ip);
         int tcpWaitForConnection();
         ibv_context *openDevice();
@@ -186,12 +186,12 @@ namespace rdma
         void sendDataReady();
         conn_info rdmaSetupPreHs();
         void rdmaSetupPostHs(conn_info remote, conn_info local);
-        uint32_t getNextSendQIndex();
         void showDevices();
         void updateRemoteWriteIndex(uint32_t pre_index, uint32_t new_index);
 
         void enqueueWr(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx, size_t data_size);
         void executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
+        void executeWrNow(WorkRequest wr, bool signaled);
 
         WorkRequest createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
     };

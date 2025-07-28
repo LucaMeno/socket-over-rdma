@@ -507,7 +507,7 @@ namespace rdma
         return lrand48() & 0xffffff;
     }
 
-    RdmaContext::RdmaContext()
+    RdmaContext::RdmaContext() : idxPool(Config::QP_N)
     {
         is_ready.store(false);
         stop.store(false);
@@ -532,7 +532,6 @@ namespace rdma
         remote_addr = 0;
         last_flush_ms = 0;
         remote_ip = 0;
-        send_q_index = 0;
     }
 
     RdmaContext::~RdmaContext()
@@ -594,11 +593,15 @@ namespace rdma
         send_wr.next = nullptr;
 
         // Post send with ibv_post_send
-        uint32_t qp_index = getNextSendQIndex(); // Get the next QP index for round-robin load balancing
+        auto guard = idxPool.getGuard();      // Get a guard for the index pool
+        uint32_t qp_index = guard.getIndex(); // Get the index for the QP
 
         struct ibv_send_wr *bad_send_wr;
         if (ibv_post_send(qps[qp_index], &send_wr, &bad_send_wr) != 0) // Post the send work request
+        {
+            guard.releaseIndex(); // Release the index back to the pool
             throw runtime_error("Failed to post send - sendNotification");
+        }
 
         // Poll the completion queue
         pollCqSend(send_cqs[qp_index]);
@@ -672,27 +675,17 @@ namespace rdma
         {*/
         // normal case
         uintptr_t batch_start = (uintptr_t)&ringbuffer.data[r_idx];
-        size_t batch_size = (w_idx - r_idx) * sizeof(rdma_msg_t);
+        // size_t batch_size = (w_idx - r_idx) * sizeof(rdma_msg_t);
         uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
 
-        WorkRequest wr;
-        wr.sge.addr = batch_start;
-        wr.sge.length = data_size; // use data_size for the length
-        wr.sge.lkey = mr->lkey;
+        WorkRequest wr = createWr(remote_addr_2, batch_start, data_size, false); // create the work request
+        wr.pre_idx = start_idx;                                                  // set the pre-write index
+        wr.new_idx = end_idx;                                                    // set the new write index
 
-        wr.wr.opcode = IBV_WR_RDMA_WRITE;
-        wr.wr.sg_list = &wr.sge;
-        wr.wr.num_sge = 1;
-        wr.wr.wr.rdma.remote_addr = remote_addr_2;
-        wr.wr.wr.rdma.rkey = remote_rkey;
-
-        wr.actual_write_index = end_idx; // set the actual write index to the end index
-
+        // access the critical section and push the work request to the queue
         unique_lock<mutex> lock(mtx_wrs);
         work_reqs.push(wr);
-
         lock.unlock();
-        //}
     }
 
     WorkRequest RdmaContext::createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled)
@@ -708,118 +701,92 @@ namespace rdma
         wr.wr.num_sge = 1;
         wr.wr.opcode = IBV_WR_RDMA_WRITE;
         wr.wr.next = nullptr;
+        wr.wr.wr.rdma.remote_addr = remote_addr; // Remote address to write to
+        wr.wr.wr.rdma.rkey = remote_rkey;        // Remote key
         if (signaled)
             wr.wr.send_flags |= IBV_SEND_SIGNALED;
 
         return wr;
     }
 
-    void RdmaContext::executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled = true)
+    void RdmaContext::executeWrNow(WorkRequest wr, bool signaled)
     {
-        struct ibv_send_wr send_wr_data = {};
-        struct ibv_sge sge_data;
-
-        // Fill ibv_sge with local buffer
-        sge_data.addr = local_addr;      // Local address of the buffer
-        sge_data.length = size_to_write; // Length of the buffer
-        sge_data.lkey = mr->lkey;
-
-        // Prepare ibv_send_wr with IBV_WR_RDMA_WRITE
-        send_wr_data.opcode = IBV_WR_RDMA_WRITE;
-        send_wr_data.wr.rdma.remote_addr = remote_addr;
-        send_wr_data.wr.rdma.rkey = remote_rkey;
-        send_wr_data.sg_list = &sge_data;
-        send_wr_data.num_sge = 1;
-        if (signaled == true)
-            send_wr_data.send_flags = IBV_SEND_SIGNALED;
-
         // Post send in SQ with ibv_post_send
-        uint32_t qp_index = getNextSendQIndex(); // Get the next QP index for round-robin load balancing
+        auto guard = idxPool.getGuard();      // Get a guard for the index pool
+        uint32_t qp_index = guard.getIndex(); // Get the index for the QP
 
         struct ibv_send_wr *bad_send_wr_data;
-        int ret = ibv_post_send(qps[qp_index], &send_wr_data, &bad_send_wr_data);
+        int ret = ibv_post_send(qps[qp_index], &wr.wr, &bad_send_wr_data);
         if (ret != 0) // Post the send work request
+        {
+            guard.releaseIndex(); // Release the index back to the pool
             throw runtime_error("Failed to post write - executeWrNow - code: " + to_string(ret));
+        }
 
         // Poll the completion queue
         if (signaled == true)
             pollCqSend(send_cqs[qp_index]);
     }
 
+    void RdmaContext::executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled = true)
+    {
+        WorkRequest wr = createWr(remote_addr, local_addr, size_to_write, signaled);
+        executeWrNow(wr, signaled);
+    }
+
     void RdmaContext::flushWrQueue()
     {
-        queue<WorkRequest> wrs_to_flush;
+        vector<ibv_send_wr> wrs;
+        vector<ibv_sge> sges;
+        wrs.reserve(Config::MAX_WR_PER_POST);  // Reserve space for the maximum number of WRs per post
+        sges.reserve(Config::MAX_WR_PER_POST); // Reserve space for the maximum number of SGEs
 
+        // acquire the lock and get some work requests to be flushed
         unique_lock<mutex> lock(mtx_wrs);
-        // Move all work requests to the local queue
-        wrs_to_flush.swap(work_reqs);
-        lock.unlock();
 
-        if (wrs_to_flush.empty())
+        if (work_reqs.empty())
             return; // nothing to flush
 
-        cout << "Flushing " << wrs_to_flush.size() << " work requests" << endl;
-
-        size_t remaining = wrs_to_flush.size();
-
-        vector<ibv_send_wr> wrs;
-        wrs.reserve(Config::MAX_WR_PER_POST); // Reserve space for the maximum number of WRs per post
-        vector<ibv_sge> sges;
-        sges.reserve(Config::MAX_WR_PER_POST); // Reserve space for the maximum number of SGEs
         uint32_t end_index = 0;
-        uint32_t start_index = 0;
+        uint32_t start_index = work_reqs.front().pre_idx; // Get the pre-write index from the first work request
+        WorkRequest wr = {};
 
-        while (remaining > 0)
+        size_t size = min(Config::MAX_WR_PER_POST, work_reqs.size());
+
+        for (int i = 0; i < size; i++)
         {
-            size_t chunk_size = min(Config::MAX_WR_PER_POST, remaining);
-
-            end_index = wrs_to_flush.back().actual_write_index;
-            start_index = wrs_to_flush.front().actual_write_index;
-
-            for (size_t i = 0; i < chunk_size; ++i)
-            {
-                WorkRequest wr = wrs_to_flush.front();
-                wrs_to_flush.pop();
-                wrs.push_back(wr.wr);              // Add the WR to the batch
-                sges.push_back(wr.sge);            // Add the SGE to the batch
-                wrs.back().sg_list = &sges.back(); // Link the SGE to the WR
-            }
-
-            wrs.back().next = nullptr;                 // Last WR does not have a next pointer
-            wrs.back().send_flags = IBV_SEND_SIGNALED; // Set the last WR to be signaled
-
-            // Link the WRs
-            for (size_t i = 0; i + 1 < chunk_size; ++i)
-                wrs[i].next = &wrs[i + 1];
-
-            ibv_send_wr *bad_wr = nullptr;
-            uint32_t qp_index = getNextSendQIndex();
-
-            int ret = ibv_post_send(qps[qp_index], &wrs[0], &bad_wr);
-            if (ret != 0)
-                throw runtime_error("Failed to post RDMA write batch: code " + to_string(ret));
-
-            pollCqSend(send_cqs[qp_index]);
-
-            updateRemoteWriteIndex(start_index, end_index);
-
-            // Clear for the next batch
-            wrs.clear();
-            sges.clear();
-            remaining -= chunk_size;
+            wr = work_reqs.front();
+            work_reqs.pop();
+            wrs.push_back(wr.wr);
+            sges.push_back(wr.sge);
         }
 
-        auto flags = buffer_to_read->flags.flags.load();
+        end_index = wr.new_idx; // Get the new write index from the last work request
+        //cout << "Flushing " << wrs.size() << " WR, " << "From: " << start_index << " To: " << end_index << endl;
+        lock.unlock();
 
-        if ((flags & static_cast<unsigned int>(RingBufferFlag::RING_BUFFER_POLLING)) == 0)
+        // Prepare the work requests for posting
+        for (size_t i = 0; i + 1 < wrs.size(); ++i)
         {
-            if (last_notification_data_ready_ns == 0 ||
-                (getTimeMS() - last_notification_data_ready_ns) >= Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS)
-            {
-                // If the last notification was sent more than Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS ago
-                sendDataReady();
-            }
+            wrs[i].sg_list = &sges[i]; // Link the SGE to the WR
+            wrs[i].next = &wrs[i + 1]; // Link the WRs together
         }
+        wrs.back().sg_list = &sges.back();          // Link the last SGE to the last WR
+        wrs.back().next = nullptr;                  // Last WR does not have a next pointer
+        wrs.back().send_flags |= IBV_SEND_SIGNALED; // Set the last WR to be signaled
+
+        auto guard = idxPool.getGuard();      // Get a guard for the index pool
+        uint32_t qp_index = guard.getIndex(); // Get the index for the QP
+
+        struct ibv_send_wr *bad_send_wr_data;
+        int ret = ibv_post_send(qps[qp_index], &wrs[0], &bad_send_wr_data);
+        if (ret != 0)
+            throw runtime_error("Failed to post write - flushWrQueue - code: " + to_string(ret));
+        pollCqSend(send_cqs[qp_index]);
+        guard.releaseIndex(); // Release the index back to the pool
+
+        // Update the remote write index
+        updateRemoteWriteIndex(start_index, end_index);
     }
 
     bool RdmaContext::shouldFlushWrQueue()
@@ -893,8 +860,9 @@ namespace rdma
             n_msg_sent.fetch_add(1);
             ringbuffer->local_write_index.fetch_add(1);
 
-            // enqueueWr(*ringbuffer, start_w_index, start_w_index + msg->number_of_slots, msg->msg_size + MSG_HEADER_SIZE);
+            enqueueWr(*ringbuffer, start_w_index, start_w_index + msg->number_of_slots, msg->msg_size + MSG_HEADER_SIZE);
 
+            /*
             // commit the mesage
             uint32_t w_idx = RING_IDX(start_w_index + msg->number_of_slots); // local write index
             uint32_t r_idx = RING_IDX(start_w_index);
@@ -917,7 +885,7 @@ namespace rdma
                     // If the last notification was sent more than Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS ago
                     sendDataReady();
                 }
-            }
+            }*/
 
             lock.unlock();
         }
@@ -991,6 +959,12 @@ namespace rdma
 
     void RdmaContext::updateRemoteWriteIndex(uint32_t pre_index, uint32_t new_index)
     {
+        // get the index offset
+        size_t write_index_offset = (size_t)((char *)buffer_to_write - (char *)buffer) +
+                                    offsetof(rdma_ringbuffer_t, remote_write_index);
+
+        uintptr_t remote_addr_write_index = remote_addr + write_index_offset;
+
         // Critical region to update the write index
         std::unique_lock<std::mutex> lock(mtx_commit_flush);
         // Wait until the previous flush is committed
@@ -1002,16 +976,22 @@ namespace rdma
 
         buffer_to_write->remote_write_index.store(new_index);
 
-        // get the index offset
-        size_t write_index_offset = (size_t)((char *)buffer_to_write - (char *)buffer) +
-                                    offsetof(rdma_ringbuffer_t, remote_write_index);
-
-        uintptr_t remote_addr_write_index = remote_addr + write_index_offset;
-
         executeWrNow(remote_addr_write_index,
                      (uintptr_t)(buffer + write_index_offset),
                      sizeof(buffer_to_write->remote_write_index),
                      true);
+
+        // notify the other side if it is not polling
+        auto flags = buffer_to_read->flags.flags.load();
+        if ((flags & static_cast<unsigned int>(RingBufferFlag::RING_BUFFER_POLLING)) == 0)
+        {
+            if (last_notification_data_ready_ns == 0 ||
+                (getTimeMS() - last_notification_data_ready_ns) >= Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS)
+            {
+                // If the last notification was sent more than Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS ago
+                sendDataReady();
+            }
+        }
 
         cond_commit_flush.notify_all(); // Notify that the flush is committed
     }
@@ -1150,14 +1130,6 @@ namespace rdma
         std::unique_lock<std::mutex> lock(mtx_tx);
         cond_tx.wait(lock, [&]()
                      { return is_ready.load() == true; });
-    }
-
-    uint32_t RdmaContext::getNextSendQIndex()
-    {
-        unique_lock<std::mutex> lock(mtx_send_q);
-        uint32_t index = send_q_index;
-        send_q_index = (send_q_index + 1) % Config::QP_N; // round-robin
-        return index;
     }
 
 }

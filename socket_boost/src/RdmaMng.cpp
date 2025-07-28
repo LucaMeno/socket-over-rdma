@@ -426,7 +426,7 @@ namespace rdmaMng
     {
         try
         {
-            // ctx.flushWrQueue(); // Flush the work requests queue
+            ctx.flushWrQueue(); // Flush the work requests queue
         }
         catch (const std::exception &e)
         {
