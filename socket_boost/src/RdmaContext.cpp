@@ -801,8 +801,8 @@ namespace rdma
             msg->original_sk_id = original_socket;
             msg->number_of_slots = 1;
 
-            n_msg_sent.fetch_add(1);
-            buffer_to_write->local_write_index.fetch_add(1);
+            n_msg_sent.fetch_add(msg->number_of_slots);
+            buffer_to_write->local_write_index.fetch_add(msg->number_of_slots);
 
             enqueueWr(*buffer_to_write, start_w_index, start_w_index + msg->number_of_slots, msg->msg_size + MSG_HEADER_SIZE);
 
