@@ -192,6 +192,8 @@ namespace rdma
 
         void enqueueWr(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx, size_t data_size);
         void executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
+
+        WorkRequest createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
     };
 
 } // namespace rdma

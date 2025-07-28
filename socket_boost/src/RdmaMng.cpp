@@ -325,8 +325,8 @@ namespace rdmaMng
         catch (const std::exception &e)
         {
             cerr << "Exception in writerThread: " << e.what() << endl;
-            perror("Details");
-            throw; // Re-throw the exception to be handled by the caller
+            perror("   - Details");
+            cerr << "STOPPING writer thread due to exception" << endl;
         }
     }
 
@@ -426,7 +426,7 @@ namespace rdmaMng
     {
         try
         {
-            ctx.flushWrQueue(); // Flush the work requests queue
+            // ctx.flushWrQueue(); // Flush the work requests queue
         }
         catch (const std::exception &e)
         {
