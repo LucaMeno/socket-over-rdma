@@ -690,6 +690,8 @@ namespace rdma
         // acquire the lock and get some work requests to be flushed
         unique_lock<mutex> lock(mtx_wrs);
 
+        can_flush = true; // Reset the flush flag to allow future flushes
+
         if (work_reqs.empty())
             return; // nothing to flush
 
@@ -737,12 +739,15 @@ namespace rdma
 
     bool RdmaContext::shouldFlushWrQueue()
     {
-        unique_lock<mutex> lock(mtx_wrs);
-        if (work_reqs.empty())
-            return false;
-        if (work_reqs.size() >= flush_threshold.load())
-            return true;
-        return false;
+        std::lock_guard<std::mutex> lock(mtx_wrs);
+        if (can_flush &&
+            !work_reqs.empty() &&
+            work_reqs.size() >= flush_threshold.load())
+        {
+            can_flush = false;
+            return true; // There are enough work requests to flush
+        }
+        return false; // Not enough work requests to flush
     }
 
     int RdmaContext::writeMsg(int src_fd, struct sock_id original_socket)
@@ -757,7 +762,6 @@ namespace rdma
 
             unique_lock<mutex> lock(mtx_tx);
 
-            int c = 0;
             while (1)
             {
                 start_w_index = buffer_to_write->local_write_index.load();
@@ -781,7 +785,6 @@ namespace rdma
                          << "Used: " << used << ", Available: " << available_space
                          << ", Start Index: " << start_w_index
                          << ", End Index: " << end_w_index << endl;
-                    c++;
                 }
 
                 if (stop.load() == true)

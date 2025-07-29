@@ -149,8 +149,9 @@ namespace rdma
 
         uint64_t last_notification_data_ready_ns; // Last time a notification was sent
 
+        bool can_flush = false; // Flag to indicate if the context can flush
         std::queue<WorkRequest> work_reqs;
-        std::mutex mtx_wrs; // Mutex to protect the work requests queue
+        std::mutex mtx_wrs;            // Mutex to protect the work requests queue
 
         RdmaContext();
         ~RdmaContext();

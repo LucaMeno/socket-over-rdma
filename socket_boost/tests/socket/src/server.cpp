@@ -77,6 +77,7 @@ int main(int argc, char *argv[])
 
     auto t0 = std::chrono::high_resolution_clock::now();
     int i = 0;
+    bool is_first = true;
     uint64_t counter = 0;
     uint64_t counter_test;
     while (quantity_of_data_to_rx > 0)
@@ -94,9 +95,10 @@ int main(int argc, char *argv[])
 
         // check if the data is valid
         memcpy(&counter_test, buf, sizeof(counter_test));
-        if (counter_test != counter)
+        if (is_first && counter_test != counter)
         {
-            // std::cerr << "Data mismatch: expected " << counter << ", got " << counter_test << "\n";
+            is_first = false;
+            std::cerr << "Data mismatch: expected " << counter << ", got " << counter_test << "\n";
         }
         ++counter;
 

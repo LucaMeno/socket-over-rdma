@@ -31,11 +31,11 @@ public:
     inline static const int MAX_CQ_ENTRIES = 2048; // Maximum number of entries in the completion queue
 
     inline static const char *RDMA_TCP_PORT = "7472";                        // Default RDMA port for TCP parameters exchange
-    inline static const int MAX_MSG_BUFFER = (1024 * 8);                     // POWER OF 2!!!!!!!!!!!
-    inline static const int TIME_TO_WAIT_IF_NO_SPACE_MS = 10;                // ms
-    inline static const int MAX_PAYLOAD_SIZE = (128 * 1024);                 // 128 KB
+    inline static const int MAX_MSG_BUFFER = (1024 * 4);                     // POWER OF 2!!!!!!!!!!!
+    inline static const int TIME_TO_WAIT_IF_NO_SPACE_MS = 5;                 // ms
+    inline static const int MAX_PAYLOAD_SIZE = (64 * 1024);                  // 128 KB
     inline static const int QP_N = 8;                                        // Number of QPs
-    inline static const size_t MAX_WR_PER_POST = 256;                        // Maximum number of work requests in a single post (wr per flight)
+    inline static const size_t MAX_WR_PER_POST = 512;                        // Maximum number of work requests in a single post (wr per flight)
     inline static const uint32_t TIME_BTW_DATA_READY_NOTIFICATIONS_MS = 500; // 500 ms
     inline static const int THRESHOLD_NOT_AUTOSCALER = MAX_WR_PER_POST;      // Threshold for flushing messages
 
