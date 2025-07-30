@@ -112,8 +112,7 @@ namespace rdmaMng
         void writerThread(std::vector<sk::client_sk_t> sk_to_monitor);
 
         // Thread worker functions (pool)
-        void addFlushRingbufferJob(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb);
-        void flushThreadWorker(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb, uint32_t start_idx, uint32_t end_idx);
+        void flushThreadWorker(rdma::RdmaContext &ctx);
 
         // Utils
         int getFreeContextId();

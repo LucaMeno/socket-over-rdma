@@ -273,7 +273,7 @@ int sk_msg_prog(struct sk_msg_md *msg)
 	if (msg->family != AF_INET)
 	{
 		bpf_printk("Not IPv4 family, family: %d", msg->family);
-		return SK_PASS;
+		//return SK_PASS;
 	}
 
 	int k = 0; // Key for retrieving the server port

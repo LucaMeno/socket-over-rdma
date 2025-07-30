@@ -87,8 +87,8 @@ namespace rdma
         rdma_flag_t flags;
         std::atomic<uint32_t> remote_write_index;
         std::atomic<uint32_t> remote_read_index;
-        std::atomic<uint32_t> local_write_index;
-        std::atomic<uint32_t> local_read_index;
+        uint32_t local_write_index;
+        uint32_t local_read_index;
         rdma_msg_t data[Config::MAX_MSG_BUFFER];
     } rdma_ringbuffer_t;
 
@@ -150,7 +150,7 @@ namespace rdma
 
         bool can_flush = false; // Flag to indicate if the context can flush
         std::queue<WorkRequest> work_reqs;
-        std::mutex mtx_wrs;            // Mutex to protect the work requests queue
+        std::mutex mtx_wrs; // Mutex to protect the work requests queue
 
         RdmaContext();
         ~RdmaContext();

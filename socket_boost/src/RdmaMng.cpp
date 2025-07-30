@@ -274,7 +274,7 @@ namespace rdmaMng
                         else if (errno == EAGAIN || errno == EWOULDBLOCK)
                         {
                             if (++c % 1000 == 0)
-                                cout << "No data - " << c << endl;
+                                cout << "No data - fd: " << fd << " count: " << c << endl;
                         }
                         else
                             throw runtime_error("Connection closed - writerThread " + to_string(errno));
@@ -349,7 +349,7 @@ namespace rdmaMng
         while (1)
         {
             uint32_t remote_w = rb_remote.remote_write_index.load();
-            uint32_t local_r = rb_remote.local_read_index.load();
+            uint32_t local_r = rb_remote.local_read_index;
 
             if (remote_w != local_r)
             {
@@ -357,7 +357,7 @@ namespace rdmaMng
                 uint32_t start_read_index = local_r;
                 uint32_t end_read_index = remote_w;
 
-                rb_remote.local_read_index.store(remote_w); // reset the local write index
+                rb_remote.local_read_index = remote_w; // reset the local write index
 
                 ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index);
                 ctx.updateRemoteReadIndex(end_read_index);
@@ -369,20 +369,7 @@ namespace rdmaMng
         }
     }
 
-    void RdmaMng::addFlushRingbufferJob(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb)
-    {
-        uint32_t start_idx = rb.local_read_index.load();
-        uint32_t end_idx = rb.local_write_index.load();
-
-        ctx.last_flush_ms = ctx.getTimeMS();
-
-        rb.local_read_index.store(rb.local_write_index.load());
-
-        thPool->enqueue([this, &ctx, &rb, start_idx, end_idx]()
-                        { flushThreadWorker(ctx, rb, start_idx, end_idx); });
-    }
-
-    void RdmaMng::flushThreadWorker(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb, uint32_t start_idx, uint32_t end_idx)
+    void RdmaMng::flushThreadWorker(rdma::RdmaContext &ctx)
     {
         try
         {
@@ -638,7 +625,9 @@ namespace rdmaMng
                     if (ctx.shouldFlushWrQueue() ||
                         (now - ctx.last_flush_ms >= Config::FLUSH_INTERVAL_MS))
                     {
-                        addFlushRingbufferJob(ctx, rb);
+                        ctx.last_flush_ms = now;
+                        thPool->enqueue([this, &ctx]()
+                                        { flushThreadWorker(ctx); });
                         break;
                     }
                 }

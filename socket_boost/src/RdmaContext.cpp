@@ -181,17 +181,17 @@ namespace rdma
         }
 
         ringbuffer_server = (rdma_ringbuffer_t *)(buffer + NOTIFICATION_OFFSET_SIZE);
-        ringbuffer_server->local_read_index.store(0);
+        ringbuffer_server->local_read_index = 0;
         ringbuffer_server->remote_read_index.store(0);
         ringbuffer_server->remote_write_index.store(0);
-        ringbuffer_server->local_write_index.store(0);
+        ringbuffer_server->local_write_index = 0;
         ringbuffer_server->flags.flags.store(0);
 
         ringbuffer_client = (rdma_ringbuffer_t *)(buffer + NOTIFICATION_OFFSET_SIZE + RING_BUFFER_OFFSET_SIZE); // skip the notification header and the server buffer
-        ringbuffer_client->local_read_index.store(0);
+        ringbuffer_client->local_read_index = 0;
         ringbuffer_client->remote_read_index.store(0);
         ringbuffer_client->remote_write_index.store(0);
-        ringbuffer_client->local_write_index.store(0);
+        ringbuffer_client->local_write_index = 0;
         ringbuffer_client->flags.flags.store(0);
 
         // Post the initial receive work request to receive the notification
@@ -763,7 +763,7 @@ namespace rdma
 
         while (true)
         { // Wait until there is space in the ring buffer
-            start_w_index = buffer_to_write->local_write_index.load();
+            start_w_index = buffer_to_write->local_write_index;
             end_w_index = buffer_to_write->remote_write_index.load();
 
             uint32_t used = start_w_index - end_w_index; // wrap-around safe
@@ -772,14 +772,15 @@ namespace rdma
             if (available_space >= 1)
                 break;
 
-            struct timespec ts;
-            ts.tv_sec = 0;
-            ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
-            nanosleep(&ts, nullptr);
             COUNT++;
 
             if (COUNT % 100 == 0)
             {
+                struct timespec ts;
+                ts.tv_sec = 0;
+                ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
+                nanosleep(&ts, nullptr);
+
                 cout << "Waiting for space in the ringbuffer (" << COUNT << ")... "
                      << "Used: " << used << ", Available: " << available_space
                      << ", Start Index: " << start_w_index
@@ -802,18 +803,18 @@ namespace rdma
             msg->original_sk_id = original_socket;
             msg->number_of_slots = 1;
 
-            buffer_to_write->local_write_index.fetch_add(msg->number_of_slots);
+            buffer_to_write->local_write_index += msg->number_of_slots;
 
             enqueueWr(*buffer_to_write, start_w_index, start_w_index + msg->number_of_slots, msg->msg_size + MSG_HEADER_SIZE);
 
             available_space--;
-            start_w_index++; // equal to the local write index, avould using load since there is a mutex lock
+            start_w_index += msg->number_of_slots; // equal to the local write index, avould using load since there is a mutex lock
 
             DATA_TX += msg->msg_size; // Update the total data sent
             // cout << "TX: " << DATA_TX << " bytes" << endl;
         }
 
-        return 1;
+        return 1; // Return 1 to indicate success
     }
 
     void RdmaContext::parseMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg)
