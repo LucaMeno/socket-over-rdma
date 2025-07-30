@@ -7,6 +7,9 @@ namespace rdma
 {
     int COUNT = 0; // for debugging
 
+    uint64_t DATA_TX = 0; // for debugging
+    uint64_t DATA_RX = 0; // for debugging
+
     conn_info RdmaContext::rdmaSetupPreHs()
     {
         srand48(getpid());
@@ -512,7 +515,6 @@ namespace rdma
         is_ready.store(false);
         stop.store(false);
         flush_threshold.store(Config::THRESHOLD_NOT_AUTOSCALER);
-        n_msg_sent.store(0);
         buffer = nullptr;
         pd = nullptr;
         mr = nullptr;
@@ -757,43 +759,39 @@ namespace rdma
 
         uint32_t start_w_index, end_w_index, available_space;
 
-        while (1)
-        { // wait until there is enough space in the ringbuffer
+        unique_lock<mutex> lock(mtx_tx);
 
-            unique_lock<mutex> lock(mtx_tx);
+        while (true)
+        { // Wait until there is space in the ring buffer
+            start_w_index = buffer_to_write->local_write_index.load();
+            end_w_index = buffer_to_write->remote_write_index.load();
 
-            while (1)
+            uint32_t used = start_w_index - end_w_index; // wrap-around safe
+            available_space = Config::MAX_MSG_BUFFER - used - 1;
+
+            if (available_space >= 1)
+                break;
+
+            struct timespec ts;
+            ts.tv_sec = 0;
+            ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
+            nanosleep(&ts, nullptr);
+            COUNT++;
+
+            if (COUNT % 100 == 0)
             {
-                start_w_index = buffer_to_write->local_write_index.load();
-                end_w_index = buffer_to_write->remote_write_index.load();
-
-                uint32_t used = start_w_index - end_w_index; // wrap-around safe
-                available_space = Config::MAX_MSG_BUFFER - used - 1;
-
-                if (available_space >= 1)
-                    break;
-
-                struct timespec ts;
-                ts.tv_sec = 0;
-                ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
-                nanosleep(&ts, nullptr);
-                COUNT++;
-
-                if (COUNT % 100 == 0)
-                {
-                    cout << "Waiting for space in the ringbuffer (" << COUNT << ")... "
-                         << "Used: " << used << ", Available: " << available_space
-                         << ", Start Index: " << start_w_index
-                         << ", End Index: " << end_w_index << endl;
-                }
-
-                if (stop.load() == true)
-                {
-                    cout << "Stopping writeMsg due to stop signal." << endl;
-                    return 1; // stop the thread
-                }
+                cout << "Waiting for space in the ringbuffer (" << COUNT << ")... "
+                     << "Used: " << used << ", Available: " << available_space
+                     << ", Start Index: " << start_w_index
+                     << ", End Index: " << end_w_index << endl;
             }
 
+            if (stop.load() == true)
+                throw runtime_error("Stopping writeMsg due to stop signal");
+        }
+
+        while (available_space >= 1)
+        {
             rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index)];
 
             msg->msg_size = recv(src_fd, msg->msg, Config::MAX_PAYLOAD_SIZE, 0);
@@ -804,37 +802,15 @@ namespace rdma
             msg->original_sk_id = original_socket;
             msg->number_of_slots = 1;
 
-            n_msg_sent.fetch_add(msg->number_of_slots);
             buffer_to_write->local_write_index.fetch_add(msg->number_of_slots);
 
             enqueueWr(*buffer_to_write, start_w_index, start_w_index + msg->number_of_slots, msg->msg_size + MSG_HEADER_SIZE);
 
-            /*
-            // commit the mesage
-            uint32_t w_idx = RING_IDX(start_w_index + msg->number_of_slots); // local write index
-            uint32_t r_idx = RING_IDX(start_w_index);
+            available_space--;
+            start_w_index++; // equal to the local write index, avould using load since there is a mutex lock
 
-            uintptr_t batch_start = (uintptr_t)&ringbuffer->data[r_idx];
-            size_t batch_size = (w_idx - r_idx) * sizeof(rdma_msg_t);
-            uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
-
-            executeWrNow(remote_addr_2, (uintptr_t)msg, Config::MAX_PAYLOAD_SIZE + MSG_HEADER_SIZE, true);
-
-            updateRemoteWriteIndex(start_w_index, start_w_index + msg->number_of_slots);
-
-            auto flags = buffer_to_read->flags.flags.load();
-
-            if ((flags & static_cast<unsigned int>(RingBufferFlag::RING_BUFFER_POLLING)) == 0)
-            {
-                if (last_notification_data_ready_ns == 0 ||
-                    (getTimeMS() - last_notification_data_ready_ns) >= Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS)
-                {
-                    // If the last notification was sent more than Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS ago
-                    sendDataReady();
-                }
-            }*/
-
-            lock.unlock();
+            DATA_TX += msg->msg_size; // Update the total data sent
+            // cout << "TX: " << DATA_TX << " bytes" << endl;
         }
 
         return 1;
@@ -897,6 +873,7 @@ namespace rdma
         uint32_t sent_size = 0;
         while (sent_size < msg.msg_size)
         {
+            DATA_RX += msg.msg_size; // Update the total data received
             uint32_t size = send(fd, msg.msg, msg.msg_size, 0);
             sent_size += size;
             if (size <= 0)
@@ -980,6 +957,8 @@ namespace rdma
             parseMsg(bpf_ctx, client_sks, *msg);
             i += msg->number_of_slots;
         }
+
+        // cout << "RX: " << DATA_RX << " bytes" << endl;
     }
 
     void RdmaContext::setPollingStatus(uint32_t is_polling)
@@ -1074,3 +1053,28 @@ namespace rdma
     }
 
 }
+
+/*
+// commit the mesage
+uint32_t w_idx = RING_IDX(start_w_index + msg->number_of_slots); // local write index
+uint32_t r_idx = RING_IDX(start_w_index);
+
+uintptr_t batch_start = (uintptr_t)&ringbuffer->data[r_idx];
+size_t batch_size = (w_idx - r_idx) * sizeof(rdma_msg_t);
+uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
+
+executeWrNow(remote_addr_2, (uintptr_t)msg, Config::MAX_PAYLOAD_SIZE + MSG_HEADER_SIZE, true);
+
+updateRemoteWriteIndex(start_w_index, start_w_index + msg->number_of_slots);
+
+auto flags = buffer_to_read->flags.flags.load();
+
+if ((flags & static_cast<unsigned int>(RingBufferFlag::RING_BUFFER_POLLING)) == 0)
+{
+    if (last_notification_data_ready_ns == 0 ||
+        (getTimeMS() - last_notification_data_ready_ns) >= Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS)
+    {
+        // If the last notification was sent more than Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS ago
+        sendDataReady();
+    }
+}*/

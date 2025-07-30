@@ -191,133 +191,93 @@ namespace rdmaMng
         return ctxs.size() - 1; // Return the index of the newly added context
     }
 
+    WriterThreadData RdmaMng::populateWriterThreadData(std::vector<sk::client_sk_t> &sockets, int fd)
+    {
+        // Find the socket in the list of client sockets
+        auto skIt = std::find_if(sockets.begin(), sockets.end(),
+                                 [&](const auto &s)
+                                 { return s.fd == fd; });
+
+        if (skIt == sockets.end())
+            throw std::runtime_error("Socket non trovato - populateWriterThreadData");
+
+        // From the proxy socket, retrieve the app socket
+        sock_id app = bpf_ctx.getAppSkFromProxySk(skIt->sk_id);
+
+        // look for the context with the same remote IP
+        auto ctxIt = std::find_if(ctxs.begin(), ctxs.end(),
+                                  [&](const auto &c)
+                                  { return c->remote_ip == app.dip; });
+
+        if (ctxIt == ctxs.end())
+            throw std::runtime_error("Context non trovato per IP: " + std::to_string(app.dip));
+
+        rdma::RdmaContext *ctx = ctxIt->get();
+
+        // Wait for the context to be ready
+        ctx->waitForContextToBeReady();
+
+        return WriterThreadData(app, ctx);
+    }
+
+    inline bool has_data(int sockfd)
+    {
+        char buf[1];
+        if (recv(sockfd, buf, sizeof(buf), MSG_PEEK) > 0)
+            return true;
+        return false;
+    }
+
     void RdmaMng::writerThread(vector<sk::client_sk_t> sk_to_monitor)
     {
+        if (sk_to_monitor.empty())
+            throw std::runtime_error("No sockets to monitor in writer thread");
+
+        for (const auto &sk : sk_to_monitor)
+            if (sk.fd < 0)
+                throw std::runtime_error("Invalid socket fd in writer thread");
+
+        unordered_map<int, WriterThreadData> writer_map;
+
         try
         {
-            if (sk_to_monitor.empty())
+            uint32_t c = 0;
+            while (!stop_threads)
             {
-                cout << "No sockets to monitor in writer thread" << endl;
-                return;
-            }
-
-            fd_set read_fds, temp_fds;
-            ssize_t bytes_received;
-
-            // Initialize the file descriptor set
-            FD_ZERO(&read_fds);
-
-            int max_fd = -1;
-
-            for (int i = 0; i < sk_to_monitor.size(); i++)
-            {
-                if (sk_to_monitor[i].fd >= 0)
+                for (int i = 0; i < sk_to_monitor.size(); ++i)
                 {
-                    FD_SET(sk_to_monitor[i].fd, &read_fds);
-                    if (sk_to_monitor[i].fd > max_fd)
-                        max_fd = sk_to_monitor[i].fd;
-                }
-            }
+                    int fd = sk_to_monitor[i].fd;
 
-            if (max_fd < 0)
-            {
-                cout << "No valid sockets to monitor in writer thread" << endl;
-                return;
-            }
+                    // check if there are some data
+                    if (!has_data(fd))
+                        continue; // No data to write, continue to the next socket
 
-            int k = 1;
-            while (atomic_load(&stop_threads) == false)
-            {
-                temp_fds = read_fds;
-
-                struct timeval tv;
-                tv.tv_sec = Config::TIME_STOP_SELECT_SEC;
-                tv.tv_usec = 0;
-
-                int activity = select(max_fd + 1, &temp_fds, nullptr, nullptr, &tv);
-                if (activity == -1)
-                {
-                    if (errno == EINTR)
+                    // populate the writer thread data
+                    WriterThreadData data;
+                    if (writer_map.find(fd) == writer_map.end())
                     {
-                        cout << "Select interrupted by signal in writer_thread" << endl;
-                        break;
+                        // add the writer thread data
+                        data = populateWriterThreadData(sk_to_monitor, fd);
+                        writer_map[fd] = data;
                     }
-                    perror("select error");
-                    break;
-                }
-                else if (stop_threads.load() == true)
-                {
-                    break; // stop the thread if stop_threads is set
-                }
-
-                // Handle data on client sockets
-                for (int fd = 0; fd <= max_fd; fd++)
-                {
-                    if (FD_ISSET(fd, &temp_fds))
+                    else
                     {
-                        //  retrieve the proxy socket id
-                        int j = 0;
-                        for (; j < sk_to_monitor.size(); j++)
-                            if (sk_to_monitor[j].fd == fd)
-                                break;
-                        if (j == sk_to_monitor.size())
+                        data = writer_map[fd];
+                    }
+
+                    int ret = data.ctx->writeMsg(fd, data.app);
+
+                    if (ret <= 0)
+                    {
+                        if (ret == 0)
+                            throw runtime_error("Connection closed - writerThread");
+                        else if (errno == EAGAIN || errno == EWOULDBLOCK)
                         {
-                            cout << "Socket not found in the list - writer_thread" << endl;
-                            continue;
+                            if (++c % 1000 == 0)
+                                cout << "No data - " << c << endl;
                         }
-
-                        struct sock_id app = bpf_ctx.getAppSkFromProxySk(sk_to_monitor[j].sk_id);
-                        if (app.sip == 0)
-                        {
-                            cout << "No app socket found for fd: " << fd << endl;
-                            FD_CLR(fd, &read_fds);
-                            continue;
-                        }
-
-                        // get the context
-                        auto ctxIt = ctxs.begin();
-                        for (; ctxIt != ctxs.end(); ++ctxIt)
-                            if ((*ctxIt)->remote_ip == app.dip)
-                                break; // found the context for this fd
-
-                        if (ctxIt == ctxs.end())
-                        {
-                            cout << "Context not found - writer_thread" << endl;
-                            continue; // no context for this IP
-                        }
-
-                        auto &ctx = **ctxIt;
-
-                        // Wait for the context to be ready
-                        ctx.waitForContextToBeReady();
-
-                        while (1)
-                        {
-                            int ret = ctx.writeMsg(fd, app);
-
-                            if (ret <= 0)
-                            {
-                                if (ret == 0)
-                                {
-                                    cout << "0" << endl;
-                                    throw runtime_error("Connection closed - writerThread");
-                                }
-                                else if (errno == EAGAIN || errno == EWOULDBLOCK)
-                                {
-                                    break;
-                                }
-                                else
-                                {
-                                    cerr << "recv error" << endl;
-                                    perror("recv error");
-                                    throw runtime_error("Connection closed - writerThread");
-                                }
-                            }
-                            else if (ret == 1)
-                            {
-                                break;
-                            }
-                        }
+                        else
+                            throw runtime_error("Connection closed - writerThread " + to_string(errno));
                     }
                 }
             }
@@ -326,7 +286,7 @@ namespace rdmaMng
         {
             cerr << "Exception in writerThread: " << e.what() << endl;
             perror("   - Details");
-            cerr << "STOPPING writer thread due to exception" << endl;
+            throw; // Re-throw the exception to be handled by the caller
         }
     }
 
@@ -669,7 +629,6 @@ namespace rdmaMng
                     continue;
                 }
 
-                uint32_t msg_sent = ctx.n_msg_sent.load();
                 rdma_ringbuffer_t &rb = *((ctx.is_server == true) ? ctx.ringbuffer_server : ctx.ringbuffer_client);
 
                 while (1)
@@ -679,7 +638,6 @@ namespace rdmaMng
                     if (ctx.shouldFlushWrQueue() ||
                         (now - ctx.last_flush_ms >= Config::FLUSH_INTERVAL_MS))
                     {
-                        ctx.n_msg_sent.store(0); // reset the atomic counter
                         addFlushRingbufferJob(ctx, rb);
                         break;
                     }

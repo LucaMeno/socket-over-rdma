@@ -3,6 +3,14 @@
 ### Some commands
 
 ```sh
+sudo cpupower frequency-set -g performance
+
+sudo numactl --cpunodebind=0 --membind=0 ./bin/scap x y
+
+
+```
+
+```sh
 nc -l 7777
 nc $REMOTE_IP 7777
 

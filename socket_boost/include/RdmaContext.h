@@ -136,7 +136,6 @@ namespace rdma
         uint64_t last_flush_ms;                    // last time the buffer was flushed, used to avoid flushing too often
         std::mutex mtx_commit_flush;               // used to commit the flush operation
         std::condition_variable cond_commit_flush; // used to signal the flush operation is committed
-        std::atomic<uint32_t> n_msg_sent;          // counter for the number of messages sent, used to determinate the threshold for flushing
         std::atomic<uint32_t> flush_threshold;
 
         rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server

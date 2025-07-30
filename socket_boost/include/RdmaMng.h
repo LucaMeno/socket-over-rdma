@@ -13,6 +13,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <format>
+#include <functional>
 
 #include "RdmaContext.h"
 #include "ThreadPool.h"
@@ -22,6 +23,15 @@
 
 namespace rdmaMng
 {
+    struct WriterThreadData
+    {
+        sock_id app;
+        rdma::RdmaContext *ctx;
+
+        WriterThreadData(sock_id a, rdma::RdmaContext *c) : app(a), ctx(c) {}
+        WriterThreadData() : app({0}), ctx(nullptr) {}
+    };
+
     class RdmaMng
     {
 
@@ -113,6 +123,8 @@ namespace rdmaMng
         void parseNotification(rdma::RdmaContext &ctx);
         int consumeRingbuffer(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb_remote);
         std::vector<int> waitOnSelect(const std::vector<int> &fds);
+
+        WriterThreadData populateWriterThreadData(std::vector<sk::client_sk_t> &sockets, int fd);
     };
 
 }
