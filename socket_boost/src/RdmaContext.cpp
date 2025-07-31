@@ -762,59 +762,68 @@ namespace rdma
         unique_lock<mutex> lock(mtx_tx);
 
         while (true)
-        { // Wait until there is space in the ring buffer
-            start_w_index = buffer_to_write->local_write_index;
-            end_w_index = buffer_to_write->remote_write_index.load();
+        {
+            while (true)
+            { // Wait until there is space in the ring buffer
+                start_w_index = buffer_to_write->local_write_index;
+                end_w_index = buffer_to_write->remote_write_index.load();
 
-            uint32_t used = start_w_index - end_w_index; // wrap-around safe
-            available_space = Config::MAX_MSG_BUFFER - used - 1;
+                uint32_t used = start_w_index - end_w_index; // wrap-around safe
+                available_space = Config::MAX_MSG_BUFFER - used - 1;
 
-            if (available_space >= 1)
-                break;
+                if (available_space >= 1)
+                    break;
 
-            COUNT++;
+                COUNT++;
 
-            if (COUNT % 100 == 0)
-            {
-                struct timespec ts;
-                ts.tv_sec = 0;
-                ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
-                nanosleep(&ts, nullptr);
+                if (COUNT % 100 == 0)
+                {
+                    struct timespec ts;
+                    ts.tv_sec = 0;
+                    ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
+                    nanosleep(&ts, nullptr);
 
-                cout << "Waiting for space in the ringbuffer (" << COUNT << ")... "
-                     << "Used: " << used << ", Available: " << available_space
-                     << ", Start Index: " << start_w_index
-                     << ", End Index: " << end_w_index << endl;
+                    cout << "Waiting for space in the ringbuffer (" << COUNT << ")... "
+                         << "Used: " << used << ", Available: " << available_space
+                         << ", Start Index: " << start_w_index
+                         << ", End Index: " << end_w_index << endl;
+                }
+
+                if (stop.load() == true)
+                    throw runtime_error("Stopping writeMsg due to stop signal");
             }
 
-            if (stop.load() == true)
-                throw runtime_error("Stopping writeMsg due to stop signal");
+            while (available_space >= 1)
+            {
+                rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index)];
+
+                // msg->msg_size = recv(src_fd, msg->msg, Config::MAX_PAYLOAD_SIZE, 0);
+                // WTF?
+
+                uint8_t tmp_buf[Config::MAX_PAYLOAD_SIZE];
+                int data_size = recv(src_fd, tmp_buf, Config::MAX_PAYLOAD_SIZE, 0);
+
+                if (data_size <= 0)
+                    return data_size;
+
+                memcpy(msg->msg, tmp_buf, data_size);
+
+                msg->msg_size = data_size;
+                msg->msg_flags = 0;
+                msg->original_sk_id = original_socket;
+                msg->number_of_slots = 1;
+
+                buffer_to_write->local_write_index += msg->number_of_slots;
+
+                enqueueWr(*buffer_to_write,
+                          start_w_index,
+                          start_w_index + msg->number_of_slots,
+                          msg->msg_size + MSG_HEADER_SIZE);
+
+                available_space--;
+                start_w_index += msg->number_of_slots;
+            }
         }
-
-        while (available_space >= 1)
-        {
-            rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index)];
-
-            msg->msg_size = recv(src_fd, msg->msg, Config::MAX_PAYLOAD_SIZE, 0);
-            if ((int)msg->msg_size <= 0)
-                return msg->msg_size;
-
-            msg->msg_flags = 0;
-            msg->original_sk_id = original_socket;
-            msg->number_of_slots = 1;
-
-            buffer_to_write->local_write_index += msg->number_of_slots;
-
-            enqueueWr(*buffer_to_write, start_w_index, start_w_index + msg->number_of_slots, msg->msg_size + MSG_HEADER_SIZE);
-
-            available_space--;
-            start_w_index += msg->number_of_slots; // equal to the local write index, avould using load since there is a mutex lock
-
-            DATA_TX += msg->msg_size; // Update the total data sent
-            // cout << "TX: " << DATA_TX << " bytes" << endl;
-        }
-
-        return 1; // Return 1 to indicate success
     }
 
     void RdmaContext::parseMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg)

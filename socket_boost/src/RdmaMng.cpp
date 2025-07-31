@@ -242,7 +242,7 @@ namespace rdmaMng
         try
         {
             uint32_t c = 0;
-            while (!stop_threads)
+            while (!stop_threads.load())
             {
                 for (int i = 0; i < sk_to_monitor.size(); ++i)
                 {
@@ -378,7 +378,7 @@ namespace rdmaMng
         catch (const std::exception &e)
         {
             cerr << "Exception in flushThreadWorker: " << e.what() << endl;
-            throw;
+            perror("Details");
         }
     }
 
