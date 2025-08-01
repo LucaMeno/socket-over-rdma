@@ -52,6 +52,16 @@ namespace rdmaMng
         {
             struct userspace_data_t *user_data = (struct userspace_data_t *)data;
 
+            // start the RDMA connection
+            // only the client start the connection
+            int proxy_fd = -1;
+            if (user_data->sockops_op == BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB)
+            {
+                int ret;
+                proxy_fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
+                connect(user_data->association.app, proxy_fd);
+            }
+
             std::cout << "New : ["
                       << user_data->association.app.sip << ":"
                       << user_data->association.app.sport << " -> "
@@ -60,29 +70,9 @@ namespace rdmaMng
                       << user_data->association.proxy.sip << ":"
                       << user_data->association.proxy.sport << " -> "
                       << user_data->association.proxy.dip << ":"
-                      << user_data->association.proxy.dport << "]"
+                      << user_data->association.proxy.dport << "] - fd: "
+                      << proxy_fd << (proxy_fd < 0 ? " SERVER" : " CLIENT")
                       << std::endl;
-
-            // start the RDMA connection
-            // only the client start the connection
-            if (user_data->sockops_op == BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB)
-            {
-                int ret;
-                int proxy_fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
-
-                if (proxy_fd < 0)
-                {
-                    std::cerr << "Error: Proxy fd not found for association: "
-                              << user_data->association.proxy.sip << ":"
-                              << user_data->association.proxy.sport << std::endl;
-                    throw std::runtime_error("Proxy fd not found");
-                }
-
-                std::cout << "Proxy fd: " << proxy_fd << std::endl;
-                std::cout << "App socket: " << user_data->association.app.sip << ":" << user_data->association.app.sport << std::endl;
-
-                connect(user_data->association.app, proxy_fd);
-            }
 
             return 0;
         }
@@ -113,6 +103,7 @@ namespace rdmaMng
 
         // Thread worker functions (pool)
         void flushThreadWorker(rdma::RdmaContext &ctx);
+        void readThreadWorker(rdma::RdmaContext &ctx, uint32_t start_read_index, uint32_t end_read_index);
 
         // Utils
         int getFreeContextId();
@@ -120,7 +111,7 @@ namespace rdmaMng
         void startPolling(rdma::RdmaContext &ctx);
         void stopPolling(rdma::RdmaContext &ctx);
         void parseNotification(rdma::RdmaContext &ctx);
-        int consumeRingbuffer(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb_remote);
+        int consumeRingbuffer(rdma::RdmaContext &ctx);
         std::vector<int> waitOnSelect(const std::vector<int> &fds);
 
         WriterThreadData populateWriterThreadData(std::vector<sk::client_sk_t> &sockets, int fd);

@@ -82,7 +82,7 @@ namespace rdma
         char msg[Config::MAX_PAYLOAD_SIZE]; // message
     } rdma_msg_t;
 
-    typedef struct
+    typedef struct alignas(64)
     {
         rdma_flag_t flags;
         std::atomic<uint32_t> remote_write_index;
@@ -132,6 +132,10 @@ namespace rdma
 
         std::mutex mtx_tx;               // used to wait for the context to be ready
         std::condition_variable cond_tx; // used to signal the context is ready
+
+        std::mutex mtx_rx_read;
+        std::mutex mtx_rx_commit;
+        std::condition_variable cond_rx_read; // used to signal the read operation is done
 
         uint64_t last_flush_ms;                    // last time the buffer was flushed, used to avoid flushing too often
         std::mutex mtx_commit_flush;               // used to commit the flush operation

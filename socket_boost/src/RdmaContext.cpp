@@ -7,9 +7,6 @@ namespace rdma
 {
     int COUNT = 0; // for debugging
 
-    uint64_t DATA_TX = 0; // for debugging
-    uint64_t DATA_RX = 0; // for debugging
-
     conn_info RdmaContext::rdmaSetupPreHs()
     {
         srand48(getpid());
@@ -56,8 +53,8 @@ namespace rdma
         if (ibv_req_notify_cq(recv_cq, 0))
             throw runtime_error("Failed to request notification on receive CQ");
 
-        buffer = (char *)aligned_alloc(4096, MR_SIZE); // TODO: use a better allocator
-        if (!buffer)
+        int err = posix_memalign((void **)&buffer, 4096, MR_SIZE);
+        if (!buffer || err)
             throw runtime_error("Failed to allocate buffer");
 
         memset(buffer, 0, MR_SIZE);
@@ -92,9 +89,9 @@ namespace rdma
             attr.port_num = 1;
             attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE;
 
-            int err = ibv_modify_qp(qps[i], &attr,
-                                    IBV_QP_STATE | IBV_QP_PKEY_INDEX |
-                                        IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
+            err = ibv_modify_qp(qps[i], &attr,
+                                IBV_QP_STATE | IBV_QP_PKEY_INDEX |
+                                    IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
             if (err)
                 throw runtime_error("Failed to modify QP to INIT state");
         }
@@ -103,7 +100,7 @@ namespace rdma
         ibv_query_port(ctx, 1, &pattr);
 
         union ibv_gid gid;
-        int err = ibv_query_gid(ctx, 1, Config::getRdmaDevGidIdx(), &gid);
+        err = ibv_query_gid(ctx, 1, Config::getRdmaDevGidIdx(), &gid);
         if (err)
             throw runtime_error("ibv_query_gid failed");
 
@@ -663,11 +660,33 @@ namespace rdma
         auto guard = idxPool.getGuard();      // Get a guard for the index pool
         uint32_t qp_index = guard.getIndex(); // Get the index for the QP
 
+        // link the SGE to the WR
+        wr.wr.sg_list = &wr.sge; // Link the SGE to the WR
+        wr.wr.num_sge = 1;       // Set the number of SG
+        wr.wr.next = nullptr;    // Last WR does not have a next pointer
+
+        ibv_qp_attr attr;
+        ibv_qp_init_attr init_attr;
+        ibv_query_qp(qps[qp_index], &attr, IBV_QP_STATE, &init_attr);
+        if (attr.qp_state != IBV_QPS_RTS)
+        {
+            cout << "QP is not in RTS state, cannot post WR" << endl;
+        }
+
         struct ibv_send_wr *bad_send_wr_data;
         int ret = ibv_post_send(qps[qp_index], &wr.wr, &bad_send_wr_data);
         if (ret != 0) // Post the send work request
         {
             guard.releaseIndex(); // Release the index back to the pool
+            cout << "Wr failed: " << endl
+                 << "- Remote Address: " << std::hex << wr.wr.wr.rdma.remote_addr << std::dec << endl
+                 << "- Local Address: " << std::hex << wr.sge.addr << std::dec << endl
+                 << "- Size: " << wr.sge.length << endl
+                 << "- RKey: " << wr.wr.wr.rdma.rkey << endl;
+            cout << "- Error code: " << ret << endl;
+            cout << "- Bad send WR data: " << (bad_send_wr_data ? "not null" : "null") << endl;
+            cout << "- QP index: " << qp_index << endl;
+
             throw runtime_error("Failed to post write - executeWrNow - code: " + to_string(ret));
         }
 
@@ -776,7 +795,7 @@ namespace rdma
 
                 COUNT++;
 
-                if (COUNT % 100 == 0)
+                if (COUNT % 1 == 0)
                 {
                     struct timespec ts;
                     ts.tv_sec = 0;
@@ -797,8 +816,10 @@ namespace rdma
             {
                 rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index)];
 
-                // msg->msg_size = recv(src_fd, msg->msg, Config::MAX_PAYLOAD_SIZE, 0);
-                // WTF?
+                /*msg->msg_size = recv(src_fd, msg->msg, Config::MAX_PAYLOAD_SIZE, 0);
+
+                if ((int)msg->msg_size <= 0)
+                    return msg->msg_size;*/
 
                 uint8_t tmp_buf[Config::MAX_PAYLOAD_SIZE];
                 int data_size = recv(src_fd, tmp_buf, Config::MAX_PAYLOAD_SIZE, 0);
@@ -807,8 +828,8 @@ namespace rdma
                     return data_size;
 
                 memcpy(msg->msg, tmp_buf, data_size);
-
                 msg->msg_size = data_size;
+
                 msg->msg_flags = 0;
                 msg->original_sk_id = original_socket;
                 msg->number_of_slots = 1;
@@ -820,13 +841,13 @@ namespace rdma
                           start_w_index + msg->number_of_slots,
                           msg->msg_size + MSG_HEADER_SIZE);
 
-                available_space--;
+                available_space -= msg->number_of_slots;
                 start_w_index += msg->number_of_slots;
             }
         }
     }
 
-    void RdmaContext::parseMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg)
+    inline void RdmaContext::parseMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg)
     {
         // retrive the proxy_fd
         int fd;
@@ -859,10 +880,10 @@ namespace rdma
                     client_sks[i].sk_id.dport == proxy_sk_id.dport)
                 {
                     // update the map with the new socket
-                    std::cout << "New entry: "
+                    /*std::cout << "New entry: "
                               << msg.original_sk_id.sip << ":" << msg.original_sk_id.sport
                               << " - " << msg.original_sk_id.dip << ":" << msg.original_sk_id.dport
-                              << " -> " << client_sks[i].fd << std::endl;
+                              << " -> " << client_sks[i].fd << std::endl;*/
                     // update the map with the new socket
                     sockid_to_fd_map[msg.original_sk_id] = client_sks[i].fd;
                     fd = client_sks[i].fd;
@@ -880,14 +901,15 @@ namespace rdma
             }
         }
 
-        uint32_t sent_size = 0;
-        while (sent_size < msg.msg_size)
+        int rem = msg.msg_size;
+        char *ptr = msg.msg;
+        while (rem > 0)
         {
-            DATA_RX += msg.msg_size; // Update the total data received
-            uint32_t size = send(fd, msg.msg, msg.msg_size, 0);
-            sent_size += size;
+            int size = send(fd, ptr, rem, 0);
             if (size <= 0)
                 throw runtime_error("Failed to send message, code: " + to_string(size) + " - parseMsg");
+            rem -= size;
+            ptr += size;
         }
     }
 
@@ -901,6 +923,7 @@ namespace rdma
 
         // Critical region to update the write index
         std::unique_lock<std::mutex> lock(mtx_commit_flush);
+
         // Wait until the previous flush is committed
         cond_commit_flush.wait(lock, [&]()
                                { return buffer_to_write->remote_write_index.load() == pre_index || stop.load() == true; });
@@ -910,10 +933,18 @@ namespace rdma
 
         buffer_to_write->remote_write_index.store(new_index);
 
-        executeWrNow(remote_addr_write_index,
-                     (uintptr_t)(buffer + write_index_offset),
-                     sizeof(buffer_to_write->remote_write_index),
-                     true);
+        try
+        {
+            executeWrNow(remote_addr_write_index,
+                         (uintptr_t)(buffer + write_index_offset),
+                         sizeof(buffer_to_write->remote_write_index),
+                         true);
+        }
+        catch (const std::exception &e)
+        {
+            cout << "updateRemoteWriteIndex" << endl;
+            throw; // rethrow the exception to be handled by the caller
+        }
 
         // notify the other side if it is not polling
         auto flags = buffer_to_read->flags.flags.load();
@@ -940,10 +971,18 @@ namespace rdma
 
         uintptr_t remote_addr_read_index = remote_addr + read_index_offset;
 
-        executeWrNow(remote_addr_read_index,
-                     (uintptr_t)(buffer + read_index_offset),
-                     sizeof(buffer_to_read->remote_read_index),
-                     true);
+        try
+        {
+            executeWrNow(remote_addr_read_index,
+                         (uintptr_t)(buffer + read_index_offset),
+                         sizeof(buffer_to_read->remote_read_index),
+                         true);
+        }
+        catch (const std::exception &e)
+        {
+            cout << "updateRemoteReadIndex" << endl;
+            throw; // rethrow the exception to be handled by the caller
+        }
     }
 
     void RdmaContext::readMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index)
@@ -967,8 +1006,6 @@ namespace rdma
             parseMsg(bpf_ctx, client_sks, *msg);
             i += msg->number_of_slots;
         }
-
-        // cout << "RX: " << DATA_RX << " bytes" << endl;
     }
 
     void RdmaContext::setPollingStatus(uint32_t is_polling)

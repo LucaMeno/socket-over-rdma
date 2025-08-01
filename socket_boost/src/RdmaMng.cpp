@@ -248,14 +248,14 @@ namespace rdmaMng
                 {
                     int fd = sk_to_monitor[i].fd;
 
-                    // check if there are some data
-                    if (!has_data(fd))
-                        continue; // No data to write, continue to the next socket
-
                     // populate the writer thread data
                     WriterThreadData data;
                     if (writer_map.find(fd) == writer_map.end())
                     {
+                        // check if there are some data
+                        if (!has_data(fd))
+                            continue; // No data to write, continue to the next socket
+
                         // add the writer thread data
                         data = populateWriterThreadData(sk_to_monitor, fd);
                         writer_map[fd] = data;
@@ -269,15 +269,10 @@ namespace rdmaMng
 
                     if (ret <= 0)
                     {
-                        if (ret == 0)
-                            throw runtime_error("Connection closed - writerThread");
-                        else if (errno == EAGAIN || errno == EWOULDBLOCK)
+                        if (errno != EAGAIN && errno != EWOULDBLOCK)
                         {
-                            if (++c % 1000 == 0)
-                                cout << "No data - fd: " << fd << " count: " << c << endl;
+                            throw runtime_error("Connection closed - writerThread err: " + std::to_string(ret) + " errno: " + std::to_string(errno));
                         }
-                        else
-                            throw runtime_error("Connection closed - writerThread " + to_string(errno));
                     }
                 }
             }
@@ -315,7 +310,7 @@ namespace rdmaMng
                 int ret;
                 try
                 {
-                    ret = consumeRingbuffer(ctx, ctx.is_server ? *ctx.ringbuffer_client : *ctx.ringbuffer_server);
+                    ret = consumeRingbuffer(ctx);
                 }
                 catch (const std::exception &e)
                 {
@@ -344,12 +339,12 @@ namespace rdmaMng
         }
     }
 
-    int RdmaMng::consumeRingbuffer(rdma::RdmaContext &ctx, rdma::rdma_ringbuffer_t &rb_remote)
+    int RdmaMng::consumeRingbuffer(rdma::RdmaContext &ctx)
     {
-        while (1)
+        while (true)
         {
-            uint32_t remote_w = rb_remote.remote_write_index.load();
-            uint32_t local_r = rb_remote.local_read_index;
+            uint32_t remote_w = ctx.buffer_to_read->remote_write_index.load();
+            uint32_t local_r = ctx.buffer_to_read->local_read_index;
 
             if (remote_w != local_r)
             {
@@ -357,7 +352,11 @@ namespace rdmaMng
                 uint32_t start_read_index = local_r;
                 uint32_t end_read_index = remote_w;
 
-                rb_remote.local_read_index = remote_w; // reset the local write index
+                ctx.buffer_to_read->local_read_index = remote_w; // reset the local write index
+
+                /*
+                thPool->enqueue(
+                    &RdmaMng::readThreadWorker, this, ref(ctx), start_read_index, end_read_index);*/
 
                 ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index);
                 ctx.updateRemoteReadIndex(end_read_index);
@@ -366,6 +365,30 @@ namespace rdmaMng
             {
                 return 1; // no messages to read
             }
+        }
+    }
+
+    void RdmaMng::readThreadWorker(rdma::RdmaContext &ctx, uint32_t start_read_index, uint32_t end_read_index)
+    {
+        try
+        {
+            unique_lock<mutex> read_lock(ctx.mtx_rx_read);
+            ctx.cond_rx_read.wait(read_lock, [&ctx, start_read_index, &stop_threads = this->stop_threads]()
+                                  { return ctx.buffer_to_read->remote_read_index.load() == start_read_index || stop_threads.load(); });
+            ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index);
+
+            // COMMIT the read index
+            unique_lock<mutex> commit_lock(ctx.mtx_rx_commit);
+            ctx.buffer_to_read->remote_read_index.store(end_read_index);
+            ctx.cond_rx_read.notify_all();
+
+            read_lock.unlock();
+            ctx.updateRemoteReadIndex(end_read_index);
+        }
+        catch (const std::exception &e)
+        {
+            cerr << "Exception in readThreadWorker: " << e.what() << endl;
+            perror("Details");
         }
     }
 

@@ -162,6 +162,6 @@ namespace sk
                 return client_sk_fd[i].fd;
             }
         }
-        throw std::runtime_error("Socket not found");
+        throw std::runtime_error("Socket " + std::to_string(sk_id.sip) + ":" + std::to_string(sk_id.sport) + " -> " + std::to_string(sk_id.dip) + ":" + std::to_string(sk_id.dport) + " not found");
     }
 }
