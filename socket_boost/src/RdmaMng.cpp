@@ -224,61 +224,64 @@ namespace rdmaMng
         return WriterThreadData(app, ctx);
     }
 
-    inline bool has_data(int sockfd)
-    {
-        char buf[1];
-        if (recv(sockfd, buf, sizeof(buf), MSG_PEEK) > 0)
-            return true;
-        return false;
-    }
-
     void RdmaMng::writerThread(vector<sk::client_sk_t> sk_to_monitor)
     {
         if (sk_to_monitor.empty())
             throw std::runtime_error("No sockets to monitor in writer thread");
 
+        unordered_map<int, WriterThreadData> writer_map;
+
+        int epoll_fd = epoll_create1(0);
+        if (epoll_fd < 0)
+            throw std::runtime_error("Failed to create epoll instance");
+
         for (const auto &sk : sk_to_monitor)
+        {
             if (sk.fd < 0)
                 throw std::runtime_error("Invalid socket fd in writer thread");
 
-        unordered_map<int, WriterThreadData> writer_map;
+            struct epoll_event ev = {};
+            ev.events = EPOLLIN; // interested in readable events
+            ev.data.fd = sk.fd;
+
+            if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sk.fd, &ev) == -1)
+                throw std::runtime_error("epoll_ctl failed for fd " + std::to_string(sk.fd));
+        }
+
+        const int MAX_EVENTS = 64;
+        epoll_event events[MAX_EVENTS];
 
         try
         {
-            uint32_t c = 0;
             while (!stop_threads.load())
             {
-                for (int i = 0; i < sk_to_monitor.size(); ++i)
+                int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, Config::TIME_STOP_SELECT_SEC * 1000);
+
+                if (nfds == -1)
                 {
-                    int fd = sk_to_monitor[i].fd;
+                    if (errno == EINTR)
+                        continue; // interrupted by signal, retry
+                    throw std::runtime_error("epoll_wait failed");
+                }
 
-                    // check if there are some data
-                    if (!has_data(fd))
-                        continue; // No data to write, continue to the next socket
+                for (int i = 0; i < nfds; ++i)
+                {
+                    int fd = events[i].data.fd;
 
-                    // populate the writer thread data
                     WriterThreadData data;
-                    if (writer_map.find(fd) == writer_map.end())
+                    auto it = writer_map.find(fd);
+                    if (it == writer_map.end())
                     {
-
-                        // add the writer thread data
                         data = populateWriterThreadData(sk_to_monitor, fd);
-                        writer_map[fd] = data;
-                    }
-                    else
-                    {
-                        data = writer_map[fd];
+                        it = writer_map.emplace(fd, std::move(data)).first;
                     }
 
-                    int ret = data.ctx->writeMsg(fd, data.app);
+                    WriterThreadData &writer_data = it->second;
 
-                    if (ret <= 0)
-                    {
-                        if (errno != EAGAIN && errno != EWOULDBLOCK)
-                        {
-                            throw runtime_error("Connection closed - writerThread err: " + std::to_string(ret) + " errno: " + std::to_string(errno));
-                        }
-                    }
+                    int ret = writer_data.ctx->writeMsg(fd, writer_data.app);
+
+                    if (ret <= 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+                        throw runtime_error("Connection closed - writerThread err: " + std::to_string(ret) + " errno: " + std::to_string(errno));
                 }
             }
         }
@@ -359,8 +362,7 @@ namespace rdmaMng
 
                 ctx.buffer_to_read->local_read_index = remote_w; // reset the local write index
 
-                /*
-                thPool->enqueue(
+                /*thPool->enqueue(
                     &RdmaMng::readThreadWorker, this, ref(ctx), start_read_index, end_read_index);*/
 
                 ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index);
@@ -502,49 +504,24 @@ namespace rdmaMng
         {
             std::cout << "Listening for notifications..." << std::endl;
 
+            vector<int> fds_to_monitor;
+            for (const auto &ctx_ptr : ctxs)
+            {
+                RdmaContext *ctx = ctx_ptr.get();
+                if (!ctx->recv_cq || !ctx->comp_channel)
+                {
+                    std::cerr << "Context not ready, skipping\n";
+                    continue;
+                }
+                fds_to_monitor.push_back(ctx->comp_channel->fd);
+            }
+
             while (!stop_threads)
             {
-                fd_set fds;
-                FD_ZERO(&fds);
-                int max_fd = -1;
+                vector<int> fd_ready = waitOnSelect(fds_to_monitor);
 
-                for (const auto &ctx_ptr : ctxs)
+                for (int fd : fd_ready)
                 {
-                    RdmaContext *ctx = ctx_ptr.get();
-                    if (!ctx->recv_cq || !ctx->comp_channel)
-                    {
-                        std::cerr << "Context not ready, skipping\n";
-                        continue;
-                    }
-
-                    FD_SET(ctx->comp_channel->fd, &fds);
-                    max_fd = std::max(max_fd, ctx->comp_channel->fd);
-                }
-
-                if (max_fd < 0)
-                {
-                    throw std::runtime_error("No valid contexts to monitor");
-                }
-
-                timeval tv{Config::TIME_STOP_SELECT_SEC, 0};
-
-                int activity = select(max_fd + 1, &fds, nullptr, nullptr, &tv);
-                if (activity == -1)
-                {
-                    if (errno == EINTR)
-                    {
-                        std::cout << "Select interrupted by signal\n";
-                        break;
-                    }
-                    perror("select error");
-                    break;
-                }
-
-                for (int fd = 0; fd <= max_fd; ++fd)
-                {
-                    if (!FD_ISSET(fd, &fds))
-                        continue;
-
                     RdmaContext *ctx = nullptr;
                     for (const auto &c : ctxs)
                     {
@@ -556,9 +533,7 @@ namespace rdmaMng
                     }
 
                     if (!ctx)
-                    {
                         throw std::runtime_error("Context not found for fd");
-                    }
 
                     struct ibv_cq *ev_cq = nullptr;
                     void *ev_ctx = nullptr;
@@ -594,28 +569,7 @@ namespace rdmaMng
                     }
 
                     // Repost receive
-                    ibv_sge sge{
-                        .addr = reinterpret_cast<uintptr_t>(ctx->buffer),
-                        .length = sizeof(notification_t),
-                        .lkey = ctx->mr->lkey};
-
-                    ibv_recv_wr recv_wr = {};
-                    recv_wr.wr_id = 0;
-                    recv_wr.sg_list = &sge;
-                    recv_wr.num_sge = 1;
-                    recv_wr.next = nullptr;
-
-                    ibv_recv_wr *bad_wr = nullptr;
-                    if (ctx->srq)
-                    {
-                        if (ibv_post_srq_recv(ctx->srq, &recv_wr, &bad_wr) != 0 || bad_wr)
-                            throw std::runtime_error("Failed to post SRQ receive work request");
-                    }
-                    else
-                    {
-                        if (ibv_post_recv(ctx->qps[0], &recv_wr, &bad_wr) != 0 || bad_wr)
-                            throw std::runtime_error("Failed to post receive work request");
-                    }
+                    ctx->postReceive(Config::DEFAULT_QP_IDX, false);
                     parseNotification(*ctx);
                 }
             }
@@ -644,20 +598,15 @@ namespace rdmaMng
                     continue;
                 }
 
-                rdma_ringbuffer_t &rb = *((ctx.is_server == true) ? ctx.ringbuffer_server : ctx.ringbuffer_client);
+                uint64_t now = ctx.getTimeMS();
 
-                while (1)
+                if (ctx.shouldFlushWrQueue() ||
+                    (now - ctx.last_flush_ms >= Config::FLUSH_INTERVAL_MS))
                 {
-                    uint64_t now = ctx.getTimeMS();
-
-                    if (ctx.shouldFlushWrQueue() ||
-                        (now - ctx.last_flush_ms >= Config::FLUSH_INTERVAL_MS))
-                    {
-                        ctx.last_flush_ms = now;
-                        thPool->enqueue([this, &ctx]()
-                                        { flushThreadWorker(ctx); });
-                        break;
-                    }
+                    ctx.last_flush_ms = now;
+                    thPool->enqueue([this, &ctx]()
+                                    { flushThreadWorker(ctx); });
+                    break;
                 }
             }
         }
@@ -670,43 +619,50 @@ namespace rdmaMng
         if (fds.empty())
             return {}; // Nothing to watch.
 
-        fd_set read_set;
-        FD_ZERO(&read_set);
-        int ready = 0;
+        // Create epoll instance
+        int epoll_fd = epoll_create1(0);
+        if (epoll_fd == -1)
+            throw std::runtime_error("epoll_create1() failed");
 
-        while (stop_threads.load() == false)
+        // Register all fds
+        for (int fd : fds)
         {
-            int max_fd = -1;
-            for (int fd : fds)
-            {
-                if (fd < 0)
-                    continue; // Skip invalid entries.
-                FD_SET(fd, &read_set);
-                if (fd > max_fd)
-                    max_fd = fd;
-            }
-            if (max_fd < 0)
-                return {}; // No valid descriptors.
+            if (fd < 0)
+                continue;
 
-            // Prepare timeout.
-            struct timeval tv;
-            tv.tv_sec = Config::TIME_STOP_SELECT_SEC;
-            tv.tv_usec = 0;
+            struct epoll_event ev = {};
+            ev.events = EPOLLIN;
+            ev.data.fd = fd;
 
-            int ready = ::select(max_fd + 1, &read_set, nullptr, nullptr, &tv);
-            if (ready < 0)
-                throw std::runtime_error("select() failed");
-            else if (ready > 0)
-                break; // Some file descriptors are ready.
+            if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) == -1)
+                throw std::runtime_error("epoll_ctl failed for fd " + std::to_string(fd));
         }
 
         std::vector<int> result;
-        result.reserve(static_cast<std::size_t>(ready));
+        const int MAX_EVENTS = 256;
+        struct epoll_event events[MAX_EVENTS];
 
-        for (int fd : fds)
-            if (fd >= 0 && FD_ISSET(fd, &read_set))
-                result.push_back(fd);
+        while (!stop_threads.load())
+        {
+            int timeout_ms = Config::TIME_STOP_SELECT_SEC * 1000;
+            int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, timeout_ms);
 
+            if (nfds < 0)
+            {
+                throw std::runtime_error("epoll_wait() failed");
+            }
+            else if (nfds > 0)
+            {
+                result.reserve(nfds);
+                for (int i = 0; i < nfds; ++i)
+                    result.push_back(events[i].data.fd);
+                break;
+            }
+
+            // If timeout with 0 fds, loop again (or exit on stop_threads)
+        }
+
+        close(epoll_fd);
         return result;
     }
 };

@@ -22,21 +22,21 @@ public:
     // Socket manager
     inline static const int NUMBER_OF_SOCKETS = 16;
 
-    inline static const int ALIGNMENT = 4096; // Size of a memory page
-
     // RDMA context
     inline static const size_t MAX_SEND_WR = 4096;
     inline static const size_t MAX_RECV_WR = 16;
     inline static const size_t MAX_SEND_SGE = 1;
     inline static const size_t MAX_RECV_SGE = 1;
-
     inline static const int MAX_CQ_ENTRIES = 2048; // Maximum number of entries in the completion queue
+
+    inline static const int ALIGNMENT = 4096; // Size of a memory page
 
     inline static const char *RDMA_TCP_PORT = "7472";                        // Default RDMA port for TCP parameters exchange
     inline static const int MAX_MSG_BUFFER = (1024 * 4);                     // POWER OF 2!!!!!!!!!!!
     inline static const int TIME_TO_WAIT_IF_NO_SPACE_MS = 2;                 // ms
     inline static const int MAX_PAYLOAD_SIZE = (64 * 1024);                  // 64 KB
     inline static const int QP_N = 8;                                        // Number of QPs
+    inline static const int DEFAULT_QP_IDX = 0;                              // Default QP index
     inline static const size_t MAX_WR_PER_POST = 128;                        // Maximum number of work requests in a single post (wr per flight)
     inline static const uint32_t TIME_BTW_DATA_READY_NOTIFICATIONS_MS = 500; // 500 ms
     inline static const int THRESHOLD_NOT_AUTOSCALER = MAX_WR_PER_POST;      // Threshold for flushing messages

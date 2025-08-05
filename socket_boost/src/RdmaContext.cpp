@@ -193,29 +193,7 @@ namespace rdma
         ringbuffer_client->flags.flags.store(0);
 
         // Post the initial receive work request to receive the notification
-        struct ibv_sge sge;
-        sge.addr = (uintptr_t)buffer;
-        sge.length = sizeof(notification_t);
-        sge.lkey = mr->lkey;
-
-        struct ibv_recv_wr recv_wr;
-        recv_wr.wr_id = 0;
-        recv_wr.sg_list = &sge;
-        recv_wr.num_sge = 1;
-        recv_wr.next = nullptr;
-
-        struct ibv_recv_wr *bad_wr = nullptr;
-        if (srq)
-        {
-            if (ibv_post_srq_recv(srq, &recv_wr, &bad_wr) != 0 || bad_wr)
-                throw std::runtime_error("Failed to post initial receive work request in SRQ");
-        }
-        else
-        {
-            for (int i = 0; i < Config::QP_N; ++i)
-                if (ibv_post_recv(qps[i], &recv_wr, &bad_wr) != 0 || bad_wr)
-                    throw std::runtime_error("Failed to post initial receive work request to QP " + std::to_string(i));
-        }
+        postReceive(-1, true);
 
         if (is_server)
         {
@@ -773,9 +751,6 @@ namespace rdma
 
     int RdmaContext::writeMsg(int src_fd, struct sock_id original_socket)
     {
-        if (!buffer_to_write)
-            throw runtime_error("buffer_to_write is nullptr - writeMsg");
-
         uint32_t start_w_index, end_w_index, available_space;
 
         unique_lock<mutex> lock(mtx_tx);
@@ -797,7 +772,7 @@ namespace rdma
 
                 COUNT++;
 
-                if (COUNT % 10000 == 0)
+                if (COUNT % 1 == 0)
                 {
                     struct timespec ts;
                     ts.tv_sec = 5;
@@ -1101,6 +1076,43 @@ namespace rdma
                      { return is_ready.load() == true; });
     }
 
+    void RdmaContext::postReceive(int qpIdx, bool allQp = false)
+    {
+        if ((qpIdx < 0 && !allQp) || qpIdx >= Config::QP_N)
+            throw std::out_of_range("Invalid QP index");
+
+        ibv_sge sge{
+            .addr = reinterpret_cast<uintptr_t>(buffer),
+            .length = sizeof(notification_t),
+            .lkey = mr->lkey};
+
+        ibv_recv_wr recv_wr = {};
+        recv_wr.wr_id = 0;
+        recv_wr.sg_list = &sge;
+        recv_wr.num_sge = 1;
+        recv_wr.next = nullptr;
+
+        ibv_recv_wr *bad_wr = nullptr;
+        if (srq)
+        {
+            if (ibv_post_srq_recv(srq, &recv_wr, &bad_wr) != 0 || bad_wr)
+                throw std::runtime_error("Failed to post SRQ receive work request");
+        }
+        else
+        {
+            if (allQp)
+            {
+                for (int i = 0; i < Config::QP_N; ++i)
+                    if (ibv_post_recv(qps[i], &recv_wr, &bad_wr) != 0 || bad_wr)
+                        throw std::runtime_error("Failed to post initial receive work request to QP " + std::to_string(i));
+            }
+            else
+            {
+                if (ibv_post_recv(qps[qpIdx], &recv_wr, &bad_wr) != 0 || bad_wr)
+                    throw std::runtime_error("Failed to post receive work request");
+            }
+        }
+    }
 }
 
 /*

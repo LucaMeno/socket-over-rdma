@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <format>
 #include <functional>
+#include <sys/epoll.h>
 
 #include "RdmaContext.h"
 #include "ThreadPool.h"

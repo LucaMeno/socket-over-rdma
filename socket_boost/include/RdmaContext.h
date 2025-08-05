@@ -168,6 +168,7 @@ namespace rdma
         void updateRemoteReadIndex(uint32_t r_idx);
 
         void setPollingStatus(uint32_t is_polling);
+        void postReceive(int qpIdx, bool allQp);
 
         const std::string getOpName(CommunicationCode code);
         uint64_t getTimeMS();
