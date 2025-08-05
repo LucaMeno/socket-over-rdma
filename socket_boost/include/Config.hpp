@@ -22,6 +22,8 @@ public:
     // Socket manager
     inline static const int NUMBER_OF_SOCKETS = 16;
 
+    inline static const int ALIGNMENT = 4096; // Size of a memory page
+
     // RDMA context
     inline static const size_t MAX_SEND_WR = 4096;
     inline static const size_t MAX_RECV_WR = 16;

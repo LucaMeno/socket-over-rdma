@@ -54,7 +54,7 @@ namespace rdmaMng
 
         if (server_thread.joinable())
         {
-            cout << "Waiting for server thread to finish..." << endl;
+            cout << "Waiting for server thread to finish... : ";
             server_thread.join();
         }
 
@@ -70,7 +70,7 @@ namespace rdmaMng
 
         if (notification_thread.joinable())
         {
-            cout << "Waiting for notification thread to finish..." << endl;
+            cout << "Waiting for notification thread to finish... : ";
             notification_thread.join();
         }
 
@@ -85,7 +85,7 @@ namespace rdmaMng
 
         if (polling_thread.joinable())
         {
-            cout << "Waiting for polling thread to finish..." << endl;
+            cout << "Waiting for polling thread to finish... : ";
             polling_thread.join();
         }
 
@@ -93,18 +93,22 @@ namespace rdmaMng
 
         if (flush_thread.joinable())
         {
-            cout << "Waiting for flush thread to finish..." << endl;
+            cout << "Waiting for flush thread to finish... : ";
             flush_thread.join();
         }
 
         cout << "Flush thread joined" << endl;
 
         // Cleanup RDMA contexts
+        cout << "Clearing RDMA contexts... : ";
         ctxs.clear();
         cout << "RDMA contexts cleared" << endl;
 
+        cout << "Destroying thread pool... : ";
         thPool->destroy();
         cout << "Thread pool destroyed" << endl;
+
+        // bpf and socket managers cleanup are handled in their destructors automatically
     }
 
     void RdmaMng::run()
@@ -248,13 +252,14 @@ namespace rdmaMng
                 {
                     int fd = sk_to_monitor[i].fd;
 
+                    // check if there are some data
+                    if (!has_data(fd))
+                        continue; // No data to write, continue to the next socket
+
                     // populate the writer thread data
                     WriterThreadData data;
                     if (writer_map.find(fd) == writer_map.end())
                     {
-                        // check if there are some data
-                        if (!has_data(fd))
-                            continue; // No data to write, continue to the next socket
 
                         // add the writer thread data
                         data = populateWriterThreadData(sk_to_monitor, fd);

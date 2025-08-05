@@ -25,7 +25,7 @@
 
 #define RING_IDX(i) ((i) & (Config::MAX_MSG_BUFFER - 1))
 
-#define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t) * 5)
+#define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t))
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
 #define MR_SIZE ((sizeof(rdma_ringbuffer_t) * 2) + NOTIFICATION_OFFSET_SIZE)
 
@@ -82,7 +82,7 @@ namespace rdma
         char msg[Config::MAX_PAYLOAD_SIZE]; // message
     } rdma_msg_t;
 
-    typedef struct alignas(64)
+    typedef struct
     {
         rdma_flag_t flags;
         std::atomic<uint32_t> remote_write_index;
@@ -193,7 +193,7 @@ namespace rdma
         void showDevices();
         void updateRemoteWriteIndex(uint32_t pre_index, uint32_t new_index);
 
-        void enqueueWr(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx, size_t data_size);
+        void enqueueWr(uint32_t start_idx, uint32_t end_idx, size_t data_size);
         void executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
         void executeWrNow(WorkRequest wr, bool signaled);
 

@@ -10,6 +10,7 @@ namespace rdma
     conn_info RdmaContext::rdmaSetupPreHs()
     {
         srand48(getpid());
+        int err = 0;
 
         ctx = openDevice();
         if (!ctx)
@@ -53,7 +54,7 @@ namespace rdma
         if (ibv_req_notify_cq(recv_cq, 0))
             throw runtime_error("Failed to request notification on receive CQ");
 
-        int err = posix_memalign((void **)&buffer, 4096, MR_SIZE);
+        err = posix_memalign((void **)&buffer, Config::ALIGNMENT, MR_SIZE);
         if (!buffer || err)
             throw runtime_error("Failed to allocate buffer");
 
@@ -613,14 +614,12 @@ namespace rdma
         last_notification_data_ready_ns = getTimeMS();
     }
 
-    void RdmaContext::enqueueWr(rdma_ringbuffer_t &ringbuffer, uint32_t start_idx, uint32_t end_idx, size_t data_size)
+    void RdmaContext::enqueueWr(uint32_t start_idx, uint32_t end_idx, size_t data_size)
     {
         uint32_t w_idx = RING_IDX(end_idx);   // local write index
         uint32_t r_idx = RING_IDX(start_idx); // remote read index
 
-        // normal case
-        uintptr_t batch_start = (uintptr_t)&ringbuffer.data[r_idx];
-        // size_t batch_size = (w_idx - r_idx) * sizeof(rdma_msg_t);
+        uintptr_t batch_start = (uintptr_t)&buffer_to_write->data[r_idx];
         uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
 
         WorkRequest wr = createWr(remote_addr_2, batch_start, data_size, false); // create the work request
@@ -635,7 +634,7 @@ namespace rdma
 
     WorkRequest RdmaContext::createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled)
     {
-        WorkRequest wr;
+        WorkRequest wr = {0};
 
         wr.sge.addr = local_addr;      // Local address of the buffer
         wr.sge.length = size_to_write; // Size of the data to write
@@ -648,6 +647,7 @@ namespace rdma
         wr.wr.next = nullptr;
         wr.wr.wr.rdma.remote_addr = remote_addr; // Remote address to write to
         wr.wr.wr.rdma.rkey = remote_rkey;        // Remote key
+        wr.wr.send_flags = 0;
         if (signaled)
             wr.wr.send_flags |= IBV_SEND_SIGNALED;
 
@@ -695,7 +695,7 @@ namespace rdma
             pollCqSend(send_cqs[qp_index]);
     }
 
-    void RdmaContext::executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled = true)
+    inline void RdmaContext::executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled = true)
     {
         WorkRequest wr = createWr(remote_addr, local_addr, size_to_write, signaled);
         executeWrNow(wr, signaled);
@@ -780,10 +780,12 @@ namespace rdma
 
         unique_lock<mutex> lock(mtx_tx);
 
+        // while there are data to read, keep reading
         while (true)
         {
+            // Wait until there is space in the ring buffer
             while (true)
-            { // Wait until there is space in the ring buffer
+            {
                 start_w_index = buffer_to_write->local_write_index;
                 end_w_index = buffer_to_write->remote_write_index.load();
 
@@ -795,10 +797,10 @@ namespace rdma
 
                 COUNT++;
 
-                if (COUNT % 1 == 0)
+                if (COUNT % 10000 == 0)
                 {
                     struct timespec ts;
-                    ts.tv_sec = 0;
+                    ts.tv_sec = 5;
                     ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
                     nanosleep(&ts, nullptr);
 
@@ -812,6 +814,7 @@ namespace rdma
                     throw runtime_error("Stopping writeMsg due to stop signal");
             }
 
+            // write all possible messages in the buffer
             while (available_space >= 1)
             {
                 rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index)];
@@ -836,8 +839,7 @@ namespace rdma
 
                 buffer_to_write->local_write_index += msg->number_of_slots;
 
-                enqueueWr(*buffer_to_write,
-                          start_w_index,
+                enqueueWr(start_w_index,
                           start_w_index + msg->number_of_slots,
                           msg->msg_size + MSG_HEADER_SIZE);
 
