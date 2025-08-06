@@ -41,6 +41,8 @@ public:
     inline static const uint32_t TIME_BTW_DATA_READY_NOTIFICATIONS_MS = 500; // 500 ms
     inline static const int THRESHOLD_NOT_AUTOSCALER = MAX_WR_PER_POST;      // Threshold for flushing messages
 
+    inline static const int WRITE_QUEUE_CAPACITY = 1024; // Capacity of the write queue POWER OF 2!!!!!!!!!!!
+
     // RDMA manager
     inline static const int N_WRITER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket
     inline static const int TIME_STOP_SELECT_SEC = 5;             // 5 seconds

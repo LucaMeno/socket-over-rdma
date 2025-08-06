@@ -105,6 +105,7 @@ namespace rdmaMng
         // Thread worker functions (pool)
         void flushThreadWorker(rdma::RdmaContext &ctx);
         void readThreadWorker(rdma::RdmaContext &ctx, uint32_t start_read_index, uint32_t end_read_index);
+        void copyThreadWorker(rdma::RdmaContext &ctx);
 
         // Utils
         int getFreeContextId();

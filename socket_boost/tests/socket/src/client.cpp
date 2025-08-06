@@ -70,6 +70,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    cout << "Connecting to " << argv[1] << ":" << port << "...\n";
     if (connect(sock, reinterpret_cast<sockaddr *>(&srv), sizeof(srv)) < 0)
     {
         perror("connect");
@@ -80,6 +81,7 @@ int main(int argc, char *argv[])
     char start_buf[16] = {};
 
     send(sock, start_buf, sizeof(start_buf), 0); // Notify server that client is ready
+    cout << "Waiting for server to be ready...\n";
     recv(sock, start_buf, sizeof(start_buf), 0); // Wait for server to be ready
 
     this_thread::sleep_for(chrono::seconds(1));

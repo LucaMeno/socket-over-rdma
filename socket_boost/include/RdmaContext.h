@@ -16,6 +16,7 @@
 #include <cstring>
 #include <memory>
 #include <queue>
+#include <boost/lockfree/queue.hpp>
 
 #include "BpfMng.h"
 #include "SocketMng.h"
@@ -109,6 +110,10 @@ namespace rdma
     class RdmaContext
     {
     public:
+        boost::lockfree::queue<rdma_msg_t*, boost::lockfree::capacity<Config::WRITE_QUEUE_CAPACITY>> msg_queue;
+        rdma_msg_t msg_pool[Config::WRITE_QUEUE_CAPACITY];
+        std::atomic<int> msg_pool_index{0};
+
         ibv_context *ctx;
         ibv_pd *pd;
         ibv_mr *mr;
@@ -163,7 +168,10 @@ namespace rdma
         void serverHandleNewClient(serverConnection_t &sc);
         void clientConnect(uint32_t server_ip, uint16_t server_port);
 
+        int readMsgFromSk(int src_fd, struct sock_id original_socket);
         int writeMsg(int src_fd, struct sock_id original_socket);
+        void copyMsgIntoSharedBuff();
+
         void readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index);
         void updateRemoteReadIndex(uint32_t r_idx);
 

@@ -175,10 +175,7 @@ namespace rdmaMng
 
                 ctxs.push_back(std::move(ctx));
 
-                if (!notification_thread.joinable())
-                {
-                    launchBackbroundThread();
-                }
+                launchBackbroundThread();
             }
         }
         catch (const std::exception &e)
@@ -278,7 +275,7 @@ namespace rdmaMng
 
                     WriterThreadData &writer_data = it->second;
 
-                    int ret = writer_data.ctx->writeMsg(fd, writer_data.app);
+                    int ret = writer_data.ctx->readMsgFromSk(fd, writer_data.app);
 
                     if (ret <= 0 && errno != EAGAIN && errno != EWOULDBLOCK)
                         throw runtime_error("Connection closed - writerThread err: " + std::to_string(ret) + " errno: " + std::to_string(errno));
@@ -289,6 +286,20 @@ namespace rdmaMng
         {
             cerr << "Exception in writerThread: " << e.what() << endl;
             perror("   - Details");
+            throw; // Re-throw the exception to be handled by the caller
+        }
+    }
+
+    void RdmaMng::copyThreadWorker(rdma::RdmaContext &ctx)
+    {
+        try
+        {
+            ctx.copyMsgIntoSharedBuff(); // Copy messages into the shared buffer
+        }
+        catch (const std::exception &e)
+        {
+            cerr << "Exception in copyThreadWorker: " << e.what() << endl;
+            perror("Details");
             throw; // Re-throw the exception to be handled by the caller
         }
     }
@@ -347,7 +358,7 @@ namespace rdmaMng
         }
     }
 
-    int RdmaMng::consumeRingbuffer(rdma::RdmaContext &ctx)
+    inline int RdmaMng::consumeRingbuffer(rdma::RdmaContext &ctx)
     {
         while (true)
         {
@@ -414,6 +425,14 @@ namespace rdmaMng
 
     void RdmaMng::launchBackbroundThread()
     {
+        // launch the copy thread worker
+        thPool->enqueue(&RdmaMng::copyThreadWorker, this, std::ref(*ctxs.back()));
+
+        if (notification_thread.joinable())
+        {
+            return; // If the notification thread is already running, do not start it again
+        }
+
         // Launch the notification thread
         notification_thread = thread(&RdmaMng::listenThread, this);
 
@@ -428,7 +447,7 @@ namespace rdmaMng
     {
         rdma::RdmaContext *ctx = getContextByIp(original_socket.dip);
 
-        if (ctx == nullptr) // no previus connection to the given node, create a new one
+        if (ctx == nullptr) // no previous connection to the given node, create a new one
         {
             int ctx_id = getFreeContextId();
             auto ctx = ctxs[ctx_id].get();        // get the context by index

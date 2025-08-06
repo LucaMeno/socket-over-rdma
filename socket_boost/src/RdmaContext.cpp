@@ -610,7 +610,7 @@ namespace rdma
         lock.unlock();
     }
 
-    WorkRequest RdmaContext::createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled)
+    inline WorkRequest RdmaContext::createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled)
     {
         WorkRequest wr = {0};
 
@@ -749,14 +749,12 @@ namespace rdma
         return false; // Not enough work requests to flush
     }
 
-    int RdmaContext::writeMsg(int src_fd, struct sock_id original_socket)
+    void RdmaContext::copyMsgIntoSharedBuff()
     {
         uint32_t start_w_index, end_w_index, available_space;
 
-        unique_lock<mutex> lock(mtx_tx);
-
         // while there are data to read, keep reading
-        while (true)
+        while (stop.load() == false)
         {
             // Wait until there is space in the ring buffer
             while (true)
@@ -775,7 +773,7 @@ namespace rdma
                 if (COUNT % 1 == 0)
                 {
                     struct timespec ts;
-                    ts.tv_sec = 5;
+                    ts.tv_sec = 0;
                     ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
                     nanosleep(&ts, nullptr);
 
@@ -792,38 +790,136 @@ namespace rdma
             // write all possible messages in the buffer
             while (available_space >= 1)
             {
-                rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index)];
+                rdma_msg_t *msg_dest = &buffer_to_write->data[RING_IDX(start_w_index)];
+                rdma_msg_t *msg_src = nullptr;
 
-                /*msg->msg_size = recv(src_fd, msg->msg, Config::MAX_PAYLOAD_SIZE, 0);
+                if (!msg_queue.pop(msg_src))
+                {
+                    // cout << "No messages in the queue, waiting..." << endl;
+                    break; // if the queue is empty, break
+                }
 
-                if ((int)msg->msg_size <= 0)
-                    return msg->msg_size;*/
+                memcpy(msg_dest, msg_src, MSG_HEADER_SIZE + msg_src->msg_size);
 
-                uint8_t tmp_buf[Config::MAX_PAYLOAD_SIZE];
-                int data_size = recv(src_fd, tmp_buf, Config::MAX_PAYLOAD_SIZE, 0);
-
-                if (data_size <= 0)
-                    return data_size;
-
-                memcpy(msg->msg, tmp_buf, data_size);
-                msg->msg_size = data_size;
-
-                msg->msg_flags = 0;
-                msg->original_sk_id = original_socket;
-                msg->number_of_slots = 1;
-
-                buffer_to_write->local_write_index += msg->number_of_slots;
+                buffer_to_write->local_write_index += msg_src->number_of_slots;
 
                 enqueueWr(start_w_index,
-                          start_w_index + msg->number_of_slots,
-                          msg->msg_size + MSG_HEADER_SIZE);
+                          start_w_index + msg_src->number_of_slots,
+                          msg_src->msg_size + MSG_HEADER_SIZE);
 
-                available_space -= msg->number_of_slots;
-                start_w_index += msg->number_of_slots;
+                available_space -= msg_src->number_of_slots;
+                start_w_index += msg_src->number_of_slots;
             }
         }
     }
 
+    int RdmaContext::readMsgFromSk(int src_fd, struct sock_id original_socket)
+    {
+        // unique_lock<mutex> lock(mtx_tx);
+        while (true)
+        {
+            int idx = msg_pool_index.fetch_add(1);
+            idx = (idx & (Config::WRITE_QUEUE_CAPACITY - 1)); // wrap-around safe
+            rdma_msg_t *msg = &msg_pool[idx];
+
+            int received = recv(src_fd, msg->msg, Config::MAX_PAYLOAD_SIZE, 0);
+
+            if (received <= 0)
+                return received;
+
+            msg->msg_flags = 0;
+            msg->original_sk_id = original_socket;
+            msg->number_of_slots = 1;
+            msg->msg_size = received;
+
+            while (!msg_queue.push(msg))
+            {
+                cout << "Message queue is full, waiting..." << endl;
+                this_thread::yield(); // backoff
+                if (stop.load() == true)
+                {
+                    cout << "Stopping readMsgFromSk due to stop signal" << endl;
+                    return -1; // stop the reading
+                }
+            }
+        }
+    }
+    /*
+        int RdmaContext::writeMsg(int src_fd, struct sock_id original_socket)
+        {
+            uint32_t start_w_index, end_w_index, available_space;
+
+            unique_lock<mutex> lock(mtx_tx);
+
+            // while there are data to read, keep reading
+            while (true)
+            {
+                // Wait until there is space in the ring buffer
+                while (true)
+                {
+                    start_w_index = buffer_to_write->local_write_index;
+                    end_w_index = buffer_to_write->remote_write_index.load();
+
+                    uint32_t used = start_w_index - end_w_index; // wrap-around safe
+                    available_space = Config::MAX_MSG_BUFFER - used - 1;
+
+                    if (available_space >= 1)
+                        break;
+
+                    COUNT++;
+
+                    if (COUNT % 1 == 0)
+                    {
+                        struct timespec ts;
+                        ts.tv_sec = 5;
+                        ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
+                        nanosleep(&ts, nullptr);
+
+                        cout << "Waiting for space in the ringbuffer (" << COUNT << ")... "
+                             << "Used: " << used << ", Available: " << available_space
+                             << ", Start Index: " << start_w_index
+                             << ", End Index: " << end_w_index << endl;
+                    }
+
+                    if (stop.load() == true)
+                        throw runtime_error("Stopping writeMsg due to stop signal");
+                }
+
+                // write all possible messages in the buffer
+                while (available_space >= 1)
+                {
+                    rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index)];
+
+                    msg->msg_size = recv(src_fd, msg->msg, Config::MAX_PAYLOAD_SIZE, 0);
+
+                    if ((int)msg->msg_size <= 0)
+                        return msg->msg_size;
+
+                    /*uint8_t tmp_buf[Config::MAX_PAYLOAD_SIZE];
+                    int data_size = recv(src_fd, tmp_buf, Config::MAX_PAYLOAD_SIZE, 0);
+
+                    if (data_size <= 0)
+                        return data_size;
+
+                    memcpy(msg->msg, tmp_buf, data_size);
+                    msg->msg_size = data_size;*
+
+                    msg->msg_flags = 0;
+                    msg->original_sk_id = original_socket;
+                    msg->number_of_slots = 1;
+
+                    buffer_to_write->local_write_index += msg->number_of_slots;
+
+                    enqueueWr(start_w_index,
+                              start_w_index + msg->number_of_slots,
+                              msg->msg_size + MSG_HEADER_SIZE);
+
+                    available_space -= msg->number_of_slots;
+                    start_w_index += msg->number_of_slots;
+                }
+            }
+        }
+    */
     inline void RdmaContext::parseMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg)
     {
         // retrive the proxy_fd
@@ -880,11 +976,22 @@ namespace rdma
 
         int rem = msg.msg_size;
         char *ptr = msg.msg;
+        int i = 0;
+        const int RETRY_LIMIT = 5;
         while (rem > 0)
         {
             int size = send(fd, ptr, rem, 0);
             if (size <= 0)
-                throw runtime_error("Failed to send message, code: " + to_string(size) + " - parseMsg");
+            {
+                ++i;
+                cerr << i << ") Failed to send message to socket: "
+                     << msg.original_sk_id.sip << ":" << msg.original_sk_id.sport
+                     << " -> " << msg.original_sk_id.dip << ":" << msg.original_sk_id.dport
+                     << " - Error: " << strerror(errno) << endl;
+
+                if (i >= RETRY_LIMIT)
+                    throw runtime_error("Failed to send message after multiple attempts - parseMsg: " + string(strerror(errno)));
+            }
             rem -= size;
             ptr += size;
         }
