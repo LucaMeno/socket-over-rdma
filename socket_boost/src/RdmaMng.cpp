@@ -257,7 +257,7 @@ namespace rdmaMng
                 if (nfds == -1)
                 {
                     if (errno == EINTR)
-                        continue; // interrupted by signal, retry
+                        break;
                     throw std::runtime_error("epoll_wait failed");
                 }
 
@@ -275,7 +275,8 @@ namespace rdmaMng
 
                     WriterThreadData &writer_data = it->second;
 
-                    int ret = writer_data.ctx->readMsgFromSk(fd, writer_data.app);
+                    // int ret = writer_data.ctx->readMsgFromSk(fd, writer_data.app);
+                    int ret = writer_data.ctx->writeMsg(fd, writer_data.app);
 
                     if (ret <= 0 && errno != EAGAIN && errno != EWOULDBLOCK)
                         throw runtime_error("Connection closed - writerThread err: " + std::to_string(ret) + " errno: " + std::to_string(errno));
@@ -294,7 +295,7 @@ namespace rdmaMng
     {
         try
         {
-            ctx.copyMsgIntoSharedBuff(); // Copy messages into the shared buffer
+            // ctx.copyMsgIntoSharedBuff(); // Copy messages into the shared buffer
         }
         catch (const std::exception &e)
         {
@@ -388,6 +389,7 @@ namespace rdmaMng
 
     void RdmaMng::readThreadWorker(rdma::RdmaContext &ctx, uint32_t start_read_index, uint32_t end_read_index)
     {
+        cerr << "NO!!" << endl;
         try
         {
             unique_lock<mutex> read_lock(ctx.mtx_rx_read);
@@ -627,6 +629,23 @@ namespace rdmaMng
                                     { flushThreadWorker(ctx); });
                     break;
                 }
+
+                /*if (ctx.shouldFlushWrQueue())
+                {
+                    cout << "SF" << endl;
+                    ctx.last_flush_ms = now;
+                    thPool->enqueue([this, &ctx]()
+                                    { flushThreadWorker(ctx); });
+                    break;
+                }
+                else if (now - ctx.last_flush_ms >= Config::FLUSH_INTERVAL_MS)
+                {
+                    cout << "TIME" << endl;
+                    ctx.last_flush_ms = now;
+                    thPool->enqueue([this, &ctx]()
+                                    { flushThreadWorker(ctx); });
+                    break;
+                }*/
             }
         }
 

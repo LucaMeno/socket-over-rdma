@@ -110,7 +110,7 @@ namespace rdma
     class RdmaContext
     {
     public:
-        boost::lockfree::queue<rdma_msg_t*, boost::lockfree::capacity<Config::WRITE_QUEUE_CAPACITY>> msg_queue;
+        boost::lockfree::queue<rdma_msg_t *, boost::lockfree::capacity<Config::WRITE_QUEUE_CAPACITY>> msg_queue;
         rdma_msg_t msg_pool[Config::WRITE_QUEUE_CAPACITY];
         std::atomic<int> msg_pool_index{0};
 
@@ -157,7 +157,7 @@ namespace rdma
 
         uint64_t last_notification_data_ready_ns; // Last time a notification was sent
 
-        bool can_flush = false; // Flag to indicate if the context can flush
+        std::atomic<uint32_t> msg_counter{0};
         std::queue<WorkRequest> work_reqs;
         std::mutex mtx_wrs; // Mutex to protect the work requests queue
 
@@ -168,9 +168,9 @@ namespace rdma
         void serverHandleNewClient(serverConnection_t &sc);
         void clientConnect(uint32_t server_ip, uint16_t server_port);
 
-        int readMsgFromSk(int src_fd, struct sock_id original_socket);
+        // int readMsgFromSk(int src_fd, struct sock_id original_socket);
         int writeMsg(int src_fd, struct sock_id original_socket);
-        void copyMsgIntoSharedBuff();
+        // void copyMsgIntoSharedBuff();
 
         void readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index);
         void updateRemoteReadIndex(uint32_t r_idx);
@@ -187,6 +187,11 @@ namespace rdma
 
     private:
         IndexPool idxPool;
+
+        size_t local_remote_write_index_offset;
+        uintptr_t remote_addr_write_index;
+        size_t local_remote_read_index_offset;
+        uintptr_t remote_addr_read_index;
 
         int tcpConnect(uint32_t ip);
         int tcpWaitForConnection();

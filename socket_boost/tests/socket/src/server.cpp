@@ -89,6 +89,11 @@ int main(int argc, char *argv[])
                 perror("recv");
             break;
         }
+        else if (n != BUFFER_SIZE_BYTES)
+        {
+            cerr << "Received less data than expected: " << n << " bytes\n";
+            break;
+        }
 
         tot_bytes += static_cast<uint64_t>(n);
         quantity_of_data_to_rx -= static_cast<uint64_t>(n);
@@ -99,6 +104,9 @@ int main(int argc, char *argv[])
         {
             is_first = false;
             std::cerr << "Data mismatch: expected " << counter << ", got " << counter_test << "\n";
+            close(client_fd);
+            delete[] buf;
+            return 1;
         }
         ++counter;
 

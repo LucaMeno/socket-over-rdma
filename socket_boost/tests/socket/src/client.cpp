@@ -36,6 +36,29 @@ struct retErr send_all(int socket, void *buffer, size_t length)
     return result;
 }
 
+int send_all_2(int socket, void *buffer, size_t length)
+{
+    size_t tot_sent = 0;
+    while (tot_sent < length)
+    {
+        ssize_t bytes = send(socket, (char *)buffer + tot_sent, length - tot_sent, 0);
+        if (bytes < 0)
+        {
+            cerr << "Errno: " << errno << "\n";
+            perror("send");
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            continue;
+        }
+        else if (bytes == 0)
+        {
+            std::cerr << "Connection closed by peer\n";
+            return 0; // connection closed
+        }
+        tot_sent += bytes;
+    }
+    return 1; // no error
+}
+
 int main(int argc, char *argv[])
 {
     if (argc != 2 && argc != 3)
@@ -87,7 +110,7 @@ int main(int argc, char *argv[])
     this_thread::sleep_for(chrono::seconds(1));
 
     char *buf = new char[BUFFER_SIZE_BYTES];
-    std::memset(buf, 'A', BUFFER_SIZE_BYTES);
+    std::memset(buf, 0, BUFFER_SIZE_BYTES);
 
     std::cout << "Sending " << gb_to_send << " GB…\n";
 
@@ -97,37 +120,24 @@ int main(int argc, char *argv[])
     uint64_t counter = 0;
     uint64_t remaining = total_bytes;
 
-    uint64_t remaining_bytes = BUFFER_SIZE_BYTES;
     while (remaining > 0)
     {
         memcpy(buf, &counter, sizeof(counter));
 
-        struct retErr n = send_all(sock, buf, remaining_bytes);
-
-        if (n.err < 0)
-        {
-            cerr << "Errno: " << errno << "\n";
-            perror("send");
-            remaining_bytes -= n.writtenUpToNow;
-            std::this_thread::sleep_for(std::chrono::seconds(5));
-            continue;
-        }
-        else if (n.err == 0)
+        int n = send_all_2(sock, buf, BUFFER_SIZE_BYTES);
+        
+        if (n == 0)
         {
             std::cerr << "Connection closed by peer\n";
             break;
         }
 
-        ++counter;
-        remaining_bytes = BUFFER_SIZE_BYTES;
-
         sent_bytes += static_cast<uint64_t>(BUFFER_SIZE_BYTES);
         remaining -= static_cast<uint64_t>(BUFFER_SIZE_BYTES);
+        counter++;
 
         if (sent_bytes % (BYTES_PER_GB) == 0)
-        {
             cout << "Sent " << (sent_bytes / BYTES_PER_GB) << " GB so far\n";
-        }
     }
 
     std::cout << "Tx ended, waiting for ACK…\n";
