@@ -389,7 +389,6 @@ namespace rdmaMng
 
     void RdmaMng::readThreadWorker(rdma::RdmaContext &ctx, uint32_t start_read_index, uint32_t end_read_index)
     {
-        cerr << "NO!!" << endl;
         try
         {
             unique_lock<mutex> read_lock(ctx.mtx_rx_read);
@@ -399,7 +398,8 @@ namespace rdmaMng
 
             // COMMIT the read index
             unique_lock<mutex> commit_lock(ctx.mtx_rx_commit);
-            ctx.buffer_to_read->remote_read_index.store(end_read_index);
+            ctx.buffer_to_read->remote_read_index.store(end_read_index, memory_order_release);
+
             ctx.cond_rx_read.notify_all();
 
             read_lock.unlock();
