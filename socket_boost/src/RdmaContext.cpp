@@ -558,6 +558,18 @@ namespace rdma
         remote_ip = 0;
         remote_addr = 0;
         remote_rkey = 0;
+
+        unique_lock<mutex> lock_tx(mtx_tx);
+        cond_tx.notify_all();
+        lock_tx.unlock();
+
+        unique_lock<mutex> lock_flush(mtx_commit_flush);
+        cond_commit_flush.notify_all();
+        lock_flush.unlock();
+
+        unique_lock<mutex> lock_rx(mtx_rx_read);
+        cond_rx_read.notify_all();
+        lock_rx.unlock();
     }
 
     void RdmaContext::sendNotification(CommunicationCode code)

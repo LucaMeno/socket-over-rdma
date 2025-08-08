@@ -47,7 +47,7 @@ namespace rdmaMng
 
     RdmaMng::~RdmaMng()
     {
-        stop_threads = true;
+        stop_threads.store(true, memory_order_release);
 
         for (auto &ctx : ctxs)
             ctx->stop.store(true);
@@ -394,6 +394,10 @@ namespace rdmaMng
             unique_lock<mutex> read_lock(ctx.mtx_rx_read);
             ctx.cond_rx_read.wait(read_lock, [&ctx, start_read_index, &stop_threads = this->stop_threads]()
                                   { return ctx.buffer_to_read->remote_read_index.load() == start_read_index || stop_threads.load(); });
+
+            if (stop_threads.load())
+                return; // Exit if stop_threads is set
+
             ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index);
 
             // COMMIT the read index
