@@ -989,21 +989,13 @@ namespace rdma
     void RdmaContext::updateRemoteReadIndex(uint32_t r_idx)
     {
         // COMMIT the read index
-        buffer_to_read->remote_read_index.store(r_idx);
-        atomic_thread_fence(memory_order_release);
+        // buffer_to_read->remote_read_index.store(r_idx);
+        // atomic_thread_fence(memory_order_release);
 
-        try
-        {
-            executeWrNow(remote_addr_read_index,
-                         (uintptr_t)(buffer + local_remote_read_index_offset),
-                         sizeof(buffer_to_read->remote_read_index),
-                         true);
-        }
-        catch (const std::exception &e)
-        {
-            cout << "updateRemoteReadIndex" << endl;
-            throw; // rethrow the exception to be handled by the caller
-        }
+        executeWrNow(remote_addr_read_index,
+                     (uintptr_t)(buffer + local_remote_read_index_offset),
+                     sizeof(buffer_to_read->remote_read_index),
+                     true);
     }
 
     void RdmaContext::readMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index)
