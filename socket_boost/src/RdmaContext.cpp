@@ -7,9 +7,6 @@ namespace rdma
 {
     int COUNT = 0; // for debugging
 
-    uint32_t MSG_COUNT_TX = 0;
-    uint32_t MSG_COUNT_RX = 0;
-
     conn_info RdmaContext::rdmaSetupPreHs()
     {
         srand48(getpid());
@@ -524,6 +521,10 @@ namespace rdma
         last_flush_ms = 0;
         remote_ip = 0;
         msg_counter.store(0);
+
+        for (uint32_t i = 0; i < Config::WORK_REQUEST_POOL_SIZE; i++)
+            if (!wr_available_idx_queue.push(i))
+                throw std::runtime_error("Work request pool is exhausted");
     }
 
     RdmaContext::~RdmaContext()
@@ -608,21 +609,37 @@ namespace rdma
 
     inline void RdmaContext::enqueueWr(uint32_t start_idx, uint32_t end_idx, size_t data_size)
     {
-        uint32_t w_idx = RING_IDX(end_idx);   // local write index
-        uint32_t r_idx = RING_IDX(start_idx); // remote read index
+        uint32_t idx;
+        bool p = false;
+        while (!wr_available_idx_queue.pop(idx))
+        {
+            if (!p)
+            {
+                cout << "No available work request indices, waiting..." << endl;
+                p = true;
+            }
+            this_thread::yield(); // backoff
+            if (stop.load() == true)
+            {
+                cout << "Stopping readMsgFromSk due to stop signal" << endl;
+                break;
+            }
+        }
+
+        uint32_t r_idx = RING_IDX(start_idx);
 
         uintptr_t batch_start = (uintptr_t)&buffer_to_write->data[r_idx];
         uintptr_t remote_addr_2 = remote_addr +
                                   ((uintptr_t)batch_start - (uintptr_t)buffer); // offset
 
-        WorkRequest wr = createWr(remote_addr_2, batch_start, data_size, false); // create the work request
-        wr.pre_idx = start_idx;                                                  // set the pre-write index
-        wr.new_idx = end_idx;                                                    // set the new write index
+        WorkRequest *wr = createWrAtIdx(remote_addr_2, batch_start, data_size, idx, false);
+        wr->pre_idx = start_idx;
+        wr->new_idx = end_idx;
 
-        // access the critical section and push the work request to the queue
-        unique_lock<mutex> lock(mtx_wrs);
-        work_reqs.push(wr);
-        lock.unlock();
+        if (!wr_busy_idx_queue.push(idx))
+            throw runtime_error("Failed to push index to wr_busy_idx_queue");
+
+        msg_counter.fetch_add(1, std::memory_order_relaxed);
     }
 
     inline WorkRequest RdmaContext::createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled)
@@ -643,6 +660,28 @@ namespace rdma
         wr.wr.send_flags = 0;
         if (signaled)
             wr.wr.send_flags |= IBV_SEND_SIGNALED;
+
+        return wr;
+    }
+
+    inline WorkRequest *RdmaContext::createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, uint32_t idx, bool signaled)
+    {
+        WorkRequest *wr = &wr_pool[idx];
+
+        wr->sge.addr = local_addr;      // Local address of the buffer
+        wr->sge.length = size_to_write; // Size of the data to write
+        wr->sge.lkey = mr->lkey;        // Local key from registered memory region
+
+        wr->wr.wr_id = 0; // Set to 0 for simplicity
+        wr->wr.sg_list = &wr->sge;
+        wr->wr.num_sge = 1;
+        wr->wr.opcode = IBV_WR_RDMA_WRITE;
+        wr->wr.next = nullptr;
+        wr->wr.wr.rdma.remote_addr = remote_addr; // Remote address to write to
+        wr->wr.wr.rdma.rkey = remote_rkey;        // Remote key
+        wr->wr.send_flags = 0;
+        if (signaled)
+            wr->wr.send_flags |= IBV_SEND_SIGNALED;
 
         return wr;
     }
@@ -696,64 +735,66 @@ namespace rdma
 
     void RdmaContext::flushWrQueue()
     {
-        vector<ibv_send_wr> wrs;
-        vector<ibv_sge> sges;
-        wrs.reserve(Config::MAX_WR_PER_POST);  // Reserve space for the maximum number of WRs per post
-        sges.reserve(Config::MAX_WR_PER_POST); // Reserve space for the maximum number of SGEs
-
-        // acquire the lock and get some work requests to be flushed
         unique_lock<mutex> lock(mtx_wrs);
 
-        if (work_reqs.empty())
-            return; // nothing to flush
+        vector<WorkRequest *> wr_batch;
+        wr_batch.reserve(Config::MAX_WR_PER_POST);
 
-        uint32_t end_index = 0;
-        uint32_t start_index = work_reqs.front().pre_idx; // Get the pre-write index from the first work request
-        WorkRequest wr = {};
+        vector<uint32_t> indexes;
+        indexes.reserve(Config::MAX_WR_PER_POST);
 
-        size_t size = min(Config::MAX_WR_PER_POST, work_reqs.size());
-
-        for (int i = 0; i < size; i++)
+        uint32_t idx = 0;
+        WorkRequest *wr;
+        int j = 0;
+        while (true)
         {
-            wr = work_reqs.front();
-            work_reqs.pop();
-            wrs.push_back(wr.wr);
-            sges.push_back(wr.sge);
+            if (j >= Config::MAX_WR_PER_POST)
+                break;
+
+            if (!wr_busy_idx_queue.pop(idx))
+                break;
+
+            wr = &wr_pool[idx];
+            wr_batch.push_back(wr);
+            indexes.push_back(idx);
+
+            j++;
         }
 
-        end_index = wr.new_idx; // Get the new write index from the last work request
-        if (size != Config::MAX_WR_PER_POST)
-            cout << "Flushing " << size << " WR, " << "From: " << start_index << " To: " << end_index << endl;
+        // cout << "Flushing " << wr_batch.size() << " work requests" << endl;
+
         lock.unlock();
 
+        if (wr_batch.empty())
+            return; // nothing to flush
+
         // Prepare the work requests for posting
-        for (size_t i = 0; i + 1 < wrs.size(); ++i)
+        size_t i = 0;
+        for (; i + 1 < wr_batch.size(); ++i)
         {
-            wrs[i].sg_list = &sges[i]; // Link the SGE to the WR
-            wrs[i].next = &wrs[i + 1]; // Link the WRs together
+            wr_batch[i]->wr.sg_list = &wr_batch[i]->sge; // Link the SGE to the WR
+            wr_batch[i]->wr.next = &wr_batch[i + 1]->wr; // Link the WRs together
         }
-        wrs.back().sg_list = &sges.back();          // Link the last SGE to the last WR
-        wrs.back().next = nullptr;                  // Last WR does not have a next pointer
-        wrs.back().send_flags |= IBV_SEND_SIGNALED; // Set the last WR to be signaled
+        wr_batch[i]->wr.sg_list = &wr_batch[i]->sge;     // Link the SGE to the WR
+        wr_batch[i]->wr.next = nullptr;                  // Last WR does not have a next pointer
+        wr_batch[i]->wr.send_flags |= IBV_SEND_SIGNALED; // Set the last WR to be signaled
 
         auto guard = idxPool.getGuard();      // Get a guard for the index pool
         uint32_t qp_index = guard.getIndex(); // Get the index for the QP
 
         struct ibv_send_wr *bad_send_wr_data;
-        int ret = ibv_post_send(qps[qp_index], &wrs[0], &bad_send_wr_data);
+        int ret = ibv_post_send(qps[qp_index], &wr_batch[0]->wr, &bad_send_wr_data);
         if (ret != 0)
             throw runtime_error("Failed to post write - flushWrQueue - code: " + to_string(ret));
         pollCqSend(send_cqs[qp_index]);
         guard.releaseIndex(); // Release the index back to the pool
 
         // Update the remote write index
-        updateRemoteWriteIndex(start_index, end_index);
+        updateRemoteWriteIndex(wr_batch[0]->pre_idx, wr_batch.back()->new_idx, indexes);
     }
 
     bool RdmaContext::shouldFlushWrQueue()
     {
-        std::lock_guard<std::mutex> lock(mtx_wrs);
-
         uint32_t n = msg_counter.load();
         uint32_t ft = flush_threshold.load();
 
@@ -762,14 +803,6 @@ namespace rdma
 
         msg_counter.store(0); // Reset the message counter after checking
         return true;          // Enough messages to flush
-
-        /* if (!work_reqs.empty() &&
-             work_reqs.size() >= flush_threshold.load())
-         {
-             can_flush = false;
-             return true; // There are enough work requests to flush
-         }
-         return false; // Not enough work requests to flush*/
     }
 
     int RdmaContext::writeMsg(int src_fd, struct sock_id original_socket)
@@ -778,66 +811,64 @@ namespace rdma
 
         unique_lock<mutex> lock(mtx_tx);
 
-        // while there are data to read, keep reading
+        // Wait until there is space in the ring buffer
         while (true)
         {
-            // Wait until there is space in the ring buffer
-            while (true)
+            start_w_index = buffer_to_write->local_write_index;
+            end_w_index = buffer_to_write->remote_read_index.load();
+
+            uint32_t used = start_w_index - end_w_index; // wrap-around safe
+            available_space = Config::MAX_MSG_BUFFER - used - 1;
+
+            if (available_space >= 1)
+                break;
+
+            COUNT++;
+
+            if (COUNT % 1 == 0)
             {
-                start_w_index = buffer_to_write->local_write_index;
-                end_w_index = buffer_to_write->remote_read_index.load();
+                this_thread::yield(); // backoff
 
-                uint32_t used = start_w_index - end_w_index; // wrap-around safe
-                available_space = Config::MAX_MSG_BUFFER - used - 1;
+                /*struct timespec ts;
+                ts.tv_sec = 0;
+                ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
+                nanosleep(&ts, nullptr);
 
-                if (available_space >= 1)
-                    break;
-
-                COUNT++;
-
-                if (COUNT % 1 == 0)
-                {
-                    struct timespec ts;
-                    ts.tv_sec = 0;
-                    ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
-                    nanosleep(&ts, nullptr);
-
-                    cout << "Waiting for space in the ringbuffer (" << COUNT << ")... "
-                         << "Used: " << used << ", Available: " << available_space
-                         << ", Start Index: " << start_w_index
-                         << ", End Index: " << end_w_index << endl;
-                }
-
-                if (stop.load() == true)
-                    throw runtime_error("Stopping writeMsg due to stop signal");
+                cout << "Waiting for space in the ringbuffer (" << COUNT << ")... "
+                     << "Used: " << used << ", Available: " << available_space
+                     << ", Start Index: " << start_w_index
+                     << ", End Index: " << end_w_index << endl;*/
             }
 
-            // write all possible messages in the buffer
-            while (available_space >= 1)
-            {
-                rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index)];
-
-                msg->msg_size = recv(src_fd, msg->msg, Config::MAX_PAYLOAD_SIZE, 0);
-
-                if ((int)msg->msg_size <= 0)
-                    return msg->msg_size;
-
-                msg->msg_flags = 0;
-                msg->original_sk_id = original_socket;
-                msg->number_of_slots = 1;
-
-                buffer_to_write->local_write_index += msg->number_of_slots;
-
-                enqueueWr(start_w_index,
-                          start_w_index + msg->number_of_slots,
-                          msg->msg_size + MSG_HEADER_SIZE);
-
-                available_space -= msg->number_of_slots;
-                start_w_index += msg->number_of_slots;
-
-                msg_counter.fetch_add(1, memory_order_release);
-            }
+            if (stop.load() == true)
+                throw runtime_error("Stopping writeMsg due to stop signal");
         }
+
+        // write all possible messages in the buffer
+        while (available_space >= 1)
+        {
+            rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index)];
+
+            msg->msg_size = recv(src_fd, msg->msg, Config::MAX_PAYLOAD_SIZE, 0);
+
+            if ((int)msg->msg_size <= 0)
+                return msg->msg_size;
+
+            msg->msg_flags = 0;
+            msg->original_sk_id = original_socket;
+            msg->number_of_slots = 1;
+
+            buffer_to_write->local_write_index += msg->number_of_slots;
+
+            enqueueWr(start_w_index,
+                      start_w_index + msg->number_of_slots,
+                      msg->msg_size + MSG_HEADER_SIZE);
+
+            available_space -= msg->number_of_slots;
+            start_w_index += msg->number_of_slots;
+        }
+
+        return 1;
     }
 
     inline void RdmaContext::parseMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg)
@@ -909,7 +940,7 @@ namespace rdma
         }
     }
 
-    void RdmaContext::updateRemoteWriteIndex(uint32_t pre_index, uint32_t new_index)
+    void RdmaContext::updateRemoteWriteIndex(uint32_t pre_index, uint32_t new_index, const std::vector<uint32_t> &indexes)
     {
         // Critical region to update the write index
         std::unique_lock<std::mutex> lock(mtx_commit_flush);
@@ -920,6 +951,10 @@ namespace rdma
 
         if (stop.load() == true)
             throw runtime_error("Stopping updateRemoteWriteIndex due to stop signal");
+
+        for (int i = 0; i < indexes.size(); i++)
+            if (!wr_available_idx_queue.push(indexes[i]))
+                throw std::runtime_error("Failed to push index to wr_available_idx_queue");
 
         buffer_to_write->remote_write_index.store(new_index, memory_order_release);
 
@@ -1153,109 +1188,5 @@ if ((flags & static_cast<unsigned int>(RingBufferFlag::RING_BUFFER_POLLING)) == 
     {
         // If the last notification was sent more than Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS ago
         sendDataReady();
-    }
-}*/
-
-/*void RdmaContext::copyMsgIntoSharedBuff()
-{
-    uint32_t start_w_index, end_w_index, available_space;
-
-    // while there are data to read, keep reading
-    while (stop.load() == false)
-    {
-        // Wait until there is space in the ring buffer
-        while (true)
-        {
-            start_w_index = buffer_to_write->local_write_index;
-            end_w_index = buffer_to_write->remote_write_index.load();
-
-            uint32_t used = start_w_index - end_w_index; // wrap-around safe
-            available_space = Config::MAX_MSG_BUFFER - used - 1;
-
-            if (available_space >= 1)
-                break;
-
-            COUNT++;
-
-            if (COUNT % 1 == 0)
-            {
-                struct timespec ts;
-                ts.tv_sec = 0;
-                ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
-                nanosleep(&ts, nullptr);
-
-                cout << "Waiting for space in the ringbuffer (" << COUNT << ")... "
-                     << "Used: " << used << ", Available: " << available_space
-                     << ", Start Index: " << start_w_index
-                     << ", End Index: " << end_w_index << endl;
-            }
-
-            if (stop.load() == true)
-                throw runtime_error("Stopping writeMsg due to stop signal");
-        }
-
-        // write all possible messages in the buffer
-        while (available_space >= 1)
-        {
-            rdma_msg_t *msg_dest = &buffer_to_write->data[RING_IDX(start_w_index)];
-            rdma_msg_t *msg_src = nullptr;
-
-            if (!msg_queue.pop(msg_src))
-            {
-                // cout << "No messages in the queue, waiting..." << endl;
-                break; // if the queue is empty, break
-            }
-
-            memcpy(msg_dest, msg_src, sizeof(rdma_msg_t));
-            atomic_thread_fence(memory_order_release);
-
-            buffer_to_write->local_write_index += msg_src->number_of_slots;
-
-            enqueueWr(start_w_index,
-                      start_w_index + msg_src->number_of_slots,
-                      sizeof(rdma_msg_t));
-
-            available_space -= msg_src->number_of_slots;
-            start_w_index += msg_src->number_of_slots;
-        }
-    }
-}
-
-int RdmaContext::readMsgFromSk(int src_fd, struct sock_id original_socket)
-{
-    // unique_lock<mutex> lock(mtx_tx);
-    while (true)
-    {
-        int idx = msg_pool_index.fetch_add(1);
-        idx = (idx & (Config::WRITE_QUEUE_CAPACITY - 1)); // wrap-around safe
-        rdma_msg_t *msg = &msg_pool[idx];
-
-        int received = recv(src_fd, msg->msg, Config::MAX_PAYLOAD_SIZE, 0);
-
-        if (received <= 0)
-            return received;
-
-        msg->msg_flags = 0;
-        msg->original_sk_id = original_socket;
-        msg->number_of_slots = 1;
-        msg->msg_size = received;
-
-        bool p = false;
-
-        while (!msg_queue.push(msg))
-        {
-            if (!p)
-            {
-                cout << "Message queue is full, waiting Msg: size: " << msg->msg_size << endl;
-                p = true;
-            }
-
-            this_thread::yield(); // backoff
-            if (stop.load() == true)
-            {
-                cout << "Stopping readMsgFromSk due to stop signal" << endl;
-                return -1; // stop the reading
-            }
-        }
     }
 }*/

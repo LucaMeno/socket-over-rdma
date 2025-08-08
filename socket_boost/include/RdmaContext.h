@@ -109,10 +109,11 @@ namespace rdma
 
     class RdmaContext
     {
+
     public:
-        boost::lockfree::queue<rdma_msg_t *, boost::lockfree::capacity<Config::WRITE_QUEUE_CAPACITY>> msg_queue;
-        rdma_msg_t msg_pool[Config::WRITE_QUEUE_CAPACITY];
-        std::atomic<int> msg_pool_index{0};
+        boost::lockfree::queue<uint32_t, boost::lockfree::capacity<Config::WORK_REQUEST_POOL_SIZE>> wr_busy_idx_queue;
+        boost::lockfree::queue<uint32_t, boost::lockfree::capacity<Config::WORK_REQUEST_POOL_SIZE>> wr_available_idx_queue;
+        WorkRequest wr_pool[Config::WORK_REQUEST_POOL_SIZE];
 
         ibv_context *ctx;
         ibv_pd *pd;
@@ -200,18 +201,19 @@ namespace rdma
         void sendNotification(CommunicationCode code);
         void pollCqSend(ibv_cq *send_cq_to_poll);
         void parseMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg);
-        // void postWriteOp(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
         void sendDataReady();
         conn_info rdmaSetupPreHs();
         void rdmaSetupPostHs(conn_info remote, conn_info local);
         void showDevices();
-        void updateRemoteWriteIndex(uint32_t pre_index, uint32_t new_index);
+        void updateRemoteWriteIndex(uint32_t pre_index, uint32_t new_index, const std::vector<uint32_t>& indexes);
 
         void enqueueWr(uint32_t start_idx, uint32_t end_idx, size_t data_size);
         void executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
         void executeWrNow(WorkRequest wr, bool signaled);
 
         WorkRequest createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
+
+        WorkRequest *createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, uint32_t idx, bool signaled);
     };
 
 } // namespace rdma

@@ -37,11 +37,11 @@ public:
     inline static const int MAX_PAYLOAD_SIZE = (128 * 1024);                  // 64 KB
     inline static const int QP_N = 8;                                        // Number of QPs
     inline static const int DEFAULT_QP_IDX = 0;                              // Default QP index
-    inline static const size_t MAX_WR_PER_POST = 64;                        // Maximum number of work requests in a single post (wr per flight)
+    inline static const size_t MAX_WR_PER_POST = 128;                        // Maximum number of work requests in a single post (wr per flight)
     inline static const uint32_t TIME_BTW_DATA_READY_NOTIFICATIONS_MS = 500; // 500 ms
     inline static const int THRESHOLD_NOT_AUTOSCALER = MAX_WR_PER_POST;      // Threshold for flushing messages
 
-    inline static const int WRITE_QUEUE_CAPACITY = 1024; // Capacity of the write queue POWER OF 2!!!!!!!!!!!
+    inline static const int WORK_REQUEST_POOL_SIZE = 1024; // Capacity of the write queue POWER OF 2!!!!!!!!!!!
 
     // RDMA manager
     inline static const int N_WRITER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket
