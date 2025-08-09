@@ -46,34 +46,64 @@ namespace rdmaMng
         static int wrapper(void *ctx, void *data, size_t len)
         {
             auto *self = static_cast<RdmaMng *>(ctx);
-            return self->onNewSocket(data, len);
+            return self->bpfEventHandler(data, len);
         }
 
-        int onNewSocket(void *data, size_t len)
+        int bpfEventHandler(void *data, size_t len)
         {
             struct userspace_data_t *user_data = (struct userspace_data_t *)data;
 
-            // start the RDMA connection
-            // only the client start the connection
-            int proxy_fd = -1;
-            if (user_data->sockops_op == BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB)
+            // Lambda for logging
+            auto logSocketEvent = [this](const std::string &prefix,
+                                         struct sock_id &app,
+                                         struct sock_id &proxy,
+                                         const std::string &role,
+                                         int fd)
+            {
+                std::cout << prefix << " "
+                          << sk_ctx.get_printable_sockid(&app) << " <-> "
+                          << sk_ctx.get_printable_sockid(&proxy) << " - "
+                          << role << " - fd: " << fd
+                          << std::endl;
+            };
+
+            switch (user_data->event_type)
+            {
+            case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
             {
                 int ret;
-                proxy_fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
+                int proxy_fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
                 connect(user_data->association.app, proxy_fd);
-            }
 
-            std::cout << "New : ["
-                      << user_data->association.app.sip << ":"
-                      << user_data->association.app.sport << " -> "
-                      << user_data->association.app.dip << ":"
-                      << user_data->association.app.dport << "] <-> ["
-                      << user_data->association.proxy.sip << ":"
-                      << user_data->association.proxy.sport << " -> "
-                      << user_data->association.proxy.dip << ":"
-                      << user_data->association.proxy.dport << "] - fd: "
-                      << proxy_fd << (proxy_fd < 0 ? " SERVER" : " CLIENT")
-                      << std::endl;
+                logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "CLIENT", proxy_fd);
+
+                break;
+            }
+            case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
+            {
+                logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "SERVER", -1);
+                // server side, do not connect the RDMA context
+                break;
+            }
+            case REMOVE_SOCKET:
+            {
+                int ret;
+                int proxy_fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
+                connect(user_data->association.app, proxy_fd);
+
+                remove_fd.store(true, std::memory_order_release);
+                {
+                    std::unique_lock<std::mutex> lock(mtx_fd_removal);
+                    fd_to_remove.push_back(proxy_fd);
+                }
+
+                logSocketEvent("REMOVE", user_data->association.app, user_data->association.proxy, "ND", proxy_fd);
+                break;
+            }
+            default:
+                std::cerr << "Unknown event type: " << user_data->event_type << std::endl;
+                return -1; // Unknown event type
+            }
 
             return 0;
         }
@@ -94,8 +124,12 @@ namespace rdmaMng
         bool is_polling_thread_running;                       // flag to indicate if the polling thread is running
         std::atomic<bool> stop_threads;                       // flag to stop the threads
 
+        std::mutex mtx_fd_removal;
+        std::vector<int> fd_to_remove;
+        std::atomic<bool> remove_fd;
+
         // Background thread functions
-        void launchBackbroundThread();
+        void launchBackgroundThreads();
         void listenThread();
         void serverThread();
         void pollingThread();
@@ -118,5 +152,4 @@ namespace rdmaMng
 
         WriterThreadData populateWriterThreadData(std::vector<sk::client_sk_t> &sockets, int fd);
     };
-
 }

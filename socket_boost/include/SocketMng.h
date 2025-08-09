@@ -36,6 +36,8 @@ namespace sk
         void init(uint16_t port, uint32_t ip);
         int getProxyFdFromSockid(struct sock_id sk_id);
 
+        const char *get_printable_sockid(struct sock_id *sockid) const;
+
     private:
         int shared = 0;
         std::mutex mutex;

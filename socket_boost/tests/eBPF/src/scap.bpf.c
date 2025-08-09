@@ -240,7 +240,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		// copy the socket id to the ring buffer
 		userdata_ptr->association.app = sk_association_app.app;
 		userdata_ptr->association.proxy = sk_association_proxy.proxy;
-		userdata_ptr->sockops_op = op;
+		userdata_ptr->event_type = op;
 
 		// submit the ring buffer
 		bpf_ringbuf_submit(userdata_ptr, 0);

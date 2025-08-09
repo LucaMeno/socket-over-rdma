@@ -205,7 +205,7 @@ namespace rdma
         conn_info rdmaSetupPreHs();
         void rdmaSetupPostHs(conn_info remote, conn_info local);
         void showDevices();
-        void updateRemoteWriteIndex(uint32_t pre_index, uint32_t new_index, const std::vector<uint32_t>& indexes);
+        void updateRemoteWriteIndex(uint32_t pre_index, uint32_t new_index, const std::vector<uint32_t> &indexes);
 
         void enqueueWr(uint32_t start_idx, uint32_t end_idx, size_t data_size);
         void executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);

@@ -175,7 +175,7 @@ namespace rdmaMng
 
                 ctxs.push_back(std::move(ctx));
 
-                launchBackbroundThread();
+                launchBackgroundThreads();
             }
         }
         catch (const std::exception &e)
@@ -259,6 +259,37 @@ namespace rdmaMng
                     if (errno == EINTR)
                         break;
                     throw std::runtime_error("epoll_wait failed");
+                }
+
+                if (stop_threads.load())
+                    break;
+
+                if (remove_fd.load(std::memory_order_acquire))
+                {
+                    std::unique_lock<std::mutex> lock(mtx_fd_removal);
+
+                    for (auto it_fd = fd_to_remove.begin(); it_fd != fd_to_remove.end();)
+                    {
+                        int fd = *it_fd;
+
+                        auto it = writer_map.find(fd);
+                        if (it != writer_map.end())
+                        {
+                            writer_map.erase(it);
+                            cout << "Removed fd " << fd << " from writer_map" << endl;
+
+                            // Remove FD from list since it was processed
+                            it_fd = fd_to_remove.erase(it_fd);
+                        }
+                        else
+                        {
+                            // Keep FD in list if it’s not in writer_map yet
+                            ++it_fd;
+                        }
+                    }
+
+                    if (fd_to_remove.empty())
+                        remove_fd.store(false, std::memory_order_release);
                 }
 
                 for (int i = 0; i < nfds; ++i)
@@ -429,7 +460,7 @@ namespace rdmaMng
         }
     }
 
-    void RdmaMng::launchBackbroundThread()
+    void RdmaMng::launchBackgroundThreads()
     {
         // launch the copy thread worker
         thPool->enqueue(&RdmaMng::copyThreadWorker, this, std::ref(*ctxs.back()));
@@ -461,7 +492,7 @@ namespace rdmaMng
 
             ctx->clientConnect(original_socket.dip, rdma_port);
 
-            launchBackbroundThread();
+            launchBackgroundThreads();
         }
     }
 

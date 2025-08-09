@@ -4,6 +4,8 @@
 
 // #include "vmlinux.h"
 
+#define REMOVE_SOCKET 99
+
 typedef uint32_t __u32;
 typedef uint16_t __u16;
 
@@ -27,7 +29,7 @@ struct association_t
 struct userspace_data_t
 {
 	struct association_t association;
-	int sockops_op;
+	int event_type;
 };
 
 #endif // COMMON_H

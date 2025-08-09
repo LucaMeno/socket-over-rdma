@@ -235,7 +235,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 		// copy the socket id to the ring buffer
 		userdata_ptr->association.app = sk_association_app.app;
 		userdata_ptr->association.proxy = sk_association_proxy.proxy;
-		userdata_ptr->sockops_op = op;
+		userdata_ptr->event_type = op;
 
 		// submit the ring buffer
 		bpf_ringbuf_submit(userdata_ptr, 0);
@@ -273,7 +273,7 @@ int sk_msg_prog(struct sk_msg_md *msg)
 	if (msg->family != AF_INET)
 	{
 		bpf_printk("Not IPv4 family, family: %d", msg->family);
-		//return SK_PASS;
+		// return SK_PASS;
 	}
 
 	int k = 0; // Key for retrieving the server port
@@ -401,6 +401,23 @@ int tcp_destroy_sock_prog(struct trace_event_raw_tcp_event_sk *ctx)
 
 	// the socket is not removed from the intercepted_sockets map
 	// because it will be automatically removed when the socket is closed
+
+	// Notify the user space about the socket closing
+	struct userspace_data_t *userdata_ptr = bpf_ringbuf_reserve(&new_sk, sizeof(struct userspace_data_t), 0);
+
+	if (!userdata_ptr)
+	{
+		bpf_printk("Error on reserve ring buffer - tcpdestroy");
+		return 0;
+	}
+
+	// copy the socket id to the ring buffer
+	userdata_ptr->association.app = sk_association_app.app;
+	userdata_ptr->association.proxy = sk_association_proxy->proxy;
+	userdata_ptr->event_type = REMOVE_SOCKET;
+
+	// submit the ring buffer
+	bpf_ringbuf_submit(userdata_ptr, 0);
 
 #ifdef EBPF_DEBUG_SOCKET
 	bpf_printk("Free sk: [SRC: %u:%u, DST: %u:%u]",

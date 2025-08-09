@@ -27,7 +27,7 @@ struct association_t
 struct userspace_data_t
 {
 	struct association_t association;
-	int sockops_op;
+	int event_type;
 };
 
 #endif // COMMON_H
