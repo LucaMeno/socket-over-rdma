@@ -151,9 +151,8 @@ namespace rdmaMng
         void writerThread(std::vector<sk::client_sk_t> sk_to_monitor);
 
         // Thread worker functions (pool)
-        void flushThreadWorker(rdma::RdmaContext &ctx);
+        void flushThreadWorker(rdma::RdmaContext &ctx, bool updateRemoteIndex);
         void readThreadWorker(rdma::RdmaContext &ctx, uint32_t start_read_index, uint32_t end_read_index);
-        void copyThreadWorker(rdma::RdmaContext &ctx);
 
         // Utils
         int getFreeContextId();

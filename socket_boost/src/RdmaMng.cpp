@@ -317,20 +317,6 @@ namespace rdmaMng
         }
     }
 
-    void RdmaMng::copyThreadWorker(rdma::RdmaContext &ctx)
-    {
-        try
-        {
-            // ctx.copyMsgIntoSharedBuff(); // Copy messages into the shared buffer
-        }
-        catch (const std::exception &e)
-        {
-            cerr << "Exception in copyThreadWorker: " << e.what() << endl;
-            perror("Details");
-            throw; // Re-throw the exception to be handled by the caller
-        }
-    }
-
     void RdmaMng::pollingThread()
     {
         try
@@ -473,11 +459,13 @@ namespace rdmaMng
         }
     }
 
-    void RdmaMng::flushThreadWorker(rdma::RdmaContext &ctx)
+    void RdmaMng::flushThreadWorker(rdma::RdmaContext &ctx, bool updateRemoteIndex)
     {
         try
         {
             ctx.flushWrQueue(); // Flush the work requests queue
+            if (updateRemoteIndex)
+                ctx.updateRemoteWriteIndex();
         }
         catch (const std::exception &e)
         {
@@ -488,9 +476,6 @@ namespace rdmaMng
 
     void RdmaMng::launchBackgroundThreads()
     {
-        // launch the copy thread worker
-        thPool->enqueue(&RdmaMng::copyThreadWorker, this, std::ref(*ctxs.back()));
-
         if (notification_thread.joinable())
         {
             return; // If the notification thread is already running, do not start it again
@@ -675,38 +660,34 @@ namespace rdmaMng
             {
                 auto &ctx = **ctxIt;
                 if (ctx.is_ready.load() == false)
-                {
-                    // context is not ready, skip it
-                    continue;
-                }
+                    continue; // context is not ready, skip it
 
                 uint64_t now = ctx.getTimeMS();
 
-                if (ctx.shouldFlushWrQueue() ||
-                    (now - ctx.last_flush_ms >= Config::FLUSH_INTERVAL_MS))
+                if (ctx.shouldFlushWrQueue())
                 {
                     ctx.last_flush_ms = now;
-                    thPool->enqueue([this, &ctx]()
-                                    { flushThreadWorker(ctx); });
-                    break;
-                }
+                    ctx.number_of_flushes++;
 
-                /*if (ctx.shouldFlushWrQueue())
-                {
-                    cout << "SF" << endl;
-                    ctx.last_flush_ms = now;
-                    thPool->enqueue([this, &ctx]()
-                                    { flushThreadWorker(ctx); });
+                    bool updateIndex = false;
+                    if (ctx.number_of_flushes >= Config::N_OF_FLUSHES_BEFORE_UPDATE_INDEX)
+                    {
+                        updateIndex = true;
+                        ctx.number_of_flushes = 0;
+                    }
+
+                    thPool->enqueue([this, &ctx, updateIndex]()
+                                    { flushThreadWorker(ctx, updateIndex); });
                     break;
                 }
                 else if (now - ctx.last_flush_ms >= Config::FLUSH_INTERVAL_MS)
                 {
-                    cout << "TIME" << endl;
                     ctx.last_flush_ms = now;
+                    ctx.number_of_flushes = 0;
                     thPool->enqueue([this, &ctx]()
-                                    { flushThreadWorker(ctx); });
+                                    { flushThreadWorker(ctx, true); });
                     break;
-                }*/
+                }
             }
         }
 

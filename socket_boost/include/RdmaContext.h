@@ -145,6 +145,7 @@ namespace rdma
 
         uint64_t last_flush_ms;                    // last time the buffer was flushed, used to avoid flushing too often
         std::mutex mtx_commit_flush;               // used to commit the flush operation
+        uint32_t number_of_flushes;                // number of flushes done
         std::condition_variable cond_commit_flush; // used to signal the flush operation is committed
         std::atomic<uint32_t> flush_threshold;
 
@@ -173,7 +174,7 @@ namespace rdma
         int writeMsg(int src_fd, struct sock_id original_socket);
         // void copyMsgIntoSharedBuff();
 
-        int readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index, std::function<void(std::unordered_map<sock_id_t, int>&)> removeClosedSocket);
+        int readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index, std::function<void(std::unordered_map<sock_id_t, int> &)> removeClosedSocket);
         void updateRemoteReadIndex(uint32_t r_idx);
 
         void setPollingStatus(uint32_t is_polling);
@@ -184,6 +185,7 @@ namespace rdma
         void waitForContextToBeReady();
 
         void flushWrQueue();
+        void updateRemoteWriteIndex();
         bool shouldFlushWrQueue();
 
     private:
@@ -205,8 +207,6 @@ namespace rdma
         conn_info rdmaSetupPreHs();
         void rdmaSetupPostHs(conn_info remote, conn_info local);
         void showDevices();
-        void updateRemoteWriteIndex(uint32_t pre_index, uint32_t new_index, const std::vector<uint32_t> &indexes);
-
         void enqueueWr(uint32_t start_idx, uint32_t end_idx, size_t data_size);
         void executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
         void executeWrNow(WorkRequest wr, bool signaled);

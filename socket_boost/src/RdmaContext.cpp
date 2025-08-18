@@ -521,6 +521,7 @@ namespace rdma
         last_flush_ms = 0;
         remote_ip = 0;
         msg_counter.store(0);
+        number_of_flushes = 0;
 
         for (uint32_t i = 0; i < Config::WORK_REQUEST_POOL_SIZE; i++)
             if (!wr_available_idx_queue.push(i))
@@ -801,8 +802,21 @@ namespace rdma
         pollCqSend(send_cqs[qp_index]);
         guard.releaseIndex(); // Release the index back to the pool
 
-        // Update the remote write index
-        updateRemoteWriteIndex(wr_batch[0]->pre_idx, wr_batch.back()->new_idx, indexes);
+        for (int i = 0; i < indexes.size(); i++)
+            if (!wr_available_idx_queue.push(indexes[i]))
+                throw runtime_error("Failed to push index to wr_available_idx_queue");
+
+        // update remote index
+        while (true)
+        {
+            unique_lock<mutex> lock_flush(mtx_commit_flush);
+            if (buffer_to_write->remote_write_index.load() == wr_batch[0]->pre_idx)
+            {
+                buffer_to_write->remote_write_index.store(wr_batch.back()->new_idx);
+                break; // Successfully updated the remote write index
+            }
+            lock_flush.unlock(); // Release the lock to avoid deadlock
+        }
     }
 
     bool RdmaContext::shouldFlushWrQueue()
@@ -837,15 +851,15 @@ namespace rdma
 
             COUNT++;
 
-            if (COUNT % 1000 == 0)
+            // this_thread::yield(); // backoff
+
+            struct timespec ts;
+            ts.tv_sec = 0;
+            ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
+            nanosleep(&ts, nullptr);
+
+            if (COUNT % 100 == 0)
             {
-                this_thread::yield(); // backoff
-
-                /*struct timespec ts;
-                ts.tv_sec = 0;
-                ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
-                nanosleep(&ts, nullptr);*/
-
                 cout << "Waiting for space in the ringbuffer (" << COUNT << ")... "
                      << "Used: " << used << ", Available: " << available_space
                      << ", Start Index: " << start_w_index
@@ -957,24 +971,12 @@ namespace rdma
         return 0;
     }
 
-    void RdmaContext::updateRemoteWriteIndex(uint32_t pre_index, uint32_t new_index, const std::vector<uint32_t> &indexes)
+    void RdmaContext::updateRemoteWriteIndex()
     {
-        // Critical region to update the write index
-        std::unique_lock<std::mutex> lock(mtx_commit_flush);
-
-        // Wait until the previous flush is committed
-        cond_commit_flush.wait(lock, [&]()
-                               { return buffer_to_write->remote_write_index.load() == pre_index || stop.load() == true; });
-
         if (stop.load() == true)
             throw runtime_error("Stopping updateRemoteWriteIndex due to stop signal");
 
-        for (int i = 0; i < indexes.size(); i++)
-            if (!wr_available_idx_queue.push(indexes[i]))
-                throw std::runtime_error("Failed to push index to wr_available_idx_queue");
-
-        buffer_to_write->remote_write_index.store(new_index, memory_order_release);
-
+        std::unique_lock<std::mutex> lock(mtx_commit_flush);
         try
         {
             executeWrNow(remote_addr_write_index,
