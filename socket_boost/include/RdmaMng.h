@@ -89,13 +89,23 @@ namespace rdmaMng
             {
                 int ret;
                 int proxy_fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
-                connect(user_data->association.app, proxy_fd);
 
-                remove_fd.store(true, std::memory_order_release);
                 {
-                    std::unique_lock<std::mutex> lock(mtx_fd_removal);
-                    fd_to_remove.push_back(proxy_fd);
+                    std::unique_lock<std::mutex> lock(mtx_sk_removal_tx);
+                    sk_to_remove_tx.push_back(proxy_fd);
                 }
+                remove_sk_tx.store(true, std::memory_order_release);
+
+                {
+                    std::unique_lock<std::mutex> lock(mtx_sk_removal_rx);
+                    struct sock_id swapped;
+                    swapped.sip = user_data->association.app.dip;
+                    swapped.dip = user_data->association.app.sip;
+                    swapped.dport = user_data->association.app.sport;
+                    swapped.sport = user_data->association.app.dport;
+                    sk_to_remove_rx.push_back(swapped);
+                }
+                remove_sk_rx.store(true, std::memory_order_release);
 
                 logSocketEvent("REMOVE", user_data->association.app, user_data->association.proxy, "ND", proxy_fd);
                 break;
@@ -124,9 +134,13 @@ namespace rdmaMng
         bool is_polling_thread_running;                       // flag to indicate if the polling thread is running
         std::atomic<bool> stop_threads;                       // flag to stop the threads
 
-        std::mutex mtx_fd_removal;
-        std::vector<int> fd_to_remove;
-        std::atomic<bool> remove_fd;
+        std::mutex mtx_sk_removal_tx;
+        std::vector<int> sk_to_remove_tx;
+        std::atomic<bool> remove_sk_tx;
+
+        std::mutex mtx_sk_removal_rx;
+        std::vector<struct sock_id> sk_to_remove_rx;
+        std::atomic<bool> remove_sk_rx;
 
         // Background thread functions
         void launchBackgroundThreads();

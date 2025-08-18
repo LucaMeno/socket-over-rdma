@@ -173,7 +173,7 @@ namespace rdma
         int writeMsg(int src_fd, struct sock_id original_socket);
         // void copyMsgIntoSharedBuff();
 
-        void readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index);
+        int readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index, std::function<void(std::unordered_map<sock_id_t, int>&)> removeClosedSocket);
         void updateRemoteReadIndex(uint32_t r_idx);
 
         void setPollingStatus(uint32_t is_polling);
@@ -200,7 +200,7 @@ namespace rdma
         uint32_t getPsn();
         void sendNotification(CommunicationCode code);
         void pollCqSend(ibv_cq *send_cq_to_poll);
-        void parseMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg);
+        int parseMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg);
         void sendDataReady();
         conn_info rdmaSetupPreHs();
         void rdmaSetupPostHs(conn_info remote, conn_info local);

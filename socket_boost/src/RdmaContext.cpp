@@ -837,19 +837,19 @@ namespace rdma
 
             COUNT++;
 
-            if (COUNT % 1 == 0)
+            if (COUNT % 1000 == 0)
             {
                 this_thread::yield(); // backoff
 
                 /*struct timespec ts;
                 ts.tv_sec = 0;
                 ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
-                nanosleep(&ts, nullptr);
+                nanosleep(&ts, nullptr);*/
 
                 cout << "Waiting for space in the ringbuffer (" << COUNT << ")... "
                      << "Used: " << used << ", Available: " << available_space
                      << ", Start Index: " << start_w_index
-                     << ", End Index: " << end_w_index << endl;*/
+                     << ", End Index: " << end_w_index << endl;
             }
 
             if (stop.load() == true)
@@ -883,7 +883,7 @@ namespace rdma
         return 1;
     }
 
-    inline void RdmaContext::parseMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg)
+    inline int RdmaContext::parseMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg)
     {
         // retrive the proxy_fd
         int fd;
@@ -929,11 +929,11 @@ namespace rdma
 
             if (i == Config::NUMBER_OF_SOCKETS)
             {
-                cout << "Socket not found in the list: "
+                cerr << "Socket not found in the list: "
                      << msg.original_sk_id.sip << ":" << msg.original_sk_id.sport
                      << " -> " << msg.original_sk_id.dip << ":" << msg.original_sk_id.dport
                      << endl;
-                throw runtime_error("Socket not found in the list - parseMsg");
+                return 1; // socket not found, cannot parse the message
             }
         }
 
@@ -944,12 +944,17 @@ namespace rdma
         {
             int size = send(fd, ptr, rem, 0);
             if (size <= 0)
-                throw runtime_error("Failed to send message - parseMsg: " + string(strerror(errno)));
+            {
+                cerr << "Failed to send message - parseMsg: " + string(strerror(errno)) << endl;
+                return 1;
+            }
             rem -= size;
             ptr += size;
             if (c++ > 1)
                 cout << "Warn - " << c << endl;
         }
+
+        return 0;
     }
 
     void RdmaContext::updateRemoteWriteIndex(uint32_t pre_index, uint32_t new_index, const std::vector<uint32_t> &indexes)
@@ -1010,18 +1015,20 @@ namespace rdma
                      true);
     }
 
-    void RdmaContext::readMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index)
+    int RdmaContext::readMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index, std::function<void(std::unordered_map<sock_id_t, int> &)> removeClosedSocket)
     {
+        removeClosedSocket(sockid_to_fd_map);
+
         if (!buffer_to_read)
             throw runtime_error("ringbuffer is nullptr - readMsg");
 
         if (start_read_index == end_read_index)
-            return; // nothing to read
+            return 0; // nothing to read
 
         uint32_t number_of_msg = (end_read_index + Config::MAX_MSG_BUFFER - start_read_index) % Config::MAX_MSG_BUFFER;
 
-        if (number_of_msg != Config::MAX_WR_PER_POST)
-            cout << "Reading " << number_of_msg << " - start: " << start_read_index << " - end: " << end_read_index << endl;
+        /*if (number_of_msg != Config::MAX_WR_PER_POST)
+            cout << "Reading " << number_of_msg << " - start: " << start_read_index << " - end: " << end_read_index << endl;*/
 
         start_read_index = RING_IDX(start_read_index);
         end_read_index = RING_IDX(end_read_index);
@@ -1031,15 +1038,21 @@ namespace rdma
         {
             int idx = RING_IDX(start_read_index + i);
             rdma_msg_t *msg = &buffer_to_read->data[idx];
-            parseMsg(bpf_ctx, client_sks, *msg);
+
+            int ret = parseMsg(bpf_ctx, client_sks, *msg);
+            if (ret != 0)
+                return ret;
+
             i += msg->number_of_slots;
 
             if (stop.load() == true)
             {
                 cout << "Stopping readMsg due to stop signal" << endl;
-                return; // stop the reading
+                return 0; // stop the reading
             }
         }
+
+        return 0;
     }
 
     void RdmaContext::setPollingStatus(uint32_t is_polling)

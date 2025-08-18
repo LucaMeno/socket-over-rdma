@@ -54,27 +54,24 @@ namespace rdmaMng
 
         if (server_thread.joinable())
         {
-            cout << "Waiting for server thread to finish... : ";
+            cout << "[Shutdown] Waiting for server thread to finish..." << endl;
             server_thread.join();
+            cout << "[Shutdown] Server thread joined" << endl;
         }
-
-        cout << "Server thread joined" << endl;
 
         for (auto &thread : writer_threads)
         {
             if (thread.joinable())
                 thread.join();
         }
-
-        cout << "Writer threads joined" << endl;
+        cout << "[Shutdown] Writer threads joined" << endl;
 
         if (notification_thread.joinable())
         {
-            cout << "Waiting for notification thread to finish... : ";
+            cout << "[Shutdown] Waiting for notification thread to finish..." << endl;
             notification_thread.join();
+            cout << "[Shutdown] Notification thread joined" << endl;
         }
-
-        cout << "Notification thread joined" << endl;
 
         if (is_polling_thread_running == false)
         {
@@ -85,28 +82,26 @@ namespace rdmaMng
 
         if (polling_thread.joinable())
         {
-            cout << "Waiting for polling thread to finish... : ";
+            cout << "[Shutdown] Waiting for polling thread to finish..." << endl;
             polling_thread.join();
+            cout << "[Shutdown] Polling thread joined" << endl;
         }
-
-        cout << "Polling thread joined" << endl;
 
         if (flush_thread.joinable())
         {
-            cout << "Waiting for flush thread to finish... : ";
+            cout << "[Shutdown] Waiting for flush thread to finish..." << endl;
             flush_thread.join();
+            cout << "[Shutdown] Flush thread joined" << endl;
         }
 
-        cout << "Flush thread joined" << endl;
-
         // Cleanup RDMA contexts
-        cout << "Clearing RDMA contexts... : ";
+        cout << "[Cleanup ] Clearing RDMA contexts..." << endl;
         ctxs.clear();
-        cout << "RDMA contexts cleared" << endl;
+        cout << "[Cleanup ] RDMA contexts cleared" << endl;
 
-        cout << "Destroying thread pool... : ";
+        cout << "[Cleanup ] Destroying thread pool..." << endl;
         thPool->destroy();
-        cout << "Thread pool destroyed" << endl;
+        cout << "[Cleanup ] Thread pool destroyed" << endl;
 
         // bpf and socket managers cleanup are handled in their destructors automatically
     }
@@ -264,11 +259,11 @@ namespace rdmaMng
                 if (stop_threads.load())
                     break;
 
-                if (remove_fd.load(std::memory_order_acquire))
+                if (remove_sk_tx.load(std::memory_order_acquire))
                 {
-                    std::unique_lock<std::mutex> lock(mtx_fd_removal);
+                    std::unique_lock<std::mutex> lock(mtx_sk_removal_tx);
 
-                    for (auto it_fd = fd_to_remove.begin(); it_fd != fd_to_remove.end();)
+                    for (auto it_fd = sk_to_remove_tx.begin(); it_fd != sk_to_remove_tx.end();)
                     {
                         int fd = *it_fd;
 
@@ -279,7 +274,7 @@ namespace rdmaMng
                             cout << "Removed fd " << fd << " from writer_map" << endl;
 
                             // Remove FD from list since it was processed
-                            it_fd = fd_to_remove.erase(it_fd);
+                            it_fd = sk_to_remove_tx.erase(it_fd);
                         }
                         else
                         {
@@ -288,8 +283,8 @@ namespace rdmaMng
                         }
                     }
 
-                    if (fd_to_remove.empty())
-                        remove_fd.store(false, std::memory_order_release);
+                    if (sk_to_remove_tx.empty())
+                        remove_sk_tx.store(false, std::memory_order_release);
                 }
 
                 for (int i = 0; i < nfds; ++i)
@@ -420,6 +415,34 @@ namespace rdmaMng
 
     void RdmaMng::readThreadWorker(rdma::RdmaContext &ctx, uint32_t start_read_index, uint32_t end_read_index)
     {
+        auto removeClosedRxSks = [this](unordered_map<sock_id_t, int> &sockid_to_fd_map)
+        {
+            if (remove_sk_rx.load(std::memory_order_acquire))
+            {
+                std::unique_lock<std::mutex> lock(mtx_sk_removal_rx);
+
+                for (auto it = sk_to_remove_rx.begin(); it != sk_to_remove_rx.end();)
+                {
+                    auto sockid_it = sockid_to_fd_map.find(*it);
+                    if (sockid_it != sockid_to_fd_map.end())
+                    {
+                        // Remove the socket from the map
+                        int fd = sockid_it->second;
+                        sockid_to_fd_map.erase(sockid_it);
+                        it = sk_to_remove_rx.erase(it); // Remove from the list
+                        cout << "Remove fd: " << fd << " from sockid_to_fd_map" << endl;
+                    }
+                    else
+                    {
+                        ++it; // Move to the next element
+                    }
+                }
+
+                if (sk_to_remove_rx.empty())
+                    remove_sk_rx.store(false, std::memory_order_release);
+            }
+        };
+
         try
         {
             unique_lock<mutex> read_lock(ctx.mtx_rx_read);
@@ -429,7 +452,10 @@ namespace rdmaMng
             if (stop_threads.load())
                 return; // Exit if stop_threads is set
 
-            ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index);
+            int ret = ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index, removeClosedRxSks);
+
+            if (ret != 0)
+                cerr << "Error reading messages: " << ret << endl;
 
             // COMMIT the read index
             unique_lock<mutex> commit_lock(ctx.mtx_rx_commit);
