@@ -271,7 +271,7 @@ namespace rdmaMng
                         if (it != writer_map.end())
                         {
                             writer_map.erase(it);
-                            cout << "Removed fd " << fd << " from writer_map" << endl;
+                            // cout << "Removed fd " << fd << " from writer_map" << endl;
 
                             // Remove FD from list since it was processed
                             it_fd = sk_to_remove_tx.erase(it_fd);
@@ -416,7 +416,7 @@ namespace rdmaMng
                         int fd = sockid_it->second;
                         sockid_to_fd_map.erase(sockid_it);
                         it = sk_to_remove_rx.erase(it); // Remove from the list
-                        cout << "Remove fd: " << fd << " from sockid_to_fd_map" << endl;
+                        // cout << "Remove fd: " << fd << " from sockid_to_fd_map" << endl;
                     }
                     else
                     {
@@ -431,12 +431,15 @@ namespace rdmaMng
 
         try
         {
-            unique_lock<mutex> read_lock(ctx.mtx_rx_read);
-            ctx.cond_rx_read.wait(read_lock, [&ctx, start_read_index, &stop_threads = this->stop_threads]()
-                                  { return ctx.buffer_to_read->remote_read_index.load() == start_read_index || stop_threads.load(); });
+            while (true)
+            {
+                unique_lock<mutex> read_lock(ctx.mtx_rx_read);
+                if (ctx.buffer_to_read->remote_read_index.load() == start_read_index)
+                    break;
 
-            if (stop_threads.load())
-                return; // Exit if stop_threads is set
+                if (stop_threads.load())
+                    return; // Exit if stop_threads is set
+            }
 
             int ret = ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index, removeClosedRxSks);
 
@@ -447,9 +450,6 @@ namespace rdmaMng
             unique_lock<mutex> commit_lock(ctx.mtx_rx_commit);
             ctx.buffer_to_read->remote_read_index.store(end_read_index, memory_order_release);
 
-            ctx.cond_rx_read.notify_all();
-
-            read_lock.unlock();
             ctx.updateRemoteReadIndex(end_read_index);
         }
         catch (const std::exception &e)

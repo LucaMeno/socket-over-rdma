@@ -746,6 +746,9 @@ namespace rdma
         executeWrNow(wr, signaled);
     }
 
+    int in = 0;
+    int out = 0;
+
     void RdmaContext::flushWrQueue()
     {
         unique_lock<mutex> lock(mtx_wrs);
@@ -802,6 +805,10 @@ namespace rdma
         pollCqSend(send_cqs[qp_index]);
         guard.releaseIndex(); // Release the index back to the pool
 
+        // save the indexes to prevent overwrite
+        uint32_t pre_index = wr_batch[0]->pre_idx;
+        uint32_t new_idx = wr_batch.back()->new_idx;
+
         for (int i = 0; i < indexes.size(); i++)
             if (!wr_available_idx_queue.push(indexes[i]))
                 throw runtime_error("Failed to push index to wr_available_idx_queue");
@@ -809,14 +816,38 @@ namespace rdma
         // update remote index
         while (true)
         {
-            unique_lock<mutex> lock_flush(mtx_commit_flush);
-            if (buffer_to_write->remote_write_index.load() == wr_batch[0]->pre_idx)
+            unique_lock<std::mutex> lk(mtx_commit_flush);
+            if (buffer_to_write->remote_write_index.load(memory_order_acquire) == pre_index)
             {
-                buffer_to_write->remote_write_index.store(wr_batch.back()->new_idx);
-                break; // Successfully updated the remote write index
+                buffer_to_write->remote_write_index.store(new_idx, memory_order_release);
+                break;
             }
-            lock_flush.unlock(); // Release the lock to avoid deadlock
+
+            if (stop.load() == true)
+                throw runtime_error("Stopping updateRemoteWriteIndex due to stop signal");
+
+            lk.unlock();
         }
+
+        /*std::unique_lock<std::mutex> lk(mtx_commit_flush);
+        in++;
+        cout << "IN: " << in << " OUT: " << out << " PRE: " << pre_index << " NEW: " << new_idx << endl;
+        cond_commit_flush.wait(lk, [&]
+                               { return buffer_to_write->remote_write_index.load(memory_order_acquire) == pre_index || stop.load() == true; });
+        if (stop.load() == true)
+            throw runtime_error("Stopping updateRemoteWriteIndex due to stop signal");
+
+        buffer_to_write->remote_write_index.store(new_idx, memory_order_release);
+        out++;
+        cout << " -- " << endl;
+        cond_commit_flush.notify_all();
+        lk.unlock();*/
+
+        /*uint32_t expected = pre_index;
+        uint32_t desired = new_idx;
+
+        while (!buffer_to_write->remote_write_index.compare_exchange_strong(expected, desired))
+            expected = wr_batch[0]->pre_idx;*/
     }
 
     bool RdmaContext::shouldFlushWrQueue()
@@ -1017,7 +1048,7 @@ namespace rdma
                      true);
     }
 
-    int RdmaContext::readMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index, std::function<void(std::unordered_map<sock_id_t, int> &)> removeClosedSocket)
+    int RdmaContext::readMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index, function<void(unordered_map<sock_id_t, int> &)> removeClosedSocket)
     {
         removeClosedSocket(sockid_to_fd_map);
 
