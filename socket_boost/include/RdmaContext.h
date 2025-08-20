@@ -166,16 +166,28 @@ namespace rdma
         RdmaContext();
         ~RdmaContext();
 
+        std::thread read_thread_master;
+
+        std::atomic<bool> is_readTh_master_running{false};
+        std::atomic<uint32_t> tot_r_thread{0};
+
+        std::atomic<uint32_t> start_read_idx{0};
+        std::atomic<uint32_t> end_read_idx{0};
+
+        std::mutex mtx_data_to_consume;
+        std::condition_variable cv_data_to_consume;
+        std::atomic<int> reading_th_ready_for_commit{0};
+
         serverConnection_t serverSetup();
         void serverHandleNewClient(serverConnection_t &sc);
         void clientConnect(uint32_t server_ip, uint16_t server_port);
 
-        // int readMsgFromSk(int src_fd, struct sock_id original_socket);
         int writeMsg(int src_fd, struct sock_id original_socket);
-        // void copyMsgIntoSharedBuff();
 
         int readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index, std::function<void(std::unordered_map<sock_id_t, int> &)> removeClosedSocket);
-        void updateRemoteReadIndex(uint32_t r_idx);
+        void updateRemoteReadIndex();
+
+        int readMsg2(uint32_t start_read_index, uint32_t end_read_index, sock_id_t target_sk, int dest_fd);
 
         void setPollingStatus(uint32_t is_polling);
         void postReceive(int qpIdx, bool allQp);

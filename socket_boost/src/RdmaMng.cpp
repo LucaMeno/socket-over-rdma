@@ -21,8 +21,21 @@ namespace rdmaMng
         // setup the pool
         thPool = make_unique<ThreadPool>(Config::N_THREAD_POOL_THREADS);
 
-        // polling thread
-        is_polling_thread_running = false;
+        reader_th_workers.reserve(Config::N_READER_THREADS);
+
+        if (Config::N_READER_THREADS != Config::NUMBER_OF_SOCKETS)
+            throw runtime_error("N_READER_THREADS must be equal to NUMBER_OF_SOCKETS - at least for now...");
+
+        sock_id_t temp = {0};
+        for (int i = 0; i < Config::N_READER_THREADS; ++i)
+        {
+            readThParams[i].keep_run.store(false);
+            readThParams[i].dest_fd = sk_ctx.client_sk_fd[i].fd;
+            readThParams[i].proxy_sk = sk_ctx.client_sk_fd[i].sk_id;
+            readThParams[i].app_sk = temp;
+
+            reader_th_workers.emplace_back(&RdmaMng::readThreadWorker2, this, ref(readThParams[i]));
+        }
 
         cout << "==================  CONFIGURATION ==================" << endl;
 
@@ -73,20 +86,6 @@ namespace rdmaMng
             cout << "[Shutdown] Notification thread joined" << endl;
         }
 
-        if (is_polling_thread_running == false)
-        {
-            unique_lock<mutex> lock(mtx_polling);
-            is_polling_thread_running = true;
-            cond_polling.notify_all();
-        }
-
-        if (polling_thread.joinable())
-        {
-            cout << "[Shutdown] Waiting for polling thread to finish..." << endl;
-            polling_thread.join();
-            cout << "[Shutdown] Polling thread joined" << endl;
-        }
-
         if (flush_thread.joinable())
         {
             cout << "[Shutdown] Waiting for flush thread to finish..." << endl;
@@ -94,10 +93,24 @@ namespace rdmaMng
             cout << "[Shutdown] Flush thread joined" << endl;
         }
 
-        // Cleanup RDMA contexts
+        cout << "[Cleanup ] Destroying reader masters..." << endl;
+        for (auto &m : reader_th_master)
+            if (m.joinable())
+                m.join();
+        cout << "[Cleanup ] reader masters destroyed" << endl;
+
         cout << "[Cleanup ] Clearing RDMA contexts..." << endl;
         ctxs.clear();
         cout << "[Cleanup ] RDMA contexts cleared" << endl;
+
+        cout << "[Cleanup ] Destroying reader workers..." << endl;
+        unique_lock<mutex> lock(mtx_wait_for_sk);
+        cond_wait_for_sk.notify_all();
+        lock.unlock();
+        for (auto &worker : reader_th_workers)
+            if (worker.joinable())
+                worker.join();
+        cout << "[Cleanup ] reader workers destroyed" << endl;
 
         cout << "[Cleanup ] Destroying thread pool..." << endl;
         thPool->destroy();
@@ -168,9 +181,11 @@ namespace rdmaMng
 
                 ctx->serverHandleNewClient(sc);
 
+                unique_lock<mutex> lock(mtx_ctxs);
                 ctxs.push_back(std::move(ctx));
+                lock.unlock();
 
-                launchBackgroundThreads();
+                launchBackgroundThreads(*ctxs.back());
             }
         }
         catch (const std::exception &e)
@@ -183,6 +198,7 @@ namespace rdmaMng
 
     int RdmaMng::getFreeContextId()
     {
+        unique_lock<mutex> lock(mtx_ctxs);
         ctxs.push_back(make_unique<rdma::RdmaContext>());
         return ctxs.size() - 1; // Return the index of the newly added context
     }
@@ -312,149 +328,221 @@ namespace rdmaMng
         catch (const std::exception &e)
         {
             cerr << "Exception in writerThread: " << e.what() << endl;
-            perror("   - Details");
+            perror(" Details");
             throw; // Re-throw the exception to be handled by the caller
         }
     }
 
-    void RdmaMng::pollingThread()
+    inline bool areSkEqual(const sock_id_t &sk1, const sock_id_t &sk2)
+    {
+        return std::memcmp(&sk1, &sk2, sizeof(sock_id_t)) == 0;
+    }
+
+    void RdmaMng::onSocketOpen(sock_id_t proxy_sk, sock_id_t app_sk)
+    {
+        launchReaderThWorker(proxy_sk, app_sk);
+    }
+
+    void RdmaMng::onSocketClose(sock_id_t proxy_sk, sock_id_t app_sk)
+    {
+        for (int i = 0; i < Config::N_READER_THREADS; i++)
+        {
+            if (areSkEqual(readThParams[i].proxy_sk, proxy_sk))
+            {
+                readThParams[i].keep_run.store(false);
+                return;
+            }
+        }
+        throw runtime_error("No matching reader thread found for proxy socket - onSocketClose");
+    }
+
+    void RdmaMng::launchReaderThWorker(sock_id_t proxy_sk, sock_id_t app_sk)
+    {
+        for (int i = 0; i < Config::N_READER_THREADS; i++)
+        {
+            // lookup for the correct thread
+            if (areSkEqual(readThParams[i].proxy_sk, proxy_sk))
+            {
+                if (readThParams[i].keep_run.load())
+                    throw runtime_error("Reader thread is already running - launchReaderThWorker");
+
+                readThParams[i].keep_run.store(true);
+                readThParams[i].app_sk = app_sk;
+
+                // wake up the thread
+                unique_lock<mutex> lock(mtx_wait_for_sk);
+                cond_wait_for_sk.notify_all();
+
+                return;
+            }
+        }
+
+        throw runtime_error("No available reader thread parameters - launchReaderThWorker");
+    }
+
+    void RdmaMng::launchReaderThMaster(rdma::RdmaContext &ctx)
+    {
+        ctx.waitForContextToBeReady();
+        // If the context is not already running a master thread
+        if (ctx.is_readTh_master_running.load() == false)
+        {
+            ctx.is_readTh_master_running.store(true);
+            reader_th_master.emplace_back(&RdmaMng::readThreadMaster, this, ref(ctx));
+        }
+    }
+
+    void RdmaMng::readThreadWorker2(ReaderThreadData &params)
     {
         try
         {
-            cout << "Polling thread started" << endl;
+        backToWait:
+            RdmaContext *ctx = nullptr;
 
-            unique_lock<mutex> lock(mtx_polling);
-            is_polling_thread_running = false;
-            while (is_polling_thread_running == false && stop_threads.load() == false)
-            {
-                cout << "Waiting for polling thread to start..." << endl;
-                cond_polling.wait(lock);
-            }
+            unique_lock<mutex> lock(mtx_wait_for_sk);
+            cond_wait_for_sk.wait(lock, [&params, this]
+                                  { return params.keep_run.load() == true || stop_threads.load() == true; });
             lock.unlock();
 
-            auto ctxIt = ctxs.begin();
+            if (stop_threads.load())
+                return; // Exit if stop_threads is set
 
-            cout << "Polling thread is running" << endl;
+            // the thread is awakened
+            // first retrive the app sk starting from the proxy one
+            uint32_t remote_ip = params.app_sk.dip;
 
-            while (stop_threads.load() == false)
+            // it have to find out to which context has been assigned
+            while (stop_threads.load() == false && params.keep_run.load() == true)
             {
-                auto &ctx = **ctxIt;
-                int ret;
-                try
+                ctx = getContextByIp(remote_ip);
+                if (ctx != nullptr)
+                    break;
+            }
+
+            ctx->waitForContextToBeReady();
+            ctx->tot_r_thread.fetch_add(1);
+
+            if (stop_threads.load())
+                return; // Exit if stop_threads is set
+
+            // cout << "Reader Worker: " << sk_ctx.get_printable_sockid(&params.proxy_sk) << " to " << sk_ctx.get_printable_sockid(&params.app_sk) << " fd: " << params.dest_fd << endl;
+
+            auto shouldStop = [&ctx, &params, this]()
+            {
+                return ctx->stop.load() == true ||
+                       params.keep_run.load() == false ||
+                       stop_threads.load() == true;
+            };
+
+            // reverse the app sk for reading
+            struct sock_id swapped;
+            swapped.dip = params.app_sk.sip;
+            swapped.sip = params.app_sk.dip;
+            swapped.dport = params.app_sk.sport;
+            swapped.sport = params.app_sk.dport;
+
+            params.app_sk = swapped;
+
+            while (!shouldStop())
+            {
+                uint32_t end_idx = ctx->end_read_idx.load();
+                uint32_t start_idx = ctx->start_read_idx.load();
+
+                if (start_idx != end_idx)
                 {
-                    ret = consumeRingbuffer(ctx);
-                }
-                catch (const std::exception &e)
-                {
-                    cerr << "Exception in pollingThread1: " << e.what() << endl;
-                }
-                if (ret < 0)
-                {
-                    throw runtime_error("Error consuming ring buffer - pollingThread");
-                }
-                else if (ret == 1)
-                {
-                    // no msg to read
-                    // break;
+                    try
+                    {
+                        if (ctx->readMsg2(start_idx, end_idx, params.app_sk, params.dest_fd) != 0)
+                            throw runtime_error("Error reading message in readThreadWorker2");
+                    }
+                    catch (const std::exception &e)
+                    {
+                        cerr << "Exception in readThreadWorker2: " << e.what() << endl;
+                        perror("Details");
+                    }
+
+                    ctx->reading_th_ready_for_commit.fetch_add(1);
                 }
 
-                ctxIt++;
-                if (ctxIt == ctxs.end())
-                    ctxIt = ctxs.begin(); // reset the iterator to the beginning
+                // wait for new data to consume
+                unique_lock<mutex> lock(ctx->mtx_data_to_consume);
+                ctx->cv_data_to_consume.wait(lock, [&ctx, shouldStop, end_idx]
+                                             { return ctx->end_read_idx.load() != end_idx || shouldStop(); });
+                lock.unlock();
             }
+
+            // if here means that the thread is done processing
+            ctx->tot_r_thread.fetch_sub(1);
+            ctx->reading_th_ready_for_commit.fetch_add(1);
+            if (ctx->stop.load() == false &&
+                stop_threads.load() == false &&
+                params.keep_run.load() == false)
+            {
+                sock_id_t tmp = {0};
+                params.app_sk = tmp; // reset the app socket
+                // cout << "Reader Worker CLOSED: " << sk_ctx.get_printable_sockid(&params.proxy_sk) << " to " << sk_ctx.get_printable_sockid(&params.app_sk) << " fd: " << params.dest_fd << endl;
+
+                goto backToWait;
+            }
+            // else -> exit
         }
         catch (const std::exception &e)
         {
-            cerr << "Exception in pollingThread2: " << e.what() << endl;
+            cerr << "Exception in readThreadWorker2: " << e.what() << endl;
             perror("Details");
-            throw; // Re-throw the exception to be handled by the caller
         }
     }
 
-    inline int RdmaMng::consumeRingbuffer(rdma::RdmaContext &ctx)
+    void RdmaMng::readThreadMaster(rdma::RdmaContext &ctx)
     {
-        while (true)
+        auto shouldStop = [&ctx, this]()
         {
-            uint32_t remote_w = ctx.buffer_to_read->remote_write_index.load();
-            uint32_t local_r = ctx.buffer_to_read->local_read_index;
-
-            if (remote_w != local_r)
-            {
-                // set the local read index to avoid reading the same data again
-                uint32_t start_read_index = local_r;
-                uint32_t end_read_index = remote_w;
-
-                ctx.buffer_to_read->local_read_index = remote_w; // reset the local write index
-
-                thPool->enqueue(
-                    &RdmaMng::readThreadWorker, this, ref(ctx), start_read_index, end_read_index);
-
-                /*ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index);
-                ctx.updateRemoteReadIndex(end_read_index);*/
-            }
-            else
-            {
-                return 1; // no messages to read
-            }
-        }
-    }
-
-    void RdmaMng::readThreadWorker(rdma::RdmaContext &ctx, uint32_t start_read_index, uint32_t end_read_index)
-    {
-        auto removeClosedRxSks = [this](unordered_map<sock_id_t, int> &sockid_to_fd_map)
-        {
-            if (remove_sk_rx.load(std::memory_order_acquire))
-            {
-                std::unique_lock<std::mutex> lock(mtx_sk_removal_rx);
-
-                for (auto it = sk_to_remove_rx.begin(); it != sk_to_remove_rx.end();)
-                {
-                    auto sockid_it = sockid_to_fd_map.find(*it);
-                    if (sockid_it != sockid_to_fd_map.end())
-                    {
-                        // Remove the socket from the map
-                        int fd = sockid_it->second;
-                        sockid_to_fd_map.erase(sockid_it);
-                        it = sk_to_remove_rx.erase(it); // Remove from the list
-                        // cout << "Remove fd: " << fd << " from sockid_to_fd_map" << endl;
-                    }
-                    else
-                    {
-                        ++it; // Move to the next element
-                    }
-                }
-
-                if (sk_to_remove_rx.empty())
-                    remove_sk_rx.store(false, std::memory_order_release);
-            }
+            return ctx.stop.load() == true || stop_threads.load() == true;
         };
 
+        // Master thread logic for reading
+        // there is one master reader thread per context
+        while (!shouldStop())
+        {
+            uint32_t start_idx = ctx.buffer_to_read->local_read_index;
+            uint32_t end_idx = ctx.buffer_to_read->remote_write_index.load();
+
+            if (start_idx == end_idx)
+                continue;
+
+            // wake the thread
+            unique_lock<mutex> lock(ctx.mtx_data_to_consume);
+            ctx.start_read_idx.store(start_idx);
+            ctx.end_read_idx.store(end_idx);
+
+            ctx.reading_th_ready_for_commit.store(0);
+            ctx.cv_data_to_consume.notify_all();
+            lock.unlock();
+
+            // wait for the threads
+            while (ctx.reading_th_ready_for_commit.load() < ctx.tot_r_thread.load() && !shouldStop())
+                ;
+
+            if (shouldStop())
+                break;
+
+            // now all the data has been consumed
+            ctx.buffer_to_read->local_read_index = end_idx;
+            ctx.buffer_to_read->remote_read_index.store(end_idx);
+
+            thPool->enqueue(
+                &RdmaMng::updateRemoteReadIdxWorker, this, ref(ctx));
+        }
+    }
+
+    void RdmaMng::updateRemoteReadIdxWorker(rdma::RdmaContext &ctx)
+    {
         try
         {
-            while (true)
-            {
-                unique_lock<mutex> read_lock(ctx.mtx_rx_read);
-                if (ctx.buffer_to_read->remote_read_index.load() == start_read_index)
-                    break;
-
-                if (stop_threads.load())
-                    return; // Exit if stop_threads is set
-            }
-
-            int ret = ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index, removeClosedRxSks);
-
-            if (ret != 0)
-                cerr << "Error reading messages: " << ret << endl;
-
-            // COMMIT the read index
-            unique_lock<mutex> commit_lock(ctx.mtx_rx_commit);
-            ctx.buffer_to_read->remote_read_index.store(end_read_index, memory_order_release);
-
-            ctx.updateRemoteReadIndex(end_read_index);
+            ctx.updateRemoteReadIndex();
         }
         catch (const std::exception &e)
         {
-            cerr << "Exception in readThreadWorker: " << e.what() << endl;
+            cerr << "Exception in updateRemoteReadIdxWorker: " << e.what() << endl;
             perror("Details");
         }
     }
@@ -474,8 +562,10 @@ namespace rdmaMng
         }
     }
 
-    void RdmaMng::launchBackgroundThreads()
+    void RdmaMng::launchBackgroundThreads(RdmaContext &ctx)
     {
+        launchReaderThMaster(ctx);
+
         if (notification_thread.joinable())
         {
             return; // If the notification thread is already running, do not start it again
@@ -484,14 +574,11 @@ namespace rdmaMng
         // Launch the notification thread
         notification_thread = thread(&RdmaMng::listenThread, this);
 
-        // Launch the polling thread
-        polling_thread = thread(&RdmaMng::pollingThread, this);
-
         // Launch the flush thread
         flush_thread = thread(&RdmaMng::flushThread, this);
     }
 
-    void RdmaMng::connect(struct sock_id original_socket, int proxy_sk_fd)
+    void RdmaMng::connect(struct sock_id original_socket)
     {
         rdma::RdmaContext *ctx = getContextByIp(original_socket.dip);
 
@@ -503,12 +590,13 @@ namespace rdmaMng
 
             ctx->clientConnect(original_socket.dip, rdma_port);
 
-            launchBackgroundThreads();
+            launchBackgroundThreads(*ctx);
         }
     }
 
     rdma::RdmaContext *RdmaMng::getContextByIp(uint32_t remote_ip)
     {
+        unique_lock<mutex> lock(mtx_ctxs);
         for (auto &ctx : ctxs)
             if (ctx.get()->remote_ip == remote_ip)
                 return ctx.get();
@@ -519,11 +607,6 @@ namespace rdmaMng
     {
         // Try to set polling status
         ctx.setPollingStatus(true);
-
-        // wake up the polling thread
-        unique_lock<mutex> lock(mtx_polling);
-        is_polling_thread_running = true;
-        cond_polling.notify_all();
     }
 
     void RdmaMng::stopPolling(rdma::RdmaContext &ctx)

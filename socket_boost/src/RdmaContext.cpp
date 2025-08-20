@@ -571,6 +571,10 @@ namespace rdma
         unique_lock<mutex> lock_rx(mtx_rx_read);
         cond_rx_read.notify_all();
         lock_rx.unlock();
+
+        unique_lock<mutex> consume_data(mtx_data_to_consume);
+        cv_data_to_consume.notify_all();
+        consume_data.unlock();
     }
 
     void RdmaContext::sendNotification(CommunicationCode code)
@@ -928,80 +932,6 @@ namespace rdma
         return 1;
     }
 
-    inline int RdmaContext::parseMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg)
-    {
-        // retrive the proxy_fd
-        int fd;
-
-        auto it = sockid_to_fd_map.find(msg.original_sk_id);
-        if (it != sockid_to_fd_map.end())
-        {
-            fd = it->second;
-        }
-        else
-        {
-            // loockup the original socket
-            // swap the ip and port
-            struct sock_id swapped;
-            swapped.dip = msg.original_sk_id.sip;
-            swapped.sip = msg.original_sk_id.dip;
-            swapped.dport = msg.original_sk_id.sport;
-            swapped.sport = msg.original_sk_id.dport;
-
-            // find the corresponding proxy socket
-            struct sock_id proxy_sk_id = bpf_ctx.getProxySkFromAppSk(swapped);
-
-            // find the original socket in the lists
-            int i = 0;
-            for (; i < Config::NUMBER_OF_SOCKETS; i++)
-            {
-                if (client_sks[i].sk_id.dip == proxy_sk_id.dip &&
-                    client_sks[i].sk_id.sport == proxy_sk_id.sport &&
-                    client_sks[i].sk_id.sip == proxy_sk_id.sip &&
-                    client_sks[i].sk_id.dport == proxy_sk_id.dport)
-                {
-                    // update the map with the new socket
-                    /*std::cout << "New entry: "
-                              << msg.original_sk_id.sip << ":" << msg.original_sk_id.sport
-                              << " - " << msg.original_sk_id.dip << ":" << msg.original_sk_id.dport
-                              << " -> " << client_sks[i].fd << std::endl;*/
-                    // update the map with the new socket
-                    sockid_to_fd_map[msg.original_sk_id] = client_sks[i].fd;
-                    fd = client_sks[i].fd;
-                    break;
-                }
-            }
-
-            if (i == Config::NUMBER_OF_SOCKETS)
-            {
-                cerr << "Socket not found in the list: "
-                     << msg.original_sk_id.sip << ":" << msg.original_sk_id.sport
-                     << " -> " << msg.original_sk_id.dip << ":" << msg.original_sk_id.dport
-                     << endl;
-                return 1; // socket not found, cannot parse the message
-            }
-        }
-
-        int rem = msg.msg_size;
-        char *ptr = msg.msg;
-        int c = 0;
-        while (rem > 0)
-        {
-            int size = send(fd, ptr, rem, 0);
-            if (size <= 0)
-            {
-                cerr << "Failed to send message - parseMsg: " + string(strerror(errno)) << endl;
-                return 1;
-            }
-            rem -= size;
-            ptr += size;
-            if (c++ > 1)
-                cout << "Warn - " << c << endl;
-        }
-
-        return 0;
-    }
-
     void RdmaContext::updateRemoteWriteIndex()
     {
         if (stop.load() == true)
@@ -1036,22 +966,21 @@ namespace rdma
         cond_commit_flush.notify_all(); // Notify that the flush is committed
     }
 
-    void RdmaContext::updateRemoteReadIndex(uint32_t r_idx)
+    void RdmaContext::updateRemoteReadIndex()
     {
-        // COMMIT the read index
-        // buffer_to_read->remote_read_index.store(r_idx);
-        // atomic_thread_fence(memory_order_release);
-
         executeWrNow(remote_addr_read_index,
                      (uintptr_t)(buffer + local_remote_read_index_offset),
                      sizeof(buffer_to_read->remote_read_index),
                      true);
     }
 
-    int RdmaContext::readMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index, function<void(unordered_map<sock_id_t, int> &)> removeClosedSocket)
+    inline bool areSkEqual(const sock_id_t &sk1, const sock_id_t &sk2)
     {
-        removeClosedSocket(sockid_to_fd_map);
+        return std::memcmp(&sk1, &sk2, sizeof(sock_id_t)) == 0;
+    }
 
+    int RdmaContext::readMsg2(uint32_t start_read_index, uint32_t end_read_index, sock_id_t target_sk, int dest_fd)
+    {
         if (!buffer_to_read)
             throw runtime_error("ringbuffer is nullptr - readMsg");
 
@@ -1060,21 +989,35 @@ namespace rdma
 
         uint32_t number_of_msg = (end_read_index + Config::MAX_MSG_BUFFER - start_read_index) % Config::MAX_MSG_BUFFER;
 
-        /*if (number_of_msg != Config::MAX_WR_PER_POST)
-            cout << "Reading " << number_of_msg << " - start: " << start_read_index << " - end: " << end_read_index << endl;*/
-
         start_read_index = RING_IDX(start_read_index);
-        end_read_index = RING_IDX(end_read_index);
 
-        u_int32_t n = 0;
         for (int i = 0; i < number_of_msg;)
         {
             int idx = RING_IDX(start_read_index + i);
             rdma_msg_t *msg = &buffer_to_read->data[idx];
 
-            int ret = parseMsg(bpf_ctx, client_sks, *msg);
-            if (ret != 0)
-                return ret;
+            if (!areSkEqual(msg->original_sk_id, target_sk))
+            {
+                i += msg->number_of_slots;
+                continue; // skip this message
+            }
+
+            int rem = msg->msg_size;
+            char *ptr = msg->msg;
+            int c = 0;
+            while (rem > 0)
+            {
+                int size = send(dest_fd, ptr, rem, 0);
+                if (size <= 0)
+                {
+                    cerr << "Failed to send message (fd: " << dest_fd << ") - readMsg2: " + string(strerror(errno)) << endl;
+                    return 1;
+                }
+                rem -= size;
+                ptr += size;
+                if (c++ > 1)
+                    cout << "Warn - " << c << endl;
+            }
 
             i += msg->number_of_slots;
 

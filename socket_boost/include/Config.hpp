@@ -45,15 +45,16 @@ public:
 
     // RDMA manager
     inline static const int N_WRITER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket
+    inline static const int N_READER_THREADS = NUMBER_OF_SOCKETS;  // 1 thread per proxy socket
     inline static const int TIME_STOP_SELECT_SEC = 5;             // 5 seconds
     inline static const int FLUSH_INTERVAL_MS = 10;               // ms
     inline static const int N_OF_FLUSHES_BEFORE_UPDATE_INDEX = 4;
-    inline static const int N_THREAD_POOL_THREADS = 24;
+    inline static const int N_THREAD_POOL_THREADS = 16;
 
     inline static const char *SERVER_IP = "127.0.0.1";
     static std::vector<uint16_t> getTargetPorts()
     {
-        return {TARGET_PORT_1, TARGET_PORT_2, TARGET_PORT_3};
+        return {TARGET_PORT_1, TARGET_PORT_2, TARGET_PORT_3, TARGET_PORT_4};
     }
 
     static uint32_t getRdmaDevGidIdx()
@@ -80,6 +81,7 @@ private:
     inline static const uint16_t TARGET_PORT_1 = 7777;
     inline static const uint16_t TARGET_PORT_2 = 8888;
     inline static const uint16_t TARGET_PORT_3 = 9999;
+    inline static const uint16_t TARGET_PORT_4 = 6666;
     inline static uint32_t rdma_dev_idx;
     inline static uint32_t rdma_dev_gid_idx = 0;
     Config() = default; // Prevent instantiation

@@ -33,6 +33,14 @@ namespace rdmaMng
         WriterThreadData() : app({0}), ctx(nullptr) {}
     };
 
+    struct ReaderThreadData
+    {
+        sock_id proxy_sk;
+        sock_id app_sk;
+        int dest_fd;
+        std::atomic<bool> keep_run;
+    };
+
     class RdmaMng
     {
 
@@ -41,7 +49,9 @@ namespace rdmaMng
         ~RdmaMng();
 
         void run();
-        void connect(struct sock_id original_socket, int proxy_sk_fd);
+        void connect(struct sock_id original_socket);
+        void onSocketOpen(sock_id_t proxy_sk, sock_id_t app_sk);
+        void onSocketClose(sock_id_t proxy_sk, sock_id_t app_sk);
 
         static int wrapper(void *ctx, void *data, size_t len)
         {
@@ -57,13 +67,13 @@ namespace rdmaMng
             auto logSocketEvent = [this](const std::string &prefix,
                                          struct sock_id &app,
                                          struct sock_id &proxy,
-                                         const std::string &role,
-                                         int fd)
+                                         const std::string &role)
             {
-                std::cout << prefix << " "
+                std::cout << "[eBPF event] - "
+                          << prefix << " "
                           << sk_ctx.get_printable_sockid(&app) << " <-> "
                           << sk_ctx.get_printable_sockid(&proxy) << " - "
-                          << role << " - fd: " << fd
+                          << role
                           << std::endl;
             };
 
@@ -71,43 +81,22 @@ namespace rdmaMng
             {
             case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
             {
-                int ret;
-                int proxy_fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
-                connect(user_data->association.app, proxy_fd);
-
-                logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "CLIENT", proxy_fd);
-
+                logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "CLIENT");
+                connect(user_data->association.app);
+                onSocketOpen(user_data->association.proxy, user_data->association.app);
                 break;
             }
             case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
             {
-                logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "SERVER", -1);
-                // server side, do not connect the RDMA context
+                logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "SERVER");
+                // server side, do not connect the RDMA contexts
+                onSocketOpen(user_data->association.proxy, user_data->association.app);
                 break;
             }
             case REMOVE_SOCKET:
             {
-                int ret;
-                int proxy_fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
-
-                {
-                    std::unique_lock<std::mutex> lock(mtx_sk_removal_tx);
-                    sk_to_remove_tx.push_back(proxy_fd);
-                }
-                remove_sk_tx.store(true, std::memory_order_release);
-
-                {
-                    std::unique_lock<std::mutex> lock(mtx_sk_removal_rx);
-                    struct sock_id swapped;
-                    swapped.sip = user_data->association.app.dip;
-                    swapped.dip = user_data->association.app.sip;
-                    swapped.dport = user_data->association.app.sport;
-                    swapped.sport = user_data->association.app.dport;
-                    sk_to_remove_rx.push_back(swapped);
-                }
-                remove_sk_rx.store(true, std::memory_order_release);
-
-                logSocketEvent("REMOVE", user_data->association.app, user_data->association.proxy, "ND", proxy_fd);
+                logSocketEvent("REMOVE", user_data->association.app, user_data->association.proxy, "ND");
+                onSocketClose(user_data->association.proxy, user_data->association.app);
                 break;
             }
             default:
@@ -119,6 +108,7 @@ namespace rdmaMng
         }
 
     private:
+        std::mutex mtx_ctxs;
         std::vector<std::unique_ptr<rdma::RdmaContext>> ctxs; // vector of active RDMA contexts
         uint16_t rdma_port;                                   // port used for RDMA
         std::unique_ptr<ThreadPool> thPool;                   // thread pool
@@ -126,12 +116,8 @@ namespace rdmaMng
         sk::SocketMng sk_ctx;                                 // reference to the socket manager
         std::thread notification_thread;                      // thread for the notification
         std::thread server_thread;                            // thread for the server
-        std::thread polling_thread;                           // thread for polling the circular buffer
         std::thread flush_thread;                             // thread for flushing the circular buffer
         std::vector<std::thread> writer_threads;              // threads for writing to the circular buffer
-        std::mutex mtx_polling;                               // mutex for polling thread
-        std::condition_variable cond_polling;                 // condition variable for polling
-        bool is_polling_thread_running;                       // flag to indicate if the polling thread is running
         std::atomic<bool> stop_threads;                       // flag to stop the threads
 
         std::mutex mtx_sk_removal_tx;
@@ -142,17 +128,27 @@ namespace rdmaMng
         std::vector<struct sock_id> sk_to_remove_rx;
         std::atomic<bool> remove_sk_rx;
 
+        ReaderThreadData readThParams[Config::N_READER_THREADS]; // Array of flags to indicate if the reader threads are running
+        std::condition_variable cond_wait_for_sk;
+        std::mutex mtx_wait_for_sk;
+        std::vector<std::thread> reader_th_master;
+        std::vector<std::thread> reader_th_workers;
+
+        void readThreadWorker2(ReaderThreadData &params);
+        void launchReaderThWorker(sock_id_t proxy_sk, sock_id_t app_sk);
+        void readThreadMaster(rdma::RdmaContext &ctx);
+        void updateRemoteReadIdxWorker(rdma::RdmaContext &ctx);
+        void launchReaderThMaster(rdma::RdmaContext &ctx);
+
         // Background thread functions
-        void launchBackgroundThreads();
+        void launchBackgroundThreads(rdma::RdmaContext &ctx);
         void listenThread();
         void serverThread();
-        void pollingThread();
         void flushThread();
         void writerThread(std::vector<sk::client_sk_t> sk_to_monitor);
 
         // Thread worker functions (pool)
         void flushThreadWorker(rdma::RdmaContext &ctx, bool updateRemoteIndex);
-        void readThreadWorker(rdma::RdmaContext &ctx, uint32_t start_read_index, uint32_t end_read_index);
 
         // Utils
         int getFreeContextId();
@@ -160,7 +156,6 @@ namespace rdmaMng
         void startPolling(rdma::RdmaContext &ctx);
         void stopPolling(rdma::RdmaContext &ctx);
         void parseNotification(rdma::RdmaContext &ctx);
-        int consumeRingbuffer(rdma::RdmaContext &ctx);
         std::vector<int> waitOnSelect(const std::vector<int> &fds);
 
         WriterThreadData populateWriterThreadData(std::vector<sk::client_sk_t> &sockets, int fd);
