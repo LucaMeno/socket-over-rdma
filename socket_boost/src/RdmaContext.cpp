@@ -5,8 +5,6 @@ using namespace std;
 
 namespace rdma
 {
-    int COUNT = 0; // for debugging
-
     conn_info RdmaContext::rdmaSetupPreHs()
     {
         srand48(getpid());
@@ -632,7 +630,7 @@ namespace rdma
         {
             if (!p)
             {
-                cout << "No available work request indices, waiting..." << endl;
+                cout << "[Debug] -- No available work request indices, waiting..." << endl;
                 p = true;
             }
             this_thread::yield(); // backoff
@@ -846,6 +844,8 @@ namespace rdma
         return true;          // Enough messages to flush
     }
 
+    uint32_t COUNT = 0; // for debugging
+
     int RdmaContext::writeMsg(int src_fd, struct sock_id original_socket)
     {
         uint32_t start_w_index, end_w_index, available_space;
@@ -866,19 +866,20 @@ namespace rdma
 
             COUNT++;
 
-            // this_thread::yield(); // backoff
+            this_thread::yield(); // backoff
 
-            struct timespec ts;
+            /*struct timespec ts;
             ts.tv_sec = 0;
             ts.tv_nsec = (Config::TIME_TO_WAIT_IF_NO_SPACE_MS) * 1000000; // ms -> ns
-            nanosleep(&ts, nullptr);
+            nanosleep(&ts, nullptr);*/
 
-            if (COUNT % 100 == 0)
+            if (COUNT % 1000 == 0)
             {
                 cout << "[Debug] -- Waiting for space in the ringbuffer (" << COUNT << ")... "
                      /*<< "Used: " << used << ", Available: " << available_space
                      << ", Start Index: " << start_w_index
-                     << ", End Index: " << end_w_index*/ << endl;
+                     << ", End Index: " << end_w_index*/
+                     << endl;
             }
 
             if (stop.load() == true)
@@ -959,7 +960,7 @@ namespace rdma
         return std::memcmp(&sk1, &sk2, sizeof(sock_id_t)) == 0;
     }
 
-    int RdmaContext::readMsg2(uint32_t start_read_index, uint32_t end_read_index, sock_id_t target_sk, int dest_fd)
+    int RdmaContext::readMsg(uint32_t start_read_index, uint32_t end_read_index, sock_id_t target_sk, int dest_fd)
     {
         if (!buffer_to_read)
             throw runtime_error("ringbuffer is nullptr - readMsg");
@@ -989,10 +990,7 @@ namespace rdma
             {
                 int size = send(dest_fd, ptr, rem, 0);
                 if (size <= 0)
-                {
-                    cerr << "Failed to send message (fd: " << dest_fd << ") - readMsg2: " + string(strerror(errno)) << endl;
-                    return 1;
-                }
+                    throw runtime_error("Failed to send message - readMsg: " + string(strerror(errno)));
                 rem -= size;
                 ptr += size;
                 if (c++ > 1)

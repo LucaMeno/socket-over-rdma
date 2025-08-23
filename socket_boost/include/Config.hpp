@@ -37,7 +37,7 @@ public:
     inline static const int MAX_PAYLOAD_SIZE = (64 * 1024);                  // 64 KB
     inline static const int QP_N = 8;                                        // Number of QPs
     inline static const int DEFAULT_QP_IDX = 0;                              // Default QP index
-    inline static const size_t MAX_WR_PER_POST = 128;                         // Maximum number of work requests in a single post (wr per flight)
+    inline static const size_t MAX_WR_PER_POST = 256;                        // Maximum number of work requests in a single post (wr per flight)
     inline static const uint32_t TIME_BTW_DATA_READY_NOTIFICATIONS_MS = 500; // 500 ms
     inline static const int THRESHOLD_NOT_AUTOSCALER = MAX_WR_PER_POST;      // Threshold for flushing messages
 
@@ -48,7 +48,7 @@ public:
     inline static const int N_READER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket
     inline static const int TIME_STOP_SELECT_SEC = 5;             // 5 seconds
     inline static const int FLUSH_INTERVAL_MS = 10;               // ms
-    inline static const int N_OF_FLUSHES_BEFORE_UPDATE_INDEX = 4;
+    inline static const int N_OF_FLUSHES_BEFORE_UPDATE_INDEX = 2;
     inline static const int N_THREAD_POOL_THREADS = 64;
 
     inline static const char *SERVER_IP = "127.0.0.1";

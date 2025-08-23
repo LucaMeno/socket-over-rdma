@@ -73,7 +73,7 @@ namespace rdmaMng
                           << prefix << " "
                           << sk_ctx.get_printable_sockid(&app) << " <-> "
                           << sk_ctx.get_printable_sockid(&proxy) << " - "
-                          << role
+                          << (role.empty() ? "" : role)
                           << std::endl;
             };
 
@@ -95,7 +95,7 @@ namespace rdmaMng
             }
             case REMOVE_SOCKET:
             {
-                logSocketEvent("REMOVE", user_data->association.app, user_data->association.proxy, "ND");
+                logSocketEvent("REMOVE", user_data->association.app, user_data->association.proxy, "");
                 onSocketClose(user_data->association.proxy, user_data->association.app);
                 break;
             }
@@ -124,17 +124,13 @@ namespace rdmaMng
         std::vector<int> sk_to_remove_tx;
         std::atomic<bool> remove_sk_tx;
 
-        std::mutex mtx_sk_removal_rx;
-        std::vector<struct sock_id> sk_to_remove_rx;
-        std::atomic<bool> remove_sk_rx;
-
         ReaderThreadData readThParams[Config::N_READER_THREADS]; // Array of flags to indicate if the reader threads are running
         std::condition_variable cond_wait_for_sk;
         std::mutex mtx_wait_for_sk;
         std::vector<std::thread> reader_th_master;
         std::vector<std::thread> reader_th_workers;
 
-        void readThreadWorker2(ReaderThreadData &params);
+        void readThreadWorker(ReaderThreadData &params);
         void launchReaderThWorker(sock_id_t proxy_sk, sock_id_t app_sk);
         void readThreadMaster(rdma::RdmaContext &ctx);
         void updateRemoteReadIdxWorker(rdma::RdmaContext &ctx);

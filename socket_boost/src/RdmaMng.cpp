@@ -34,7 +34,7 @@ namespace rdmaMng
             readThParams[i].proxy_sk = sk_ctx.client_sk_fd[i].sk_id;
             readThParams[i].app_sk = temp;
 
-            reader_th_workers.emplace_back(&RdmaMng::readThreadWorker2, this, ref(readThParams[i]));
+            reader_th_workers.emplace_back(&RdmaMng::readThreadWorker, this, ref(readThParams[i]));
         }
 
         cout << "==================  CONFIGURATION ==================" << endl;
@@ -391,7 +391,7 @@ namespace rdmaMng
         }
     }
 
-    void RdmaMng::readThreadWorker2(ReaderThreadData &params)
+    void RdmaMng::readThreadWorker(ReaderThreadData &params)
     {
         try
         {
@@ -451,12 +451,11 @@ namespace rdmaMng
                 {
                     try
                     {
-                        if (ctx->readMsg2(start_idx, end_idx, params.app_sk, params.dest_fd) != 0)
-                            throw runtime_error("Error reading message in readThreadWorker2");
+                        ctx->readMsg(start_idx, end_idx, params.app_sk, params.dest_fd);
                     }
                     catch (const std::exception &e)
                     {
-                        cerr << "Exception in readThreadWorker2: " << e.what() << endl;
+                        cerr << "Exception in readThreadWorker: " << e.what() << endl;
                         perror("Details");
                     }
 
@@ -464,10 +463,12 @@ namespace rdmaMng
                 }
 
                 // wait for new data to consume
-                unique_lock<mutex> lock(ctx->mtx_data_to_consume);
-                ctx->cv_data_to_consume.wait(lock, [&ctx, shouldStop, end_idx]
-                                             { return ctx->end_read_idx.load() != end_idx || shouldStop(); });
-                lock.unlock();
+                // unique_lock<mutex> lock(ctx->mtx_data_to_consume);
+                while (ctx->end_read_idx.load() == end_idx && !shouldStop())
+                    ;
+                /*ctx->cv_data_to_consume.wait(lock, [&ctx, shouldStop, end_idx]
+                                             { return ctx->end_read_idx.load() != end_idx || shouldStop(); });*/
+                // lock.unlock();
             }
 
             // if here means that the thread is done processing
@@ -487,7 +488,7 @@ namespace rdmaMng
         }
         catch (const std::exception &e)
         {
-            cerr << "Exception in readThreadWorker2: " << e.what() << endl;
+            cerr << "Exception in readThreadWorker: " << e.what() << endl;
             perror("Details");
         }
     }
@@ -510,13 +511,13 @@ namespace rdmaMng
                 continue;
 
             // wake the thread
-            unique_lock<mutex> lock(ctx.mtx_data_to_consume);
+            // unique_lock<mutex> lock(ctx.mtx_data_to_consume);
+            ctx.reading_th_ready_for_commit.store(0);
             ctx.start_read_idx.store(start_idx);
             ctx.end_read_idx.store(end_idx);
 
-            ctx.reading_th_ready_for_commit.store(0);
-            ctx.cv_data_to_consume.notify_all();
-            lock.unlock();
+            /*ctx.cv_data_to_consume.notify_all();
+            lock.unlock();*/
 
             // wait for the threads
             while (ctx.reading_th_ready_for_commit.load() < ctx.tot_r_thread.load() && !shouldStop())

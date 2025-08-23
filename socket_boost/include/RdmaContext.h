@@ -163,11 +163,6 @@ namespace rdma
         std::queue<WorkRequest> work_reqs;
         std::mutex mtx_wrs; // Mutex to protect the work requests queue
 
-        RdmaContext();
-        ~RdmaContext();
-
-        std::thread read_thread_master;
-
         std::atomic<bool> is_readTh_master_running{false};
         std::atomic<uint32_t> tot_r_thread{0};
 
@@ -178,27 +173,32 @@ namespace rdma
         std::condition_variable cv_data_to_consume;
         std::atomic<int> reading_th_ready_for_commit{0};
 
+        RdmaContext();
+        ~RdmaContext();
+
+        // conn setup
         serverConnection_t serverSetup();
         void serverHandleNewClient(serverConnection_t &sc);
         void clientConnect(uint32_t server_ip, uint16_t server_port);
 
+        // read/write
         int writeMsg(int src_fd, struct sock_id original_socket);
+        int readMsg(uint32_t start_read_index, uint32_t end_read_index, sock_id_t target_sk, int dest_fd);
 
-        int readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index, std::function<void(std::unordered_map<sock_id_t, int> &)> removeClosedSocket);
+        // indexes
         void updateRemoteReadIndex();
+        void updateRemoteWriteIndex();
 
-        int readMsg2(uint32_t start_read_index, uint32_t end_read_index, sock_id_t target_sk, int dest_fd);
+        // flush
+        void flushWrQueue();
+        bool shouldFlushWrQueue();
 
-        void setPollingStatus(uint32_t is_polling);
-        void postReceive(int qpIdx, bool allQp);
-
+        // utils
         const std::string getOpName(CommunicationCode code);
         uint64_t getTimeMS();
         void waitForContextToBeReady();
-
-        void flushWrQueue();
-        void updateRemoteWriteIndex();
-        bool shouldFlushWrQueue();
+        void setPollingStatus(uint32_t is_polling);
+        void postReceive(int qpIdx, bool allQp);
 
     private:
         IndexPool idxPool;
@@ -208,23 +208,25 @@ namespace rdma
         size_t local_remote_read_index_offset;
         uintptr_t remote_addr_read_index;
 
+        // communication setup
         int tcpConnect(uint32_t ip);
         int tcpWaitForConnection();
         ibv_context *openDevice();
         uint32_t getPsn();
-        void sendNotification(CommunicationCode code);
-        void pollCqSend(ibv_cq *send_cq_to_poll);
-        int parseMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg);
-        void sendDataReady();
         conn_info rdmaSetupPreHs();
         void rdmaSetupPostHs(conn_info remote, conn_info local);
         void showDevices();
+
+        // rdma
+        void sendNotification(CommunicationCode code);
+        void pollCqSend(ibv_cq *send_cq_to_poll);
+        void sendDataReady();
+
+        // WR
         void enqueueWr(uint32_t start_idx, uint32_t end_idx, size_t data_size);
         void executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
         void executeWrNow(WorkRequest wr, bool signaled);
-
         WorkRequest createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
-
         WorkRequest *createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, uint32_t idx, bool signaled);
     };
 
