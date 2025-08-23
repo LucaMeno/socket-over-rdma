@@ -832,26 +832,6 @@ namespace rdma
 
             lk.unlock();
         }
-
-        /*std::unique_lock<std::mutex> lk(mtx_commit_flush);
-        in++;
-        cout << "IN: " << in << " OUT: " << out << " PRE: " << pre_index << " NEW: " << new_idx << endl;
-        cond_commit_flush.wait(lk, [&]
-                               { return buffer_to_write->remote_write_index.load(memory_order_acquire) == pre_index || stop.load() == true; });
-        if (stop.load() == true)
-            throw runtime_error("Stopping updateRemoteWriteIndex due to stop signal");
-
-        buffer_to_write->remote_write_index.store(new_idx, memory_order_release);
-        out++;
-        cout << " -- " << endl;
-        cond_commit_flush.notify_all();
-        lk.unlock();*/
-
-        /*uint32_t expected = pre_index;
-        uint32_t desired = new_idx;
-
-        while (!buffer_to_write->remote_write_index.compare_exchange_strong(expected, desired))
-            expected = wr_batch[0]->pre_idx;*/
     }
 
     bool RdmaContext::shouldFlushWrQueue()
@@ -895,10 +875,10 @@ namespace rdma
 
             if (COUNT % 100 == 0)
             {
-                cout << "Waiting for space in the ringbuffer (" << COUNT << ")... "
-                     << "Used: " << used << ", Available: " << available_space
+                cout << "[Debug] -- Waiting for space in the ringbuffer (" << COUNT << ")... "
+                     /*<< "Used: " << used << ", Available: " << available_space
                      << ", Start Index: " << start_w_index
-                     << ", End Index: " << end_w_index << endl;
+                     << ", End Index: " << end_w_index*/ << endl;
             }
 
             if (stop.load() == true)
@@ -1160,26 +1140,3 @@ namespace rdma
         }
     }
 }
-
-/*// commit the mesage
-uint32_t w_idx = RING_IDX(start_w_index + msg->number_of_slots); // local write index
-uint32_t r_idx = RING_IDX(start_w_index);
-
-uintptr_t batch_start = (uintptr_t)&buffer_to_write->data[r_idx];
-size_t batch_size = msg->number_of_slots * sizeof(rdma_msg_t);
-uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
-
-executeWrNow(remote_addr_2, (uintptr_t)msg, sizeof(rdma_msg_t), true);
-updateRemoteWriteIndex(start_w_index, start_w_index + msg->number_of_slots);
-
-auto flags = buffer_to_read->flags.flags.load();
-
-if ((flags & static_cast<unsigned int>(RingBufferFlag::RING_BUFFER_POLLING)) == 0)
-{
-    if (last_notification_data_ready_ns == 0 ||
-        (getTimeMS() - last_notification_data_ready_ns) >= Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS)
-    {
-        // If the last notification was sent more than Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS ago
-        sendDataReady();
-    }
-}*/
