@@ -552,7 +552,7 @@ namespace rdmaMng
     {
         try
         {
-            ctx.flushWrQueue(); // Flush the work requests queue
+            ctx.flushWrQueue();
             if (updateRemoteIndex)
                 ctx.updateRemoteWriteIndex();
         }
@@ -735,7 +735,7 @@ namespace rdmaMng
 
     void RdmaMng::flushThread()
     {
-        cout << "Flush thread started" << endl;
+        cout << "[Debug] -- Flush thread started" << endl;
 
         while (stop_threads.load() == false)
         {
@@ -775,7 +775,7 @@ namespace rdmaMng
             }
         }
 
-        cout << "Flush thread stopped" << endl;
+        cout << "[Shutdown] Flush thread stopped" << endl;
     }
 
     vector<int> RdmaMng::waitOnSelect(const vector<int> &fds)

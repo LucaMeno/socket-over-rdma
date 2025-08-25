@@ -76,7 +76,7 @@ namespace sk
 
     SocketMng::~SocketMng()
     {
-        std::cout << "Destroying SocketMng...\n";
+        std::cout << "[Cleanup ] Destroying SocketMng...\n";
 
         // Notify all threads to exit
         unique_lock<std::mutex> lock(mutex);

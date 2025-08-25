@@ -34,22 +34,27 @@ public:
     inline static const char *RDMA_TCP_PORT = "7472";                        // Default RDMA port for TCP parameters exchange
     inline static const int MAX_MSG_BUFFER = (1024 * 2);                     // POWER OF 2!!!!!!!!!!!
     inline static const int TIME_TO_WAIT_IF_NO_SPACE_MS = 1;                 // ms
-    inline static const int MAX_PAYLOAD_SIZE = (64 * 1024);                  // 64 KB
+    inline static const int MAX_PAYLOAD_SIZE = (64 * 1024);                 // 64 KB
     inline static const int QP_N = 8;                                        // Number of QPs
     inline static const int DEFAULT_QP_IDX = 0;                              // Default QP index
     inline static const size_t MAX_WR_PER_POST = 256;                        // Maximum number of work requests in a single post (wr per flight)
     inline static const uint32_t TIME_BTW_DATA_READY_NOTIFICATIONS_MS = 500; // 500 ms
-    inline static const int THRESHOLD_NOT_AUTOSCALER = MAX_WR_PER_POST;      // Threshold for flushing messages
+    inline static const int THRESHOLD_NOT_AUTOSCALER = MAX_WR_PER_POST;  // Threshold for flushing messages
 
-    inline static const int WORK_REQUEST_POOL_SIZE = 1024; // Capacity of the write queue POWER OF 2!!!!!!!!!!!
+    inline static const int WORK_REQUEST_POOL_SIZE = MAX_MSG_BUFFER; // Capacity of the write queue POWER OF 2!!!!!!!!!!!
+
+    inline static const int TIME_TO_FILL_CQ_TO_POST_MS = 2;
 
     // RDMA manager
     inline static const int N_WRITER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket
     inline static const int N_READER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket
     inline static const int TIME_STOP_SELECT_SEC = 5;             // 5 seconds
     inline static const int FLUSH_INTERVAL_MS = 10;               // ms
-    inline static const int N_OF_FLUSHES_BEFORE_UPDATE_INDEX = 2;
-    inline static const int N_THREAD_POOL_THREADS = 64;
+    inline static const int N_OF_FLUSHES_BEFORE_UPDATE_INDEX = 5;
+    inline static const int N_THREAD_POOL_THREADS = 16;
+
+    inline static const int N_QP_PER_POST = 2;
+    inline static const int N_WR_PER_QP_PER_POST = MAX_WR_PER_POST / N_QP_PER_POST;
 
     inline static const char *SERVER_IP = "127.0.0.1";
     static std::vector<uint16_t> getTargetPorts()

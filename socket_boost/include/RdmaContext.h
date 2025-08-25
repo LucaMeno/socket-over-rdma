@@ -22,7 +22,6 @@
 #include "SocketMng.h"
 #include "Config.hpp"
 #include "SockMap.hpp"
-#include "IndexPool.hpp"
 
 #define RING_IDX(i) ((i) & (Config::MAX_MSG_BUFFER - 1))
 
@@ -173,6 +172,10 @@ namespace rdma
         std::condition_variable cv_data_to_consume;
         std::atomic<int> reading_th_ready_for_commit{0};
 
+        std::mutex mtx_qp_idx;
+        std::condition_variable cv_qp_idx;
+        bool is_qp_idx_available[Config::QP_N] = {true};
+
         RdmaContext();
         ~RdmaContext();
 
@@ -201,8 +204,6 @@ namespace rdma
         void postReceive(int qpIdx, bool allQp);
 
     private:
-        IndexPool idxPool;
-
         size_t local_remote_write_index_offset;
         uintptr_t remote_addr_write_index;
         size_t local_remote_read_index_offset;
@@ -217,9 +218,15 @@ namespace rdma
         void rdmaSetupPostHs(conn_info remote, conn_info local);
         void showDevices();
 
+        int getFreeQpIndex();
+        std::vector<int> getFreeQpIndexes(int n);
+
+        void releaseQpIndex(int index);
+        void releaseQpIndexes(const std::vector<int> &indexes);
+
         // rdma
         void sendNotification(CommunicationCode code);
-        void pollCqSend(ibv_cq *send_cq_to_poll);
+        void pollCqSend(ibv_cq *send_cq_to_poll, int num_entry = 1);
         void sendDataReady();
 
         // WR

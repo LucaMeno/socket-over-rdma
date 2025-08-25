@@ -68,17 +68,25 @@ int main(int argc, char *argv[])
         Config::setDevIdx(*devIdx);
         Config::setRdmaDevGidIdx(*devGidIdx);
 
-        rdmaMng::RdmaMng r(Config::PROXY_PORT,
-                           inet_addr(Config::SERVER_IP),
-                           Config::RDMA_SERVER_PORT,
-                           Config::getTargetPorts());
-        r.run();
+        try
+        {
+            rdmaMng::RdmaMng r(Config::PROXY_PORT,
+                               inet_addr(Config::SERVER_IP),
+                               Config::RDMA_SERVER_PORT,
+                               Config::getTargetPorts());
+            r.run();
 
-        cout << "Waiting for messages, press Ctrl+C to exit..." << endl;
-        cout << "-----------------------------------------------------------" << endl;
-        while (!STOP)
-            pause(); // wait for signal
-        cout << "-----------------------------------------------------------" << endl;
+            cout << "Waiting for messages, press Ctrl+C to exit..." << endl;
+            cout << "-----------------------------------------------------------" << endl;
+            while (!STOP)
+                pause(); // wait for signal
+            cout << "-----------------------------------------------------------" << endl;
+        }
+        catch (const std::exception &e)
+        {
+            cerr << "Fatal error during RdmaMng initialization: " << e.what() << endl;
+            return EXIT_FAILURE;
+        }
     }
     catch (const std::exception &e)
     {

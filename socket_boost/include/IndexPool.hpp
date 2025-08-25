@@ -1,29 +1,29 @@
-#include <mutex>
+/*#include <mutex>
 #include <condition_variable>
 #include <queue>
+#include <vector>
+#include <iostream>
 
 class IndexPool
 {
 public:
-    // RAII class to manage the index pool
     class Guard
     {
     public:
-        Guard(IndexPool *pool, int index)
-            : pool_(pool), index_(index), valid_(true) {}
+        Guard(IndexPool *pool, std::vector<int> indices)
+            : pool_(pool), indices_(std::move(indices)), valid_(true) {}
 
         ~Guard()
         {
             if (valid_)
-                pool_->release(index_);
+                pool_->release(indices_);
         }
 
-        // Disallow copy and enable move semantics
         Guard(const Guard &) = delete;
         Guard &operator=(const Guard &) = delete;
 
         Guard(Guard &&other) noexcept
-            : pool_(other.pool_), index_(other.index_), valid_(other.valid_)
+            : pool_(other.pool_), indices_(std::move(other.indices_)), valid_(other.valid_)
         {
             other.valid_ = false;
         }
@@ -32,78 +32,77 @@ public:
             if (this != &other)
             {
                 if (valid_)
-                    pool_->release(index_);
+                    pool_->release(indices_);
                 pool_ = other.pool_;
-                index_ = other.index_;
+                indices_ = std::move(other.indices_);
                 valid_ = other.valid_;
                 other.valid_ = false;
             }
             return *this;
         }
 
-        // Conversion operator to use the object as an integer
         operator int() const
         {
-            return index_;
+            if (indices_.size() != 1)
+                throw std::runtime_error("Guard contiene più di un indice");
+            return indices_[0];
         }
 
-        // Get the index
-        int getIndex() const { return index_; }
+        const std::vector<int> &getIndexes() const { return indices_; }
 
-        // Release the index back to the pool
-        void releaseIndex()
+        // Rilascio manuale
+        void releaseIndexes()
         {
             if (valid_ && pool_)
             {
-                pool_->release(index_);
+                pool_->release(indices_);
                 valid_ = false;
             }
         }
 
-        // Check if the index is valid
-        bool valid() const
-        {
-            return valid_;
-        }
+        bool valid() const { return valid_; }
 
     private:
         IndexPool *pool_;
-        int index_;
+        std::vector<int> indices_;
         bool valid_;
     };
 
-    // The constructor initializes the pool with "size" indices (from 0 to size-1)
     explicit IndexPool(int size)
     {
         for (int i = 0; i < size; ++i)
             free_idxs_.push(i);
     }
 
-    // The get() function returns a Guard object that blocks if no indices are available.
-    Guard getGuard()
+    // richiede N indici
+    Guard getGuard(size_t count = 1)
     {
         std::unique_lock<std::mutex> lock(mutex_);
-        bool was_empty = free_idxs_.empty();
-        cv_.wait(lock, [this]
-                 { return !free_idxs_.empty(); });
-        if (was_empty)
-            std::cout << "Thread slept waiting for index\n";
 
-        int index = free_idxs_.front();
-        free_idxs_.pop();
-        return Guard(this, index);
+        cv_.wait(lock, [this, count]
+                 { return free_idxs_.size() >= count; });
+
+        std::vector<int> indices;
+        for (size_t i = 0; i < count; ++i)
+        {
+            indices.push_back(free_idxs_.front());
+            free_idxs_.pop();
+        }
+
+        return Guard(this, std::move(indices));
     }
 
 private:
-    // Function called by Guard for release.
-    void release(int index)
+    void release(const std::vector<int> &indices)
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        free_idxs_.push(index);
-        cv_.notify_one();
+        for (int idx : indices)
+            free_idxs_.push(idx);
+        cv_.notify_all();
     }
 
     std::mutex mutex_;
     std::condition_variable cv_;
     std::queue<int> free_idxs_;
 };
+*/

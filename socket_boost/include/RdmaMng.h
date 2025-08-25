@@ -81,14 +81,14 @@ namespace rdmaMng
             {
             case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
             {
-                logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "CLIENT");
+                logSocketEvent("NEW   ", user_data->association.app, user_data->association.proxy, "CLIENT");
                 connect(user_data->association.app);
                 onSocketOpen(user_data->association.proxy, user_data->association.app);
                 break;
             }
             case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
             {
-                logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "SERVER");
+                logSocketEvent("NEW   ", user_data->association.app, user_data->association.proxy, "SERVER");
                 // server side, do not connect the RDMA contexts
                 onSocketOpen(user_data->association.proxy, user_data->association.app);
                 break;
