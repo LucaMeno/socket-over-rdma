@@ -32,16 +32,20 @@ public:
     inline static const int ALIGNMENT = 4096; // Size of a memory page
 
     inline static const char *RDMA_TCP_PORT = "7472";                        // Default RDMA port for TCP parameters exchange
-    inline static const int MAX_MSG_BUFFER = (1024 * 2);                     // POWER OF 2!!!!!!!!!!!
+    inline static const int MAX_MSG_BUFFER = (50);                     // POWER OF 2!!!!!!!!!!!
     inline static const int TIME_TO_WAIT_IF_NO_SPACE_MS = 2;                 // ms
-    inline static const int MAX_PAYLOAD_SIZE = (64 * 1024);                  // 64 KB
+    inline static const int MAX_PAYLOAD_SIZE = (1024 * 1024);                  // 64 KB
     inline static const int QP_N = 8;                                        // Number of QPs
     inline static const int DEFAULT_QP_IDX = 0;                              // Default QP index
-    inline static const size_t MAX_WR_PER_POST = 64;                         // Maximum number of work requests in a single post (wr per flight)
+    inline static const size_t MAX_WR_PER_POST = 256;                        // Maximum number of work requests in a single post (wr per flight)
     inline static const uint32_t TIME_BTW_DATA_READY_NOTIFICATIONS_MS = 500; // 500 ms
     inline static const int THRESHOLD_NOT_AUTOSCALER = MAX_WR_PER_POST;      // Threshold for flushing messages
 
-    inline static const int WORK_REQUEST_POOL_SIZE = 1024; // Capacity of the write queue POWER OF 2!!!!!!!!!!!
+    inline static const int WORK_REQUEST_POOL_SIZE = MAX_MSG_BUFFER; // Capacity of the write queue POWER OF 2!!!!!!!!!!!
+
+    inline static const int N_QP_PER_POST = 2;
+    inline static const int MAX_WR_PER_POST_PER_TH = 10;
+    inline static const int MAX_WR_PER_POST_PER_QP = MAX_WR_PER_POST_PER_TH / N_QP_PER_POST;
 
     // RDMA manager
     inline static const int N_WRITER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket

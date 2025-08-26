@@ -22,7 +22,6 @@
 #include "SocketMng.h"
 #include "Config.hpp"
 #include "SockMap.hpp"
-#include "IndexPool.hpp"
 
 #define RING_IDX(i) ((i) & (Config::MAX_MSG_BUFFER - 1))
 
@@ -107,6 +106,23 @@ namespace rdma
         uint32_t new_idx;
     };
 
+    struct DataReturn
+    {
+        int err;
+        uint32_t new_idx;
+
+        DataReturn() : err(0), new_idx(0) {}
+        DataReturn(int e, uint32_t idx) : err(e), new_idx(idx) {}
+    };
+
+    struct DataReturn2
+    {
+        std::vector<WorkRequest *> *wr_batch;
+        std::vector<uint32_t> *indexes;
+
+        DataReturn2() : wr_batch(new std::vector<WorkRequest *>), indexes(new std::vector<uint32_t>) {}
+    };
+
     class RdmaContext
     {
 
@@ -163,6 +179,13 @@ namespace rdma
         std::queue<WorkRequest> work_reqs;
         std::mutex mtx_wrs; // Mutex to protect the work requests queue
 
+        std::atomic<int> outgoing_wrs[Config::QP_N]{0};
+
+        DataReturn2 getPollingBatch();
+        bool postWrBatch2(DataReturn2 dr);
+        std::thread polling_thread_inside;
+        bool is_polling_thread_inside_running;
+
         RdmaContext();
         ~RdmaContext();
 
@@ -183,13 +206,14 @@ namespace rdma
         const std::string getOpName(CommunicationCode code);
         uint64_t getTimeMS();
         void waitForContextToBeReady();
-
-        void flushWrQueue();
-        void updateRemoteWriteIndex();
+        void updateRemoteWriteIndex(uint32_t new_idx);
+        DataReturn flushWrQueue();
         bool shouldFlushWrQueue();
 
     private:
-        IndexPool idxPool;
+        std::mutex mtx_qp_idx;
+        std::condition_variable cv_qp_idx;
+        bool is_qp_idx_available[Config::QP_N] = {true};
 
         size_t local_remote_write_index_offset;
         uintptr_t remote_addr_write_index;
@@ -201,7 +225,7 @@ namespace rdma
         ibv_context *openDevice();
         uint32_t getPsn();
         void sendNotification(CommunicationCode code);
-        void pollCqSend(ibv_cq *send_cq_to_poll);
+        void pollCqSend(ibv_cq *send_cq_to_poll, int num_entry = 1);
         int parseMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg);
         void sendDataReady();
         conn_info rdmaSetupPreHs();
@@ -211,9 +235,16 @@ namespace rdma
         void executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
         void executeWrNow(WorkRequest wr, bool signaled);
 
+        void postWrBatch(std::vector<WorkRequest *> &wr_batch, int start, int end, int qp_idx);
+
         WorkRequest createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
 
         WorkRequest *createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, uint32_t idx, bool signaled);
+
+        int getFreeQpIndex();
+        std::vector<int> getFreeQpIndexes(int n);
+        void releaseQpIndex(int index);
+        void releaseQpIndexes(const std::vector<int> &indexes);
     };
 
 } // namespace rdma

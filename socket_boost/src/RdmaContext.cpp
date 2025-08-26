@@ -404,9 +404,14 @@ namespace rdma
             if (ibv_query_port(ctx, Config::RDMA_DEV_PORT, &port_attr) == 0)
             {
                 if (port_attr.state == IBV_PORT_ACTIVE)
-                    std::cout << "[" << i << "] device UP: " << ibv_get_device_name(device_list[i]) << "\n";
+                    std::cout << "[" << i << "] device UP: " << ibv_get_device_name(device_list[i]);
                 else
-                    std::cout << "[" << i << "] device DOWN: " << ibv_get_device_name(device_list[i]) << "\n";
+                    std::cout << "[" << i << "] device DOWN: " << ibv_get_device_name(device_list[i]);
+
+                if (port_attr.link_layer == IBV_LINK_LAYER_ETHERNET)
+                    std::cout << " (Ethernet)\n";
+                else
+                    std::cout << " (InfiniBand)\n";
             }
 
             ibv_close_device(ctx);
@@ -496,7 +501,7 @@ namespace rdma
         return lrand48() & 0xffffff;
     }
 
-    RdmaContext::RdmaContext() : idxPool(Config::QP_N)
+    RdmaContext::RdmaContext()
     {
         is_ready.store(false);
         stop.store(false);
@@ -526,6 +531,11 @@ namespace rdma
         for (uint32_t i = 0; i < Config::WORK_REQUEST_POOL_SIZE; i++)
             if (!wr_available_idx_queue.push(i))
                 throw std::runtime_error("Work request pool is exhausted");
+
+        for (int i = 0; i < Config::QP_N; i++)
+        {
+            is_qp_idx_available[i] = true;
+        }
     }
 
     RdmaContext::~RdmaContext()
@@ -599,19 +609,19 @@ namespace rdma
         send_wr.next = nullptr;
 
         // Post send with ibv_post_send
-        auto guard = idxPool.getGuard();      // Get a guard for the index pool
-        uint32_t qp_index = guard.getIndex(); // Get the index for the QP
+        int qp_index = getFreeQpIndex();
 
         struct ibv_send_wr *bad_send_wr;
         if (ibv_post_send(qps[qp_index], &send_wr, &bad_send_wr) != 0) // Post the send work request
         {
-            guard.releaseIndex(); // Release the index back to the pool
+            releaseQpIndex(qp_index);
             throw runtime_error("Failed to post send - sendNotification");
         }
 
         // Poll the completion queue
         pollCqSend(send_cqs[qp_index]);
         cout << "Sent notification: " << getOpName(code) << endl;
+        releaseQpIndex(qp_index);
     }
 
     void RdmaContext::sendDataReady()
@@ -702,8 +712,7 @@ namespace rdma
     void RdmaContext::executeWrNow(WorkRequest wr, bool signaled)
     {
         // Post send in SQ with ibv_post_send
-        auto guard = idxPool.getGuard();      // Get a guard for the index pool
-        uint32_t qp_index = guard.getIndex(); // Get the index for the QP
+        int qp_index = getFreeQpIndex();
 
         // link the SGE to the WR
         wr.wr.sg_list = &wr.sge; // Link the SGE to the WR
@@ -722,7 +731,7 @@ namespace rdma
         int ret = ibv_post_send(qps[qp_index], &wr.wr, &bad_send_wr_data);
         if (ret != 0) // Post the send work request
         {
-            guard.releaseIndex(); // Release the index back to the pool
+            releaseQpIndex(qp_index);
             cout << "Wr failed: " << endl
                  << "- Remote Address: " << std::hex << wr.wr.wr.rdma.remote_addr << std::dec << endl
                  << "- Local Address: " << std::hex << wr.sge.addr << std::dec << endl
@@ -738,6 +747,7 @@ namespace rdma
         // Poll the completion queue
         if (signaled == true)
             pollCqSend(send_cqs[qp_index]);
+        releaseQpIndex(qp_index);
     }
 
     inline void RdmaContext::executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled = true)
@@ -746,64 +756,233 @@ namespace rdma
         executeWrNow(wr, signaled);
     }
 
-    int in = 0;
-    int out = 0;
-
-    void RdmaContext::flushWrQueue()
+    bool RdmaContext::postWrBatch2(DataReturn2 dr)
     {
-        unique_lock<mutex> lock(mtx_wrs);
+        if (dr.wr_batch == nullptr || dr.indexes == nullptr)
+            throw runtime_error("postWrBatch2 received null pointers");
 
-        vector<WorkRequest *> wr_batch;
-        wr_batch.reserve(Config::MAX_WR_PER_POST);
+        auto wr_batch = dr.wr_batch;
+        auto indexes = dr.indexes;
 
-        vector<uint32_t> indexes;
-        indexes.reserve(Config::MAX_WR_PER_POST);
+        if (wr_batch->empty())
+            return false;
+
+        // Prepare the work requests for posting
+        size_t i = 0;
+        for (; i < wr_batch->size() - 1; ++i)
+        {
+            (*wr_batch)[i]->wr.sg_list = &(*wr_batch)[i]->sge; // Link the SGE to the WR
+            (*wr_batch)[i]->wr.next = &(*wr_batch)[i + 1]->wr; // Link the WRs together
+        }
+
+        // last WR
+        (*wr_batch)[i]->wr.sg_list = &(*wr_batch)[i]->sge;  // Link the SGE to the WR
+        (*wr_batch)[i]->wr.next = nullptr;                  // Last WR does not have a next pointer
+        (*wr_batch)[i]->wr.send_flags |= IBV_SEND_SIGNALED; // Set the last WR to be signaled
+
+        // post
+        vector<int> qp_indices = getFreeQpIndexes(Config::N_QP_PER_POST);
+
+        int rem = wr_batch->size();
+        int start = 0;
+        int used_qp = 0;
+
+        // cout << "start: " << start << " rem: " << rem << endl;
+        for (int j = 0; j < Config::N_QP_PER_POST; j++)
+        {
+            int qp_index = qp_indices[j];
+
+            int end = start + std::min(Config::MAX_WR_PER_POST_PER_QP, rem);
+            // cout << "Posting batch: start: " << start << " end: " << end << " qp: " << qp_index << endl;
+            postWrBatch(*wr_batch, start, end, qp_index);
+            used_qp++;
+            outgoing_wrs[qp_index].fetch_add(1);
+
+            rem -= (end - start);
+            if (rem <= 0)
+                break;
+            start = end;
+        }
+
+        for (int j = 0; j < used_qp; j++)
+        {
+            int n = outgoing_wrs[qp_indices[j]].load();
+            // cout << "Qp: " << qp_indices[j] << " N: " << n << endl;
+            if (n >= 64)
+            {
+                pollCqSend(send_cqs[qp_indices[j]], n);
+                outgoing_wrs[qp_indices[j]].fetch_sub(n);
+            }
+        }
+
+        releaseQpIndexes(qp_indices);
+
+        uint32_t pre_index = wr_batch->front()->pre_idx;
+        uint32_t new_idx = wr_batch->back()->new_idx;
+
+        for (int i = 0; i < indexes->size(); i++)
+            if (!wr_available_idx_queue.push((*indexes)[i]))
+                throw runtime_error("Failed to push index to wr_available_idx_queue");
+
+        delete dr.wr_batch;
+        delete dr.indexes;
+
+        while (true)
+        {
+            if (buffer_to_write->remote_write_index.load(memory_order_acquire) == pre_index)
+            {
+                scoped_lock<std::mutex> lk(mtx_commit_flush);
+                buffer_to_write->remote_write_index.store(new_idx, memory_order_release);
+                break;
+            }
+
+            if (stop.load() == true)
+                throw runtime_error("Stopping updateRemoteWriteIndex due to stop signal");
+        }
+
+        return true;
+
+        // cout << "Posted: " << end - start << " wr on qp: " << qp_idx << endl;
+    }
+
+    DataReturn2 RdmaContext::getPollingBatch()
+    {
+        auto *wr_batch = new std::vector<WorkRequest *>();
+        wr_batch->reserve(Config::MAX_WR_PER_POST_PER_TH);
+
+        auto *indexes = new std::vector<uint32_t>();
+        indexes->reserve(Config::MAX_WR_PER_POST_PER_TH);
 
         uint32_t idx = 0;
         WorkRequest *wr;
         int j = 0;
+
         while (true)
         {
-            if (j >= Config::MAX_WR_PER_POST)
+            if (stop.load() == true)
+                break;
+
+            if (j >= Config::MAX_WR_PER_POST_PER_TH)
+                break;
+
+            if (getTimeMS() - last_flush_ms > Config::FLUSH_INTERVAL_MS && j > 0)
                 break;
 
             if (!wr_busy_idx_queue.pop(idx))
-                break;
+                continue;
 
             wr = &wr_pool[idx];
-            wr_batch.push_back(wr);
-            indexes.push_back(idx);
+            wr_batch->push_back(wr);
+            indexes->push_back(idx);
 
             j++;
         }
 
-        // cout << "Flushing " << wr_batch.size() << " work requests" << endl;
+        DataReturn2 dr;
+        dr.wr_batch = wr_batch;
+        dr.indexes = indexes;
+        // cout << "ret: " << wr_batch->size() << " wr to post" << endl;
+        return dr;
+    }
 
-        lock.unlock();
-
-        if (wr_batch.empty())
-            return; // nothing to flush
+    inline void RdmaContext::postWrBatch(vector<WorkRequest *> &wr_batch, int start, int end, int qp_idx)
+    {
+        if (end <= start)
+            throw runtime_error("postWrBatch: end must be greater than start");
 
         // Prepare the work requests for posting
-        size_t i = 0;
-        for (; i + 1 < wr_batch.size(); ++i)
+        size_t i = start;
+        for (; i < end - 1; ++i)
         {
             wr_batch[i]->wr.sg_list = &wr_batch[i]->sge; // Link the SGE to the WR
             wr_batch[i]->wr.next = &wr_batch[i + 1]->wr; // Link the WRs together
         }
+        // last WR
         wr_batch[i]->wr.sg_list = &wr_batch[i]->sge;     // Link the SGE to the WR
         wr_batch[i]->wr.next = nullptr;                  // Last WR does not have a next pointer
         wr_batch[i]->wr.send_flags |= IBV_SEND_SIGNALED; // Set the last WR to be signaled
 
-        auto guard = idxPool.getGuard();      // Get a guard for the index pool
-        uint32_t qp_index = guard.getIndex(); // Get the index for the QP
-
+        // post
         struct ibv_send_wr *bad_send_wr_data;
-        int ret = ibv_post_send(qps[qp_index], &wr_batch[0]->wr, &bad_send_wr_data);
+        int ret = ibv_post_send(qps[qp_idx], &wr_batch[start]->wr, &bad_send_wr_data);
         if (ret != 0)
             throw runtime_error("Failed to post write - flushWrQueue - code: " + to_string(ret));
-        pollCqSend(send_cqs[qp_index]);
-        guard.releaseIndex(); // Release the index back to the pool
+
+        //cout << "Posted: " << end-start << " wr on qp: " << qp_idx << endl;
+    }
+
+    DataReturn RdmaContext::flushWrQueue()
+    {
+        vector<WorkRequest *> wr_batch;
+        wr_batch.reserve(Config::MAX_WR_PER_POST_PER_TH);
+
+        vector<uint32_t> indexes;
+        indexes.reserve(Config::MAX_WR_PER_POST_PER_TH);
+
+        uint32_t idx = 0;
+        WorkRequest *wr;
+        int j = 0;
+
+        {
+            scoped_lock<mutex> lock(mtx_wrs);
+            while (true)
+            {
+                if (j >= Config::MAX_WR_PER_POST_PER_TH)
+                    break;
+
+                if (!wr_busy_idx_queue.pop(idx))
+                    break;
+
+                wr = &wr_pool[idx];
+                wr_batch.push_back(wr);
+                indexes.push_back(idx);
+
+                j++;
+            }
+        }
+
+        if (wr_batch.empty())
+            return DataReturn(-1, 0);
+
+        // cout << "Flushing " << wr_batch.size() << " work requests" << endl;
+
+        vector<int> qp_indices = getFreeQpIndexes(Config::N_QP_PER_POST);
+
+        int rem = wr_batch.size();
+        int start = 0;
+        int used_qp = 0;
+
+        // cout << "start: " << start << " rem: " << rem << endl;
+        for (int j = 0; j < Config::N_QP_PER_POST; j++)
+        {
+            int qp_index = qp_indices[j];
+
+            int end = start + std::min(Config::MAX_WR_PER_POST_PER_QP, rem);
+            // cout << "Posting batch: start: " << start << " end: " << end << " qp: " << qp_index << endl;
+            postWrBatch(wr_batch, start, end, qp_index);
+            used_qp++;
+            outgoing_wrs[qp_index].fetch_add(1);
+
+            rem -= (end - start);
+            if (rem <= 0)
+                break;
+            start = end;
+        }
+
+        for (int j = 0; j < used_qp; j++)
+        {
+            int n = outgoing_wrs[qp_indices[j]].load();
+            // cout << "Qp: " << qp_indices[j] << " N: " << n << endl;
+            if (n >= 64)
+            {
+                pollCqSend(send_cqs[qp_indices[j]], n);
+                outgoing_wrs[qp_indices[j]].fetch_sub(n);
+            }
+        }
+
+        releaseQpIndexes(qp_indices);
+
+        // cout << "Flushed " << wr_batch.size() << " work requests, qp: " << qp_index << endl;
 
         // save the indexes to prevent overwrite
         uint32_t pre_index = wr_batch[0]->pre_idx;
@@ -816,38 +995,18 @@ namespace rdma
         // update remote index
         while (true)
         {
-            unique_lock<std::mutex> lk(mtx_commit_flush);
             if (buffer_to_write->remote_write_index.load(memory_order_acquire) == pre_index)
             {
+                scoped_lock<std::mutex> lk(mtx_commit_flush);
                 buffer_to_write->remote_write_index.store(new_idx, memory_order_release);
                 break;
             }
 
             if (stop.load() == true)
                 throw runtime_error("Stopping updateRemoteWriteIndex due to stop signal");
-
-            lk.unlock();
         }
 
-        /*std::unique_lock<std::mutex> lk(mtx_commit_flush);
-        in++;
-        cout << "IN: " << in << " OUT: " << out << " PRE: " << pre_index << " NEW: " << new_idx << endl;
-        cond_commit_flush.wait(lk, [&]
-                               { return buffer_to_write->remote_write_index.load(memory_order_acquire) == pre_index || stop.load() == true; });
-        if (stop.load() == true)
-            throw runtime_error("Stopping updateRemoteWriteIndex due to stop signal");
-
-        buffer_to_write->remote_write_index.store(new_idx, memory_order_release);
-        out++;
-        cout << " -- " << endl;
-        cond_commit_flush.notify_all();
-        lk.unlock();*/
-
-        /*uint32_t expected = pre_index;
-        uint32_t desired = new_idx;
-
-        while (!buffer_to_write->remote_write_index.compare_exchange_strong(expected, desired))
-            expected = wr_batch[0]->pre_idx;*/
+        return DataReturn(0, new_idx);
     }
 
     bool RdmaContext::shouldFlushWrQueue()
@@ -1002,12 +1161,13 @@ namespace rdma
         return 0;
     }
 
-    void RdmaContext::updateRemoteWriteIndex()
+    void RdmaContext::updateRemoteWriteIndex(uint32_t new_index)
     {
         if (stop.load() == true)
             throw runtime_error("Stopping updateRemoteWriteIndex due to stop signal");
 
-        std::unique_lock<std::mutex> lock(mtx_commit_flush);
+        scoped_lock<mutex> lock(mtx_commit_flush);
+
         try
         {
             executeWrNow(remote_addr_write_index,
@@ -1038,10 +1198,6 @@ namespace rdma
 
     void RdmaContext::updateRemoteReadIndex(uint32_t r_idx)
     {
-        // COMMIT the read index
-        // buffer_to_read->remote_read_index.store(r_idx);
-        // atomic_thread_fence(memory_order_release);
-
         executeWrNow(remote_addr_read_index,
                      (uintptr_t)(buffer + local_remote_read_index_offset),
                      sizeof(buffer_to_read->remote_read_index),
@@ -1071,6 +1227,9 @@ namespace rdma
         {
             int idx = RING_IDX(start_read_index + i);
             rdma_msg_t *msg = &buffer_to_read->data[idx];
+
+            if (msg->msg_size == 0 || msg->number_of_slots != 1)
+                throw runtime_error("Invalid message received - readMsg");
 
             int ret = parseMsg(bpf_ctx, client_sks, *msg);
             if (ret != 0)
@@ -1121,32 +1280,41 @@ namespace rdma
         cout << "Polling status updated: " << (is_polling ? "ON" : "OFF") << endl;
     }
 
-    void RdmaContext::pollCqSend(ibv_cq *send_cq_to_poll)
+    void RdmaContext::pollCqSend(ibv_cq *send_cq_to_poll, int num_entry)
     {
         if (send_cq_to_poll == nullptr)
             throw runtime_error("send_cq is nullptr - pollCqSend");
 
-        struct ibv_wc wc;
+        // struct ibv_wc wc;
+        std::vector<ibv_wc> wc_array(num_entry);
         int num_completions;
+        int remaining = num_entry;
 
-        // poll until we get a completion
-        while (1)
-        {
-            num_completions = ibv_poll_cq(send_cq_to_poll, 1, &wc);
-            if (num_completions != 0 || stop.load() == true)
-                break;
-        }
+        while (remaining > 0)
+        { // poll until we get a completion
+            while (1)
+            {
+                num_completions = ibv_poll_cq(send_cq_to_poll, remaining, wc_array.data());
+                if (num_completions != 0 || stop.load() == true)
+                    break;
+            }
 
-        if (num_completions == 0)
-        {
-            cout << "Interrupted while polling CQ, no completions found." << endl;
-            return; // no completions found, just return
-        }
+            if (stop.load() == true)
+            {
+                cout << "Interrupted while polling CQ, no completions found." << endl;
+                return; // no completions found, just return
+            }
 
-        if (num_completions < 0 || wc.status != IBV_WC_SUCCESS)
-        {
-            fprintf(stderr, "CQ error: %s (%d)\n", ibv_wc_status_str(wc.status), wc.status);
-            throw runtime_error("Failed to poll CQ - pollCqSend");
+            if (num_completions < 0)
+            {
+                throw runtime_error("Failed to poll CQ - pollCqSend");
+            }
+
+            for (int i = 0; i < num_completions; ++i)
+                if (wc_array[i].status != IBV_WC_SUCCESS)
+                    throw runtime_error("Work completion error: " + to_string(wc_array[i].status) + " - pollCqSend");
+
+            remaining -= num_completions;
         }
     }
 
@@ -1216,27 +1384,87 @@ namespace rdma
             }
         }
     }
-}
 
-/*// commit the mesage
-uint32_t w_idx = RING_IDX(start_w_index + msg->number_of_slots); // local write index
-uint32_t r_idx = RING_IDX(start_w_index);
-
-uintptr_t batch_start = (uintptr_t)&buffer_to_write->data[r_idx];
-size_t batch_size = msg->number_of_slots * sizeof(rdma_msg_t);
-uintptr_t remote_addr_2 = remote_addr + ((uintptr_t)batch_start - (uintptr_t)buffer);
-
-executeWrNow(remote_addr_2, (uintptr_t)msg, sizeof(rdma_msg_t), true);
-updateRemoteWriteIndex(start_w_index, start_w_index + msg->number_of_slots);
-
-auto flags = buffer_to_read->flags.flags.load();
-
-if ((flags & static_cast<unsigned int>(RingBufferFlag::RING_BUFFER_POLLING)) == 0)
-{
-    if (last_notification_data_ready_ns == 0 ||
-        (getTimeMS() - last_notification_data_ready_ns) >= Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS)
+    int RdmaContext::getFreeQpIndex()
     {
-        // If the last notification was sent more than Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS ago
-        sendDataReady();
+        std::unique_lock<std::mutex> lock(mtx_qp_idx);
+
+        cv_qp_idx.wait(lock, [&]
+                       {
+                        if(stop.load())  return true;
+                        for (int i = 0; i < Config::QP_N; i++)
+                            if (is_qp_idx_available[i])
+                                return true;
+                        cout << "[Debug] -- No idx available, getFreeQpIndex wait... " << endl;
+                        return false; });
+
+        if (stop.load())
+            throw std::runtime_error("Stopping getFreeQpIndex due to stop signal");
+
+        for (int i = 0; i < Config::QP_N; i++)
+        {
+            if (is_qp_idx_available[i])
+            {
+                is_qp_idx_available[i] = false;
+                return i;
+            }
+        }
+
+        // should never reach this point...
+        throw std::runtime_error("No available index found");
     }
-}*/
+    std::vector<int> RdmaContext::getFreeQpIndexes(int n)
+    {
+        if (n <= 0 || n > Config::QP_N)
+            throw std::invalid_argument("Invalid number of indices requested");
+
+        std::vector<int> result;
+        result.reserve(n);
+
+        std::unique_lock<std::mutex> lock(mtx_qp_idx);
+
+        cv_qp_idx.wait(lock, [&]
+                       {
+                        if(stop.load())  return true;
+                        int free_count = 0;
+                        for (int i = 0; i < Config::QP_N; i++)
+                            if (is_qp_idx_available[i]) free_count++;
+                        if(free_count >= n) return true;
+                        cout << "[Debug] -- No idx available, getFreeQpIndex("<<n<<") wait... " <<endl;
+                        return false; });
+
+        if (stop.load())
+            throw std::runtime_error("Stopping getFreeQpIndexes due to stop signal");
+
+        int j = 0;
+        for (int i = 0; i < Config::QP_N; i++)
+        {
+            if (is_qp_idx_available[i])
+            {
+                is_qp_idx_available[i] = false;
+                result.push_back(i);
+                j++;
+                if (j == n)
+                    break;
+            }
+        }
+
+        if (result.size() != n)
+            throw std::runtime_error("Failed to acquire the requested number of indices");
+
+        return result;
+    }
+
+    void RdmaContext::releaseQpIndex(int index)
+    {
+        releaseQpIndexes({index});
+    }
+
+    void RdmaContext::releaseQpIndexes(const std::vector<int> &indexes)
+    {
+        lock_guard<std::mutex> lock(mtx_qp_idx);
+        for (int index : indexes)
+            is_qp_idx_available[index] = true;
+        cv_qp_idx.notify_all();
+    }
+}

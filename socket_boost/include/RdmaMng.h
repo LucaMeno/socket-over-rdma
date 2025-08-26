@@ -142,6 +142,8 @@ namespace rdmaMng
         std::vector<struct sock_id> sk_to_remove_rx;
         std::atomic<bool> remove_sk_rx;
 
+        void thread_inner_polling(rdma::RdmaContext *ctx);
+
         // Background thread functions
         void launchBackgroundThreads();
         void listenThread();

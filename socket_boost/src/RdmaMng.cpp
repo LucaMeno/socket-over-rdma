@@ -463,9 +463,9 @@ namespace rdmaMng
     {
         try
         {
-            ctx.flushWrQueue(); // Flush the work requests queue
-            if (updateRemoteIndex)
-                ctx.updateRemoteWriteIndex();
+            DataReturn d = ctx.flushWrQueue(); // Flush the work requests queue
+            if (d.err == 0 && updateRemoteIndex)
+                ctx.updateRemoteWriteIndex(d.new_idx);
         }
         catch (const std::exception &e)
         {
@@ -649,9 +649,23 @@ namespace rdmaMng
         }
     }
 
+    void RdmaMng::thread_inner_polling(RdmaContext *ctx)
+    {
+        cout << "START" << endl;
+        while (stop_threads.load() == false)
+        {
+            auto data = ctx->getPollingBatch(); // copy
+            ctx->last_flush_ms = ctx->getTimeMS();
+            thPool->enqueue([data, ctx]() { // lambda has its own copy
+                if (ctx->postWrBatch2(data))
+                    ctx->updateRemoteWriteIndex(10);
+            });
+        }
+    }
+
     void RdmaMng::flushThread()
     {
-        cout << "Flush thread started" << endl;
+        cout << "[Startup] -- Flush thread started" << endl;
 
         while (stop_threads.load() == false)
         {
@@ -662,36 +676,52 @@ namespace rdmaMng
                 if (ctx.is_ready.load() == false)
                     continue; // context is not ready, skip it
 
+                if (ctx.is_polling_thread_inside_running == false)
+                {
+                    ctx.polling_thread_inside = std::thread(&RdmaMng::thread_inner_polling, this, &ctx);
+                    ctx.is_polling_thread_inside_running = true;
+                }
+
+                continue;
+
                 uint64_t now = ctx.getTimeMS();
+                bool launch = false;
+                bool updateIndex = false;
 
                 if (ctx.shouldFlushWrQueue())
                 {
-                    ctx.last_flush_ms = now;
+                    launch = true;
                     ctx.number_of_flushes++;
 
-                    bool updateIndex = false;
                     if (ctx.number_of_flushes >= Config::N_OF_FLUSHES_BEFORE_UPDATE_INDEX)
-                    {
                         updateIndex = true;
-                        ctx.number_of_flushes = 0;
-                    }
-
-                    thPool->enqueue([this, &ctx, updateIndex]()
-                                    { flushThreadWorker(ctx, updateIndex); });
-                    break;
                 }
                 else if (now - ctx.last_flush_ms >= Config::FLUSH_INTERVAL_MS)
                 {
+                    launch = true;
+                    updateIndex = true;
+                }
+
+                if (launch)
+                {
                     ctx.last_flush_ms = now;
-                    ctx.number_of_flushes = 0;
-                    thPool->enqueue([this, &ctx]()
-                                    { flushThreadWorker(ctx, true); });
-                    break;
+
+                    if (updateIndex)
+                        ctx.number_of_flushes = 0;
+
+                    thPool->enqueue([this, &ctx, updateIndex]()
+                                    { flushThreadWorker(ctx, updateIndex); });
+                    thPool->enqueue([this, &ctx, updateIndex]()
+                                    { flushThreadWorker(ctx, updateIndex); });
+                    thPool->enqueue([this, &ctx, updateIndex]()
+                                    { flushThreadWorker(ctx, updateIndex); });
+                    thPool->enqueue([this, &ctx, updateIndex]()
+                                    { flushThreadWorker(ctx, updateIndex); });
                 }
             }
         }
 
-        cout << "Flush thread stopped" << endl;
+        cout << "[Shutdown] Flush thread stopped" << endl;
     }
 
     vector<int> RdmaMng::waitOnSelect(const vector<int> &fds)
