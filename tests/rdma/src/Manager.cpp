@@ -8,6 +8,7 @@ namespace Manager
 {
     Manager::Manager()
     {
+        ctx = nullptr;
         stop_threads.store(false);
 
         // setup the pool
@@ -30,6 +31,12 @@ namespace Manager
     Manager::~Manager()
     {
         stop_threads.store(true, memory_order_release);
+        if (reading_thread.joinable())
+            reading_thread.join();
+        if (flush_thread.joinable())
+            flush_thread.join();
+        if (writer_threads.joinable())
+            writer_threads.join();
     }
 
     void Manager::run(int fd)
@@ -47,6 +54,20 @@ namespace Manager
         if (fd < 0 || ctx == nullptr)
             throw runtime_error("Invalid socket fd or ctx in writer thread");
 
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags == -1)
+        {
+            std::cerr << "Errore F_GETFL\n";
+            return;
+        }
+
+        flags |= O_NONBLOCK;
+
+        if (fcntl(fd, F_SETFL, flags) == -1)
+        {
+            std::cerr << "Errore F_SETFL\n";
+            return;
+        }
         try
         {
             while (!stop_threads.load())
@@ -81,29 +102,7 @@ namespace Manager
         cout << "Reader thread started" << endl;
         try
         {
-
-            while (true)
-            {
-                uint32_t remote_w = ctx->buffer_to_read->remote_write_index.load();
-                uint32_t local_r = ctx->buffer_to_read->local_read_index;
-
-                if (remote_w != local_r)
-                {
-                    // set the local read index to avoid reading the same data again
-                    uint32_t start_read_index = local_r;
-                    uint32_t end_read_index = remote_w;
-
-                    ctx->buffer_to_read->local_read_index = remote_w; // reset the local write index
-
-                    thPool->enqueue([this, start_read_index, end_read_index, fd]()
-                                    { readThreadWorker(start_read_index, end_read_index, fd); });
-
-                    thPool->enqueue([this, end_read_index]()
-                                    { ctx->updateRemoteReadIndex(end_read_index); });
-                }
-                if (stop_threads.load())
-                    return;
-            }
+            ctx->readMsgLoop(fd);
         }
         catch (const std::exception &e)
         {
@@ -113,59 +112,31 @@ namespace Manager
         }
     }
 
-    void Manager::readThreadWorker(uint32_t start_read_index, uint32_t end_read_index, int fd)
-    {
-        try
-        {
-            while (ctx->buffer_to_read->remote_read_index.load() != start_read_index)
-                if (ctx->stop.load())
-                    return; // Exit if stop is set
-
-            int ret = ctx->readMsg(start_read_index, end_read_index, fd);
-            if (ret != 0)
-                cerr << "Error reading messages: " << ret << endl;
-
-            ctx->buffer_to_read->remote_read_index.store(end_read_index, memory_order_release);
-
-            unique_lock<mutex> commit_lock(ctx->mtx_rx_commit);
-            ctx->updateRemoteReadIndex(end_read_index);
-        }
-        catch (const std::exception &e)
-        {
-            cerr << "Exception in readThreadWorker: " << e.what() << endl;
-            perror("Details");
-        }
-    }
-
-    void Manager::client(uint32_t ip, uint16_t port)
+    void Manager::client(uint32_t ip)
     {
         if (ctx == nullptr)
             ctx = new rdmat::RdmaTransfer();
 
         ctx->remote_ip = ip;
 
-        ctx->clientConnect(ip, port);
+        ctx->clientConnect(ip);
     }
 
-    void Manager::server(uint16_t port)
+    void Manager::server()
     {
         cout << "Server thread started" << endl;
         try
         {
-            while (stop_threads.load() == false)
-            {
-                ctx = new rdmat::RdmaTransfer();
-                serverConnection_t sc = ctx->serverSetup();
+            ctx = new rdmat::RdmaTransfer();
+            serverConnection_t sc = ctx->serverSetup();
+            vector<int> fds = {sc.fd};
+            while (stop_threads.load() == false && waitOnSelect(fds).empty())
+                ;
 
-                vector<int> fds = {sc.fd};
-                while (stop_threads.load() == false && waitOnSelect(fds).empty())
-                    ;
+            if (stop_threads.load() == true)
+                return; // Exit if stop_threads is set
 
-                if (stop_threads.load() == true)
-                    return; // Exit if stop_threads is set
-
-                ctx->serverHandleNewClient(sc);
-            }
+            ctx->serverHandleNewClient(sc);
         }
         catch (const std::exception &e)
         {
@@ -185,10 +156,8 @@ namespace Manager
         while (stop_threads.load() == false)
         {
             auto data = ctx->getPollingBatch(); // copy
-            ctx->last_flush_ms = ctx->getTimeMS();
-            thPool->enqueue([this, data]() { // lambda has its own copy
-                if (ctx->postWrBatch(data))
-                    ctx->updateRemoteWriteIndex();
+            thPool->enqueue([this, data]() {    // lambda has its own copy
+                ctx->postWrBatch(data);
             });
         }
 

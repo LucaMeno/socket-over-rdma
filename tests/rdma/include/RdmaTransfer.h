@@ -21,6 +21,7 @@
 #include <fcntl.h>
 
 #include "RdmaTestConf.hpp"
+#include "ThreadPool.h"
 
 #define RING_IDX(i) ((i) & (RdmaTestConf::MAX_MSG_BUFFER - 1))
 
@@ -86,9 +87,11 @@ namespace rdmat
     typedef struct
     {
         uint32_t msg_flags;                       // flags
+        uint32_t seq_number_head;                 // sequence number
         struct sock_id original_sk_id;            // id of the socket
         uint32_t msg_size;                        // size of the message
         uint32_t number_of_slots;                 // number of slots
+        uint32_t seq_number_tail;                 // sequence number
         char msg[RdmaTestConf::MAX_PAYLOAD_SIZE]; // message
     } rdma_msg_t;
 
@@ -112,8 +115,6 @@ namespace rdmat
     {
         ibv_send_wr wr;
         ibv_sge sge;
-        uint32_t pre_idx;
-        uint32_t new_idx;
     };
 
     struct WrBatch
@@ -161,9 +162,7 @@ namespace rdmat
 
         uint64_t last_flush_ms;                    // last time the buffer was flushed, used to avoid flushing too often
         std::mutex mtx_commit_flush;               // used to commit the flush operation
-        uint32_t number_of_flushes;                // number of flushes done
         std::condition_variable cond_commit_flush; // used to signal the flush operation is committed
-        std::atomic<uint32_t> flush_threshold;
 
         rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server
         rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
@@ -176,26 +175,24 @@ namespace rdmat
         std::atomic<int> outgoing_wrs[RdmaTestConf::QP_N]{0};
 
         WrBatch getPollingBatch();
-        bool postWrBatch(WrBatch dr);
-        std::thread polling_thread_inside;
-        bool is_polling_thread_inside_running;
+        void postWrBatch(WrBatch dr);
 
         RdmaTransfer();
         ~RdmaTransfer();
 
         serverConnection_t serverSetup();
         void serverHandleNewClient(serverConnection_t &sc);
-        void clientConnect(uint32_t server_ip, uint16_t server_port);
+        void clientConnect(uint32_t server_ip);
 
         int writeMsg(int src_fd, struct sock_id original_socket);
-        void updateRemoteWriteIndex();
 
-        int readMsg(uint32_t start_read_index, uint32_t end_read_index, int dest_fd);
+        void readMsgLoop(int dest_fd);
         void updateRemoteReadIndex(uint32_t new_idx);
 
         uint64_t getTimeMS();
 
     private:
+        std::unique_ptr<ThreadPool> thPoolTransfer; // thread pool
         std::mutex mtx_qp_idx;
         std::condition_variable cv_qp_idx;
         bool is_qp_idx_available[RdmaTestConf::QP_N] = {true};
@@ -205,23 +202,24 @@ namespace rdmat
         size_t local_remote_read_index_offset;
         uintptr_t remote_addr_read_index;
 
+        std::atomic<uint32_t> seq_number_write{1}; // start from one since the shared mem is all 0 at the beginning
+        std::atomic<uint32_t> seq_number_read{1};  // start from one since the shared mem is all 0 at the beginning
+
         int tcpConnect(uint32_t ip);
         int tcpWaitForConnection();
         ibv_context *openDevice();
         uint32_t getPsn();
         void pollCqSend(ibv_cq *send_cq_to_poll, int num_entry = 1);
-        
+
         void postWrBatchListOnQp(std::vector<WorkRequest *> &wr_batch, int start, int end, int qp_idx);
 
         conn_info rdmaSetupPreHs();
         void rdmaSetupPostHs(conn_info remote, conn_info local);
         void showDevices();
         void enqueueWr(uint32_t start_idx, uint32_t end_idx, size_t data_size);
-        void executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
-        void executeWrNow(WorkRequest wr, bool signaled);
 
         WorkRequest createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
-        WorkRequest *createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, uint32_t idx, bool signaled);
+        void createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, uint32_t idx);
 
         int getFreeQpIndex();
         std::vector<int> getFreeQpIndexes(int n);

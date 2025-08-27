@@ -15,6 +15,7 @@
 #include <format>
 #include <functional>
 #include <sys/epoll.h>
+#include <fcntl.h>
 
 #include "RdmaTransfer.h"
 #include "ThreadPool.h"
@@ -28,8 +29,8 @@ namespace Manager
         Manager();
         ~Manager();
 
-        void client(uint32_t ip, uint16_t port);
-        void server(uint16_t port);
+        void client(uint32_t ip);
+        void server();
         void run(int fd);
 
     private:
@@ -48,8 +49,6 @@ namespace Manager
         void readerThread(int fd);
         void flushThread();
         void writerThread(int fd);
-
-        void readThreadWorker(uint32_t start_read_index, uint32_t end_read_index, int fd);
 
         std::vector<int> waitOnSelect(const std::vector<int> &fds);
     };
