@@ -1,6 +1,0 @@
-
-docs
-build
-CMakeLists.txt
-.dockerignore
-socker-boost.Dockerfile
