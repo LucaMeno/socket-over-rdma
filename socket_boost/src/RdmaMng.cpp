@@ -386,90 +386,40 @@ namespace rdmaMng
 
                 ctx.buffer_to_read->local_read_index = remote_w; // reset the local write index
 
-                thPool->enqueue(
-                    &RdmaMng::readThreadWorker, this, ref(ctx), start_read_index, end_read_index);
+                thPool->enqueue([this, &ctx, start_read_index, end_read_index]()
+                                { readThreadWorker(ctx, start_read_index, end_read_index); });
 
-                /*ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index);
-                ctx.updateRemoteReadIndex(end_read_index);*/
+                thPool->enqueue([this, &ctx, end_read_index]()
+                                { ctx.updateRemoteReadIndex(end_read_index); });
             }
-            else
-            {
-                return 1; // no messages to read
-            }
+            if (stop_threads.load())
+                return 0;
         }
     }
 
     void RdmaMng::readThreadWorker(rdma::RdmaContext &ctx, uint32_t start_read_index, uint32_t end_read_index)
     {
-        auto removeClosedRxSks = [this](unordered_map<sock_id_t, int> &sockid_to_fd_map)
-        {
-            if (remove_sk_rx.load(std::memory_order_acquire))
-            {
-                std::unique_lock<std::mutex> lock(mtx_sk_removal_rx);
-
-                for (auto it = sk_to_remove_rx.begin(); it != sk_to_remove_rx.end();)
-                {
-                    auto sockid_it = sockid_to_fd_map.find(*it);
-                    if (sockid_it != sockid_to_fd_map.end())
-                    {
-                        // Remove the socket from the map
-                        int fd = sockid_it->second;
-                        sockid_to_fd_map.erase(sockid_it);
-                        it = sk_to_remove_rx.erase(it); // Remove from the list
-                        // cout << "Remove fd: " << fd << " from sockid_to_fd_map" << endl;
-                    }
-                    else
-                    {
-                        ++it; // Move to the next element
-                    }
-                }
-
-                if (sk_to_remove_rx.empty())
-                    remove_sk_rx.store(false, std::memory_order_release);
-            }
-        };
-
         try
         {
-            while (true)
+            while (ctx.buffer_to_read->remote_read_index.load() != start_read_index)
             {
-                unique_lock<mutex> read_lock(ctx.mtx_rx_read);
-                if (ctx.buffer_to_read->remote_read_index.load() == start_read_index)
-                    break;
-
-                if (stop_threads.load())
-                    return; // Exit if stop_threads is set
+                if (ctx.stop.load())
+                    return; // Exit if stop is set
             }
 
-            int ret = ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index, removeClosedRxSks);
-
+            int ret = ctx.readMsg(bpf_ctx, sk_ctx.client_sk_fd, start_read_index, end_read_index);
             if (ret != 0)
                 cerr << "Error reading messages: " << ret << endl;
 
             // COMMIT the read index
-            unique_lock<mutex> commit_lock(ctx.mtx_rx_commit);
             ctx.buffer_to_read->remote_read_index.store(end_read_index, memory_order_release);
 
+            unique_lock<mutex> commit_lock(ctx.mtx_rx_commit);
             ctx.updateRemoteReadIndex(end_read_index);
         }
         catch (const std::exception &e)
         {
             cerr << "Exception in readThreadWorker: " << e.what() << endl;
-            perror("Details");
-        }
-    }
-
-    void RdmaMng::flushThreadWorker(rdma::RdmaContext &ctx, bool updateRemoteIndex)
-    {
-        try
-        {
-            DataReturn d = ctx.flushWrQueue(); // Flush the work requests queue
-            if (d.err == 0 && updateRemoteIndex)
-                ctx.updateRemoteWriteIndex(d.new_idx);
-        }
-        catch (const std::exception &e)
-        {
-            cerr << "Exception in flushThreadWorker: " << e.what() << endl;
             perror("Details");
         }
     }
@@ -683,41 +633,6 @@ namespace rdmaMng
                 }
 
                 continue;
-
-                uint64_t now = ctx.getTimeMS();
-                bool launch = false;
-                bool updateIndex = false;
-
-                if (ctx.shouldFlushWrQueue())
-                {
-                    launch = true;
-                    ctx.number_of_flushes++;
-
-                    if (ctx.number_of_flushes >= Config::N_OF_FLUSHES_BEFORE_UPDATE_INDEX)
-                        updateIndex = true;
-                }
-                else if (now - ctx.last_flush_ms >= Config::FLUSH_INTERVAL_MS)
-                {
-                    launch = true;
-                    updateIndex = true;
-                }
-
-                if (launch)
-                {
-                    ctx.last_flush_ms = now;
-
-                    if (updateIndex)
-                        ctx.number_of_flushes = 0;
-
-                    thPool->enqueue([this, &ctx, updateIndex]()
-                                    { flushThreadWorker(ctx, updateIndex); });
-                    thPool->enqueue([this, &ctx, updateIndex]()
-                                    { flushThreadWorker(ctx, updateIndex); });
-                    thPool->enqueue([this, &ctx, updateIndex]()
-                                    { flushThreadWorker(ctx, updateIndex); });
-                    thPool->enqueue([this, &ctx, updateIndex]()
-                                    { flushThreadWorker(ctx, updateIndex); });
-                }
             }
         }
 

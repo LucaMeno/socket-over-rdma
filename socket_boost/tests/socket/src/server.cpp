@@ -104,9 +104,9 @@ int main(int argc, char *argv[])
         {
             is_first = false;
             std::cerr << "Data mismatch: expected " << counter << ", got " << counter_test << "\n";
-            close(client_fd);
+            /*close(client_fd);
             delete[] buf;
-            return 1;
+            return 1;*/
         }
         ++counter;
 

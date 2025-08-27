@@ -112,38 +112,27 @@ int main()
     check_error(err, "");
     printf("Map updated\n");
 
-    int fd1 = sk_ctx.client_sk_fd[0].fd;
-    int fd2 = sk_ctx.client_sk_fd[1].fd;
-    int fd3 = sk_ctx.client_sk_fd[2].fd;
-    int fd4 = sk_ctx.client_sk_fd[3].fd;
+    int fds[NUMBER_OF_SOCKETS];
+    for (int i = 0; i < NUMBER_OF_SOCKETS; i++)
+        fds[i] = sk_ctx.client_sk_fd[i].fd;
 
-    struct th_param param1 = {
-        .fd1 = fd1,
-        .fd2 = fd2,
-        .wait = 1};
-    pthread_t th1;
-    pthread_create(&th1, NULL, th_fun, &param1);
+    pthread_t ths[NUMBER_OF_SOCKETS / 2];   
 
-    struct th_param param2 = {
-        .fd1 = fd2,
-        .fd2 = fd1,
-        .wait = 1};
-    pthread_t th2;
-    pthread_create(&th2, NULL, th_fun, &param2);
+    for (int i = 0; i < NUMBER_OF_SOCKETS; i += 2)
+    {
+        struct th_param *param1 = malloc(sizeof(struct th_param));
+        param1->fd1 = fds[i];
+        param1->fd2 = fds[i + 1];
+        param1->wait = 1;
+        pthread_create(&ths[i], NULL, th_fun, param1);
 
-    struct th_param param3 = {
-        .fd1 = fd3,
-        .fd2 = fd4,
-        .wait = 1};
-    pthread_t th3;
-    pthread_create(&th3, NULL, th_fun, &param3);
+        struct th_param *param2 = malloc(sizeof(struct th_param));
+        param2->fd1 = fds[i + 1];
+        param2->fd2 = fds[i];
+        param2->wait = 1;
+        pthread_create(&ths[i + 1], NULL, th_fun, param2);
+    }
 
-    struct th_param param4 = {
-        .fd1 = fd4,
-        .fd2 = fd3,
-        .wait = 1};
-    pthread_t th4;
-    pthread_create(&th4, NULL, th_fun, &param4);
 
     printf("Waiting for messages, press Ctrl+C to exit...\n");
     while (!STOP)

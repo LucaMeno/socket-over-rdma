@@ -197,7 +197,7 @@ namespace rdma
         int writeMsg(int src_fd, struct sock_id original_socket);
         // void copyMsgIntoSharedBuff();
 
-        int readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index, std::function<void(std::unordered_map<sock_id_t, int> &)> removeClosedSocket);
+        int readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index);
         void updateRemoteReadIndex(uint32_t r_idx);
 
         void setPollingStatus(uint32_t is_polling);

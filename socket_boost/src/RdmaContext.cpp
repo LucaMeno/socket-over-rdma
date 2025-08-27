@@ -745,8 +745,13 @@ namespace rdma
         }
 
         // Poll the completion queue
-        if (signaled == true)
-            pollCqSend(send_cqs[qp_index]);
+        outgoing_wrs[qp_index].fetch_add(1);
+        int n = outgoing_wrs[qp_index].load();
+        if (n >= 64)
+        {
+            pollCqSend(send_cqs[qp_index], n);
+            outgoing_wrs[qp_index].fetch_sub(n);
+        }
         releaseQpIndex(qp_index);
     }
 
@@ -766,19 +771,6 @@ namespace rdma
 
         if (wr_batch->empty())
             return false;
-
-        // Prepare the work requests for posting
-        size_t i = 0;
-        for (; i < wr_batch->size() - 1; ++i)
-        {
-            (*wr_batch)[i]->wr.sg_list = &(*wr_batch)[i]->sge; // Link the SGE to the WR
-            (*wr_batch)[i]->wr.next = &(*wr_batch)[i + 1]->wr; // Link the WRs together
-        }
-
-        // last WR
-        (*wr_batch)[i]->wr.sg_list = &(*wr_batch)[i]->sge;  // Link the SGE to the WR
-        (*wr_batch)[i]->wr.next = nullptr;                  // Last WR does not have a next pointer
-        (*wr_batch)[i]->wr.send_flags |= IBV_SEND_SIGNALED; // Set the last WR to be signaled
 
         // post
         vector<int> qp_indices = getFreeQpIndexes(Config::N_QP_PER_POST);
@@ -908,7 +900,7 @@ namespace rdma
         if (ret != 0)
             throw runtime_error("Failed to post write - flushWrQueue - code: " + to_string(ret));
 
-        //cout << "Posted: " << end-start << " wr on qp: " << qp_idx << endl;
+        // cout << "Posted: " << end-start << " wr on qp: " << qp_idx << endl;
     }
 
     DataReturn RdmaContext::flushWrQueue()
@@ -1119,12 +1111,6 @@ namespace rdma
                     client_sks[i].sk_id.sip == proxy_sk_id.sip &&
                     client_sks[i].sk_id.dport == proxy_sk_id.dport)
                 {
-                    // update the map with the new socket
-                    /*std::cout << "New entry: "
-                              << msg.original_sk_id.sip << ":" << msg.original_sk_id.sport
-                              << " - " << msg.original_sk_id.dip << ":" << msg.original_sk_id.dport
-                              << " -> " << client_sks[i].fd << std::endl;*/
-                    // update the map with the new socket
                     sockid_to_fd_map[msg.original_sk_id] = client_sks[i].fd;
                     fd = client_sks[i].fd;
                     break;
@@ -1198,15 +1184,63 @@ namespace rdma
 
     void RdmaContext::updateRemoteReadIndex(uint32_t r_idx)
     {
-        executeWrNow(remote_addr_read_index,
-                     (uintptr_t)(buffer + local_remote_read_index_offset),
-                     sizeof(buffer_to_read->remote_read_index),
-                     true);
+        WorkRequest wr = createWr(remote_addr_read_index,
+                                  (uintptr_t)(buffer + local_remote_read_index_offset),
+                                  sizeof(buffer_to_read->remote_read_index),
+                                  true);
+
+        // Post send in SQ with ibv_post_send
+        int qp_index = getFreeQpIndex();
+
+        // link the SGE to the WR
+        wr.wr.sg_list = &wr.sge; // Link the SGE to the WR
+        wr.wr.num_sge = 1;       // Set the number of SG
+        wr.wr.next = nullptr;    // Last WR does not have a next pointer
+
+        ibv_qp_attr attr;
+        ibv_qp_init_attr init_attr;
+        ibv_query_qp(qps[qp_index], &attr, IBV_QP_STATE, &init_attr);
+        if (attr.qp_state != IBV_QPS_RTS)
+            cout << "QP is not in RTS state, cannot post WR" << endl;
+
+        struct ibv_send_wr *bad_send_wr_data;
+
+        while (buffer_to_read->remote_read_index.load() == r_idx)
+        {
+            if (stop.load())
+                return; // Exit if stop is set
+        }
+
+        int ret = ibv_post_send(qps[qp_index], &wr.wr, &bad_send_wr_data);
+        if (ret != 0) // Post the send work request
+        {
+            releaseQpIndex(qp_index);
+            cout << "Wr failed: " << endl
+                 << "- Remote Address: " << std::hex << wr.wr.wr.rdma.remote_addr << std::dec << endl
+                 << "- Local Address: " << std::hex << wr.sge.addr << std::dec << endl
+                 << "- Size: " << wr.sge.length << endl
+                 << "- RKey: " << wr.wr.wr.rdma.rkey << endl;
+            cout << "- Error code: " << ret << endl;
+            cout << "- Bad send WR data: " << (bad_send_wr_data ? "not null" : "null") << endl;
+            cout << "- QP index: " << qp_index << endl;
+
+            throw runtime_error("Failed to post write - executeWrNow - code: " + to_string(ret));
+        }
+
+        // Poll the completion queue
+        outgoing_wrs[qp_index].fetch_add(1);
+        int n = outgoing_wrs[qp_index].load();
+        if (n >= 64)
+        {
+            pollCqSend(send_cqs[qp_index], n);
+            outgoing_wrs[qp_index].fetch_sub(n);
+        }
+        releaseQpIndex(qp_index);
     }
 
-    int RdmaContext::readMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index, function<void(unordered_map<sock_id_t, int> &)> removeClosedSocket)
+    int RdmaContext::readMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index)
     {
-        removeClosedSocket(sockid_to_fd_map);
+        // removeClosedSocket(sockid_to_fd_map);
 
         if (!buffer_to_read)
             throw runtime_error("ringbuffer is nullptr - readMsg");
@@ -1215,9 +1249,6 @@ namespace rdma
             return 0; // nothing to read
 
         uint32_t number_of_msg = (end_read_index + Config::MAX_MSG_BUFFER - start_read_index) % Config::MAX_MSG_BUFFER;
-
-        /*if (number_of_msg != Config::MAX_WR_PER_POST)
-            cout << "Reading " << number_of_msg << " - start: " << start_read_index << " - end: " << end_read_index << endl;*/
 
         start_read_index = RING_IDX(start_read_index);
         end_read_index = RING_IDX(end_read_index);
