@@ -17,7 +17,6 @@
 #include <sys/epoll.h>
 
 #include "RdmaContext.h"
-#include "ThreadPool.h"
 #include "BpfMng.h"
 #include "SocketMng.h"
 #include "common.h"
@@ -121,17 +120,11 @@ namespace rdmaMng
     private:
         std::vector<std::unique_ptr<rdma::RdmaContext>> ctxs; // vector of active RDMA contexts
         uint16_t rdma_port;                                   // port used for RDMA
-        std::unique_ptr<ThreadPool> thPool;                   // thread pool
         bpf::BpfMng bpf_ctx;                                  // reference to the BPF manager
         sk::SocketMng sk_ctx;                                 // reference to the socket manager
         std::thread notification_thread;                      // thread for the notification
         std::thread server_thread;                            // thread for the server
-        std::thread polling_thread;                           // thread for polling the circular buffer
-        std::thread flush_thread;                             // thread for flushing the circular buffer
         std::vector<std::thread> writer_threads;              // threads for writing to the circular buffer
-        std::mutex mtx_polling;                               // mutex for polling thread
-        std::condition_variable cond_polling;                 // condition variable for polling
-        bool is_polling_thread_running;                       // flag to indicate if the polling thread is running
         std::atomic<bool> stop_threads;                       // flag to stop the threads
 
         std::mutex mtx_sk_removal_tx;
@@ -142,19 +135,11 @@ namespace rdmaMng
         std::vector<struct sock_id> sk_to_remove_rx;
         std::atomic<bool> remove_sk_rx;
 
-        void thread_inner_polling(rdma::RdmaContext *ctx);
-
         // Background thread functions
         void launchBackgroundThreads();
         void listenThread();
         void serverThread();
-        void pollingThread();
-        void flushThread();
         void writerThread(std::vector<sk::client_sk_t> sk_to_monitor);
-
-        // Thread worker functions (pool)
-        void flushThreadWorker(rdma::RdmaContext &ctx, bool updateRemoteIndex);
-        void readThreadWorker(rdma::RdmaContext &ctx, uint32_t start_read_index, uint32_t end_read_index);
 
         // Utils
         int getFreeContextId();

@@ -501,11 +501,12 @@ namespace rdma
         return lrand48() & 0xffffff;
     }
 
-    RdmaContext::RdmaContext()
+    RdmaContext::RdmaContext(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks)
+        : bpf_ctx(bpf_ctx), client_sks(client_sks)
     {
+        thPoolContext = make_unique<ThreadPool>(Config::N_THREAD_POOL_THREADS);
         is_ready.store(false);
         stop.store(false);
-        flush_threshold.store(Config::THRESHOLD_NOT_AUTOSCALER);
         buffer = nullptr;
         pd = nullptr;
         mr = nullptr;
@@ -525,21 +526,25 @@ namespace rdma
         remote_addr = 0;
         last_flush_ms = 0;
         remote_ip = 0;
-        msg_counter.store(0);
-        number_of_flushes = 0;
 
         for (uint32_t i = 0; i < Config::WORK_REQUEST_POOL_SIZE; i++)
             if (!wr_available_idx_queue.push(i))
                 throw std::runtime_error("Work request pool is exhausted");
 
         for (int i = 0; i < Config::QP_N; i++)
-        {
             is_qp_idx_available[i] = true;
-        }
+        is_qp_idx_available[Config::DEFAULT_QP_IDX] = false;
+
+        flush_th = std::thread(&RdmaContext::flushThread, this);
+        is_flush_th_running = true;
+        reader_th = std::thread(&RdmaContext::readerThread, this);
+        is_reader_th_running = true;
     }
 
     RdmaContext::~RdmaContext()
     {
+        thPoolContext->destroy();
+
         is_ready.store(false);
 
         for (int i = 0; i < Config::QP_N; i++)
@@ -574,13 +579,43 @@ namespace rdma
         cond_tx.notify_all();
         lock_tx.unlock();
 
-        unique_lock<mutex> lock_flush(mtx_commit_flush);
-        cond_commit_flush.notify_all();
-        lock_flush.unlock();
-
         unique_lock<mutex> lock_rx(mtx_rx_read);
         cond_rx_read.notify_all();
         lock_rx.unlock();
+
+        if (is_flush_th_running)
+            flush_th.join();
+        if (is_reader_th_running)
+            reader_th.join();
+
+        is_flush_th_running = false;
+        is_reader_th_running = false;
+    }
+
+    void RdmaContext::flushThread()
+    {
+        waitForContextToBeReady();
+
+        cout << "Flush th started" << endl;
+        while (stop.load() == false)
+        {
+            auto data = getPollingBatch();          // copy
+            thPoolContext->enqueue([this, data]() { // lambda has its own copy
+                postWrBatch(data);
+            });
+        }
+    }
+
+    void RdmaContext::readerThread()
+    {
+        waitForContextToBeReady();
+
+        cout << "Reader th started" << endl;
+        while (stop.load() == false)
+        {
+            int ret = readMsgLoop();
+            cout << "Read msgLoop terminated with: " << ret << endl;
+        }
     }
 
     void RdmaContext::sendNotification(CommunicationCode code)
@@ -655,14 +690,10 @@ namespace rdma
         uintptr_t remote_addr_2 = remote_addr +
                                   ((uintptr_t)batch_start - (uintptr_t)buffer); // offset
 
-        WorkRequest *wr = createWrAtIdx(remote_addr_2, batch_start, data_size, idx, false);
-        wr->pre_idx = start_idx;
-        wr->new_idx = end_idx;
+        createWrAtIdx(remote_addr_2, batch_start, data_size, idx);
 
         if (!wr_busy_idx_queue.push(idx))
             throw runtime_error("Failed to push index to wr_busy_idx_queue");
-
-        msg_counter.fetch_add(1, std::memory_order_relaxed);
     }
 
     inline WorkRequest RdmaContext::createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled)
@@ -687,7 +718,7 @@ namespace rdma
         return wr;
     }
 
-    inline WorkRequest *RdmaContext::createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, uint32_t idx, bool signaled)
+    inline void RdmaContext::createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, uint32_t idx)
     {
         WorkRequest *wr = &wr_pool[idx];
 
@@ -703,187 +734,15 @@ namespace rdma
         wr->wr.wr.rdma.remote_addr = remote_addr; // Remote address to write to
         wr->wr.wr.rdma.rkey = remote_rkey;        // Remote key
         wr->wr.send_flags = 0;
-        if (signaled)
-            wr->wr.send_flags |= IBV_SEND_SIGNALED;
-
-        return wr;
     }
 
-    void RdmaContext::executeWrNow(WorkRequest wr, bool signaled)
-    {
-        // Post send in SQ with ibv_post_send
-        int qp_index = getFreeQpIndex();
-
-        // link the SGE to the WR
-        wr.wr.sg_list = &wr.sge; // Link the SGE to the WR
-        wr.wr.num_sge = 1;       // Set the number of SG
-        wr.wr.next = nullptr;    // Last WR does not have a next pointer
-
-        ibv_qp_attr attr;
-        ibv_qp_init_attr init_attr;
-        ibv_query_qp(qps[qp_index], &attr, IBV_QP_STATE, &init_attr);
-        if (attr.qp_state != IBV_QPS_RTS)
-        {
-            cout << "QP is not in RTS state, cannot post WR" << endl;
-        }
-
-        struct ibv_send_wr *bad_send_wr_data;
-        int ret = ibv_post_send(qps[qp_index], &wr.wr, &bad_send_wr_data);
-        if (ret != 0) // Post the send work request
-        {
-            releaseQpIndex(qp_index);
-            cout << "Wr failed: " << endl
-                 << "- Remote Address: " << std::hex << wr.wr.wr.rdma.remote_addr << std::dec << endl
-                 << "- Local Address: " << std::hex << wr.sge.addr << std::dec << endl
-                 << "- Size: " << wr.sge.length << endl
-                 << "- RKey: " << wr.wr.wr.rdma.rkey << endl;
-            cout << "- Error code: " << ret << endl;
-            cout << "- Bad send WR data: " << (bad_send_wr_data ? "not null" : "null") << endl;
-            cout << "- QP index: " << qp_index << endl;
-
-            throw runtime_error("Failed to post write - executeWrNow - code: " + to_string(ret));
-        }
-
-        // Poll the completion queue
-        outgoing_wrs[qp_index].fetch_add(1);
-        int n = outgoing_wrs[qp_index].load();
-        if (n >= 64)
-        {
-            pollCqSend(send_cqs[qp_index], n);
-            outgoing_wrs[qp_index].fetch_sub(n);
-        }
-        releaseQpIndex(qp_index);
-    }
-
-    inline void RdmaContext::executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled = true)
-    {
-        WorkRequest wr = createWr(remote_addr, local_addr, size_to_write, signaled);
-        executeWrNow(wr, signaled);
-    }
-
-    bool RdmaContext::postWrBatch2(DataReturn2 dr)
-    {
-        if (dr.wr_batch == nullptr || dr.indexes == nullptr)
-            throw runtime_error("postWrBatch2 received null pointers");
-
-        auto wr_batch = dr.wr_batch;
-        auto indexes = dr.indexes;
-
-        if (wr_batch->empty())
-            return false;
-
-        // post
-        vector<int> qp_indices = getFreeQpIndexes(Config::N_QP_PER_POST);
-
-        int rem = wr_batch->size();
-        int start = 0;
-        int used_qp = 0;
-
-        // cout << "start: " << start << " rem: " << rem << endl;
-        for (int j = 0; j < Config::N_QP_PER_POST; j++)
-        {
-            int qp_index = qp_indices[j];
-
-            int end = start + std::min(Config::MAX_WR_PER_POST_PER_QP, rem);
-            // cout << "Posting batch: start: " << start << " end: " << end << " qp: " << qp_index << endl;
-            postWrBatch(*wr_batch, start, end, qp_index);
-            used_qp++;
-            outgoing_wrs[qp_index].fetch_add(1);
-
-            rem -= (end - start);
-            if (rem <= 0)
-                break;
-            start = end;
-        }
-
-        for (int j = 0; j < used_qp; j++)
-        {
-            int n = outgoing_wrs[qp_indices[j]].load();
-            // cout << "Qp: " << qp_indices[j] << " N: " << n << endl;
-            if (n >= 64)
-            {
-                pollCqSend(send_cqs[qp_indices[j]], n);
-                outgoing_wrs[qp_indices[j]].fetch_sub(n);
-            }
-        }
-
-        releaseQpIndexes(qp_indices);
-
-        uint32_t pre_index = wr_batch->front()->pre_idx;
-        uint32_t new_idx = wr_batch->back()->new_idx;
-
-        for (int i = 0; i < indexes->size(); i++)
-            if (!wr_available_idx_queue.push((*indexes)[i]))
-                throw runtime_error("Failed to push index to wr_available_idx_queue");
-
-        delete dr.wr_batch;
-        delete dr.indexes;
-
-        while (true)
-        {
-            if (buffer_to_write->remote_write_index.load(memory_order_acquire) == pre_index)
-            {
-                scoped_lock<std::mutex> lk(mtx_commit_flush);
-                buffer_to_write->remote_write_index.store(new_idx, memory_order_release);
-                break;
-            }
-
-            if (stop.load() == true)
-                throw runtime_error("Stopping updateRemoteWriteIndex due to stop signal");
-        }
-
-        return true;
-
-        // cout << "Posted: " << end - start << " wr on qp: " << qp_idx << endl;
-    }
-
-    DataReturn2 RdmaContext::getPollingBatch()
-    {
-        auto *wr_batch = new std::vector<WorkRequest *>();
-        wr_batch->reserve(Config::MAX_WR_PER_POST_PER_TH);
-
-        auto *indexes = new std::vector<uint32_t>();
-        indexes->reserve(Config::MAX_WR_PER_POST_PER_TH);
-
-        uint32_t idx = 0;
-        WorkRequest *wr;
-        int j = 0;
-
-        while (true)
-        {
-            if (stop.load() == true)
-                break;
-
-            if (j >= Config::MAX_WR_PER_POST_PER_TH)
-                break;
-
-            if (getTimeMS() - last_flush_ms > Config::FLUSH_INTERVAL_MS && j > 0)
-                break;
-
-            if (!wr_busy_idx_queue.pop(idx))
-                continue;
-
-            wr = &wr_pool[idx];
-            wr_batch->push_back(wr);
-            indexes->push_back(idx);
-
-            j++;
-        }
-
-        DataReturn2 dr;
-        dr.wr_batch = wr_batch;
-        dr.indexes = indexes;
-        // cout << "ret: " << wr_batch->size() << " wr to post" << endl;
-        return dr;
-    }
-
-    inline void RdmaContext::postWrBatch(vector<WorkRequest *> &wr_batch, int start, int end, int qp_idx)
+    inline void RdmaContext::postWrBatchListOnQp(vector<WorkRequest *> &wr_batch, int start, int end, int qp_idx)
     {
         if (end <= start)
             throw runtime_error("postWrBatch: end must be greater than start");
 
         // Prepare the work requests for posting
-        size_t i = start;
+        int i = start;
         for (; i < end - 1; ++i)
         {
             wr_batch[i]->wr.sg_list = &wr_batch[i]->sge; // Link the SGE to the WR
@@ -900,47 +759,24 @@ namespace rdma
         if (ret != 0)
             throw runtime_error("Failed to post write - flushWrQueue - code: " + to_string(ret));
 
-        // cout << "Posted: " << end-start << " wr on qp: " << qp_idx << endl;
+        // cout << "Posted: " << end - start << " wr on qp: " << qp_idx << endl;
     }
 
-    DataReturn RdmaContext::flushWrQueue()
+    void RdmaContext::postWrBatch(WrBatch dr)
     {
-        vector<WorkRequest *> wr_batch;
-        wr_batch.reserve(Config::MAX_WR_PER_POST_PER_TH);
+        if (dr.wr_batch == nullptr || dr.indexes == nullptr)
+            throw runtime_error("postWrBatch2 received null pointers");
 
-        vector<uint32_t> indexes;
-        indexes.reserve(Config::MAX_WR_PER_POST_PER_TH);
+        auto wr_batch = dr.wr_batch;
+        auto indexes = dr.indexes;
 
-        uint32_t idx = 0;
-        WorkRequest *wr;
-        int j = 0;
+        if (wr_batch->empty())
+            return;
 
-        {
-            scoped_lock<mutex> lock(mtx_wrs);
-            while (true)
-            {
-                if (j >= Config::MAX_WR_PER_POST_PER_TH)
-                    break;
-
-                if (!wr_busy_idx_queue.pop(idx))
-                    break;
-
-                wr = &wr_pool[idx];
-                wr_batch.push_back(wr);
-                indexes.push_back(idx);
-
-                j++;
-            }
-        }
-
-        if (wr_batch.empty())
-            return DataReturn(-1, 0);
-
-        // cout << "Flushing " << wr_batch.size() << " work requests" << endl;
-
+        // post
         vector<int> qp_indices = getFreeQpIndexes(Config::N_QP_PER_POST);
 
-        int rem = wr_batch.size();
+        int rem = wr_batch->size();
         int start = 0;
         int used_qp = 0;
 
@@ -950,8 +786,8 @@ namespace rdma
             int qp_index = qp_indices[j];
 
             int end = start + std::min(Config::MAX_WR_PER_POST_PER_QP, rem);
-            // cout << "Posting batch: start: " << start << " end: " << end << " qp: " << qp_index << endl;
-            postWrBatch(wr_batch, start, end, qp_index);
+
+            postWrBatchListOnQp(*wr_batch, start, end, qp_index);
             used_qp++;
             outgoing_wrs[qp_index].fetch_add(1);
 
@@ -964,7 +800,6 @@ namespace rdma
         for (int j = 0; j < used_qp; j++)
         {
             int n = outgoing_wrs[qp_indices[j]].load();
-            // cout << "Qp: " << qp_indices[j] << " N: " << n << endl;
             if (n >= 64)
             {
                 pollCqSend(send_cqs[qp_indices[j]], n);
@@ -974,43 +809,57 @@ namespace rdma
 
         releaseQpIndexes(qp_indices);
 
-        // cout << "Flushed " << wr_batch.size() << " work requests, qp: " << qp_index << endl;
-
-        // save the indexes to prevent overwrite
-        uint32_t pre_index = wr_batch[0]->pre_idx;
-        uint32_t new_idx = wr_batch.back()->new_idx;
-
-        for (int i = 0; i < indexes.size(); i++)
-            if (!wr_available_idx_queue.push(indexes[i]))
+        for (size_t i = 0; i < indexes->size(); i++)
+            if (!wr_available_idx_queue.push((*indexes)[i]))
                 throw runtime_error("Failed to push index to wr_available_idx_queue");
 
-        // update remote index
+        delete dr.wr_batch;
+        delete dr.indexes;
+
+        return;
+    }
+
+    WrBatch RdmaContext::getPollingBatch()
+    {
+        auto *wr_batch = new std::vector<WorkRequest *>();
+        wr_batch->reserve(Config::MAX_WR_PER_POST_PER_TH);
+
+        auto *indexes = new std::vector<uint32_t>();
+        indexes->reserve(Config::MAX_WR_PER_POST_PER_TH);
+
+        uint32_t idx = 0;
+        WorkRequest *wr;
+        int j = 0;
+
+        last_flush_ms = getTimeMS();
         while (true)
         {
-            if (buffer_to_write->remote_write_index.load(memory_order_acquire) == pre_index)
+            if (stop.load() == true)
+                break;
+
+            if (j >= Config::MAX_WR_PER_POST_PER_TH)
+                break;
+
+            if (getTimeMS() - last_flush_ms > Config::FLUSH_INTERVAL_MS && j > 0)
             {
-                scoped_lock<std::mutex> lk(mtx_commit_flush);
-                buffer_to_write->remote_write_index.store(new_idx, memory_order_release);
+                cout << "TIME" << endl;
                 break;
             }
 
-            if (stop.load() == true)
-                throw runtime_error("Stopping updateRemoteWriteIndex due to stop signal");
+            if (!wr_busy_idx_queue.pop(idx))
+                continue;
+
+            wr = &wr_pool[idx];
+            wr_batch->push_back(wr);
+            indexes->push_back(idx);
+
+            j++;
         }
 
-        return DataReturn(0, new_idx);
-    }
-
-    bool RdmaContext::shouldFlushWrQueue()
-    {
-        uint32_t n = msg_counter.load();
-        uint32_t ft = flush_threshold.load();
-
-        if (n < ft)
-            return false; // Not enough messages to flush
-
-        msg_counter.store(0); // Reset the message counter after checking
-        return true;          // Enough messages to flush
+        WrBatch dr;
+        dr.wr_batch = wr_batch;
+        dr.indexes = indexes;
+        return dr;
     }
 
     int RdmaContext::writeMsg(int src_fd, struct sock_id original_socket)
@@ -1065,12 +914,15 @@ namespace rdma
             msg->msg_flags = 0;
             msg->original_sk_id = original_socket;
             msg->number_of_slots = 1;
+            uint32_t sn = seq_number_write.fetch_add(1);
+            msg->seq_number_head = sn;
+            msg->seq_number_tail = sn;
 
             buffer_to_write->local_write_index += msg->number_of_slots;
 
             enqueueWr(start_w_index,
                       start_w_index + msg->number_of_slots,
-                      msg->msg_size + MSG_HEADER_SIZE);
+                      sizeof(rdma_msg_t));
 
             available_space -= msg->number_of_slots;
             start_w_index += msg->number_of_slots;
@@ -1079,7 +931,7 @@ namespace rdma
         return 1;
     }
 
-    inline int RdmaContext::parseMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg)
+    inline int RdmaContext::parseMsg(rdma_msg_t &msg)
     {
         // retrive the proxy_fd
         int fd;
@@ -1147,74 +999,24 @@ namespace rdma
         return 0;
     }
 
-    void RdmaContext::updateRemoteWriteIndex(uint32_t new_index)
+    void RdmaContext::updateRemoteReadIndex(uint32_t new_idx)
     {
-        if (stop.load() == true)
-            throw runtime_error("Stopping updateRemoteWriteIndex due to stop signal");
-
-        scoped_lock<mutex> lock(mtx_commit_flush);
-
-        try
-        {
-            executeWrNow(remote_addr_write_index,
-                         (uintptr_t)(buffer + local_remote_write_index_offset),
-                         sizeof(buffer_to_write->remote_write_index),
-                         true);
-        }
-        catch (const std::exception &e)
-        {
-            cout << "updateRemoteWriteIndex" << endl;
-            throw; // rethrow the exception to be handled by the caller
-        }
-
-        // notify the other side if it is not polling
-        auto flags = buffer_to_read->flags.flags.load();
-        if ((flags & static_cast<unsigned int>(RingBufferFlag::RING_BUFFER_POLLING)) == 0)
-        {
-            if (last_notification_data_ready_ns == 0 ||
-                (getTimeMS() - last_notification_data_ready_ns) >= Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS)
-            {
-                // If the last notification was sent more than Config::TIME_BTW_DATA_READY_NOTIFICATIONS_MS ago
-                sendDataReady();
-            }
-        }
-
-        cond_commit_flush.notify_all(); // Notify that the flush is committed
-    }
-
-    void RdmaContext::updateRemoteReadIndex(uint32_t r_idx)
-    {
+        // cout << "Updating remote read index: " << new_idx << endl;
+        buffer_to_read->remote_read_index.store(new_idx, memory_order_release);
         WorkRequest wr = createWr(remote_addr_read_index,
                                   (uintptr_t)(buffer + local_remote_read_index_offset),
                                   sizeof(buffer_to_read->remote_read_index),
                                   true);
 
-        // Post send in SQ with ibv_post_send
-        int qp_index = getFreeQpIndex();
-
-        // link the SGE to the WR
         wr.wr.sg_list = &wr.sge; // Link the SGE to the WR
         wr.wr.num_sge = 1;       // Set the number of SG
         wr.wr.next = nullptr;    // Last WR does not have a next pointer
 
-        ibv_qp_attr attr;
-        ibv_qp_init_attr init_attr;
-        ibv_query_qp(qps[qp_index], &attr, IBV_QP_STATE, &init_attr);
-        if (attr.qp_state != IBV_QPS_RTS)
-            cout << "QP is not in RTS state, cannot post WR" << endl;
-
         struct ibv_send_wr *bad_send_wr_data;
 
-        while (buffer_to_read->remote_read_index.load() == r_idx)
-        {
-            if (stop.load())
-                return; // Exit if stop is set
-        }
-
-        int ret = ibv_post_send(qps[qp_index], &wr.wr, &bad_send_wr_data);
+        int ret = ibv_post_send(qps[Config::DEFAULT_QP_IDX], &wr.wr, &bad_send_wr_data);
         if (ret != 0) // Post the send work request
         {
-            releaseQpIndex(qp_index);
             cout << "Wr failed: " << endl
                  << "- Remote Address: " << std::hex << wr.wr.wr.rdma.remote_addr << std::dec << endl
                  << "- Local Address: " << std::hex << wr.sge.addr << std::dec << endl
@@ -1222,56 +1024,54 @@ namespace rdma
                  << "- RKey: " << wr.wr.wr.rdma.rkey << endl;
             cout << "- Error code: " << ret << endl;
             cout << "- Bad send WR data: " << (bad_send_wr_data ? "not null" : "null") << endl;
-            cout << "- QP index: " << qp_index << endl;
+            cout << "- QP index: " << Config::DEFAULT_QP_IDX << endl;
 
-            throw runtime_error("Failed to post write - executeWrNow - code: " + to_string(ret));
+            throw runtime_error("Failed to post write - updateRemoteReadIndex - code: " + to_string(ret));
         }
 
-        // Poll the completion queue
-        outgoing_wrs[qp_index].fetch_add(1);
-        int n = outgoing_wrs[qp_index].load();
-        if (n >= 64)
-        {
-            pollCqSend(send_cqs[qp_index], n);
-            outgoing_wrs[qp_index].fetch_sub(n);
-        }
-        releaseQpIndex(qp_index);
+        pollCqSend(send_cqs[Config::DEFAULT_QP_IDX], 1);
     }
 
-    int RdmaContext::readMsg(bpf::BpfMng &bpf_ctx, vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index)
+    int RdmaContext::readMsgLoop()
     {
         // removeClosedSocket(sockid_to_fd_map);
 
         if (!buffer_to_read)
-            throw runtime_error("ringbuffer is nullptr - readMsg");
+            throw runtime_error("ringbuffer is nullptr - readMsgLoop");
 
-        if (start_read_index == end_read_index)
-            return 0; // nothing to read
-
-        uint32_t number_of_msg = (end_read_index + Config::MAX_MSG_BUFFER - start_read_index) % Config::MAX_MSG_BUFFER;
-
-        start_read_index = RING_IDX(start_read_index);
-        end_read_index = RING_IDX(end_read_index);
-
-        u_int32_t n = 0;
-        for (int i = 0; i < number_of_msg;)
+        uint32_t n_msg_parsed = 0;
+        while (stop.load() == false)
         {
-            int idx = RING_IDX(start_read_index + i);
-            rdma_msg_t *msg = &buffer_to_read->data[idx];
-
-            if (msg->msg_size == 0 || msg->number_of_slots != 1)
-                throw runtime_error("Invalid message received - readMsg");
-
-            int ret = parseMsg(bpf_ctx, client_sks, *msg);
-            if (ret != 0)
-                return ret;
-
-            i += msg->number_of_slots;
-
-            if (stop.load() == true)
+            for (size_t i = 0; i < Config::MAX_MSG_BUFFER;)
             {
-                cout << "Stopping readMsg due to stop signal" << endl;
-                return 0; // stop the reading
+                rdma_msg_t *msg = &buffer_to_read->data[i];
+
+                uint32_t sn = seq_number_read.load();
+                while (msg->seq_number_head != sn || msg->seq_number_tail != sn)
+                {
+                    this_thread::yield();
+                    if (stop.load() == true)
+                        return 1; // stop the reading
+                }
+                seq_number_read.fetch_add(1);
+
+                if (msg->msg_size == 0 || msg->number_of_slots != 1)
+                    throw runtime_error("Invalid message received - readMsgLoop");
+
+                int ret = parseMsg(*msg);
+                if (ret != 0)
+                    return ret;
+
+                i += msg->number_of_slots;
+
+                buffer_to_read->local_read_index += msg->number_of_slots;
+                n_msg_parsed++;
+                if (n_msg_parsed >= Config::UPDATE_REM_READ_IDX_AFTER_MSG)
+                {
+                    thPoolContext->enqueue([this]()
+                                           { updateRemoteReadIndex(buffer_to_read->local_read_index); });
+                    n_msg_parsed = 0;
+                }
             }
         }
 
@@ -1303,10 +1103,10 @@ namespace rdma
         size_t offset = (size_t)((char *)buffer_to_write - (char *)buffer);
         uintptr_t remote_addr_2 = remote_addr + offset;
 
-        executeWrNow(remote_addr_2,
+        /* TODO executeWrNow(remote_addr_2,
                      (uintptr_t)(buffer + offset),
                      sizeof(buffer_to_write->flags.flags),
-                     true);
+                     true);*/
 
         cout << "Polling status updated: " << (is_polling ? "ON" : "OFF") << endl;
     }

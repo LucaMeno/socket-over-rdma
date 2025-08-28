@@ -22,6 +22,7 @@
 #include "SocketMng.h"
 #include "Config.hpp"
 #include "SockMap.hpp"
+#include "ThreadPool.h"
 
 #define RING_IDX(i) ((i) & (Config::MAX_MSG_BUFFER - 1))
 
@@ -75,11 +76,13 @@ namespace rdma
 
     typedef struct
     {
+        uint32_t seq_number_head;
         uint32_t msg_flags;                 // flags
         struct sock_id original_sk_id;      // id of the socket
         uint32_t msg_size;                  // size of the message
         uint32_t number_of_slots;           // number of slots
         char msg[Config::MAX_PAYLOAD_SIZE]; // message
+        uint32_t seq_number_tail;
     } rdma_msg_t;
 
     typedef struct
@@ -102,25 +105,14 @@ namespace rdma
     {
         ibv_send_wr wr;
         ibv_sge sge;
-        uint32_t pre_idx;
-        uint32_t new_idx;
     };
 
-    struct DataReturn
-    {
-        int err;
-        uint32_t new_idx;
-
-        DataReturn() : err(0), new_idx(0) {}
-        DataReturn(int e, uint32_t idx) : err(e), new_idx(idx) {}
-    };
-
-    struct DataReturn2
+    struct WrBatch
     {
         std::vector<WorkRequest *> *wr_batch;
         std::vector<uint32_t> *indexes;
 
-        DataReturn2() : wr_batch(new std::vector<WorkRequest *>), indexes(new std::vector<uint32_t>) {}
+        WrBatch() : wr_batch(new std::vector<WorkRequest *>), indexes(new std::vector<uint32_t>) {}
     };
 
     class RdmaContext
@@ -159,11 +151,7 @@ namespace rdma
         std::mutex mtx_rx_commit;
         std::condition_variable cond_rx_read; // used to signal the read operation is done
 
-        uint64_t last_flush_ms;                    // last time the buffer was flushed, used to avoid flushing too often
-        std::mutex mtx_commit_flush;               // used to commit the flush operation
-        uint32_t number_of_flushes;                // number of flushes done
-        std::condition_variable cond_commit_flush; // used to signal the flush operation is committed
-        std::atomic<uint32_t> flush_threshold;
+        uint64_t last_flush_ms; // last time the buffer was flushed, used to avoid flushing too often
 
         rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server
         rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
@@ -171,33 +159,25 @@ namespace rdma
         rdma_ringbuffer_t *buffer_to_write; // buffer to write data
         rdma_ringbuffer_t *buffer_to_read;  // buffer to read data
 
+        uint64_t last_notification_data_ready_ns;
+
         std::unordered_map<sock_id_t, int> sockid_to_fd_map; // Map of sock_id to fd for fast access
-
-        uint64_t last_notification_data_ready_ns; // Last time a notification was sent
-
-        std::atomic<uint32_t> msg_counter{0};
-        std::queue<WorkRequest> work_reqs;
-        std::mutex mtx_wrs; // Mutex to protect the work requests queue
 
         std::atomic<int> outgoing_wrs[Config::QP_N]{0};
 
-        DataReturn2 getPollingBatch();
-        bool postWrBatch2(DataReturn2 dr);
-        std::thread polling_thread_inside;
-        bool is_polling_thread_inside_running;
+        WrBatch getPollingBatch();
+        void postWrBatch(WrBatch dr);
 
-        RdmaContext();
+        RdmaContext(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks);
         ~RdmaContext();
 
         serverConnection_t serverSetup();
         void serverHandleNewClient(serverConnection_t &sc);
         void clientConnect(uint32_t server_ip, uint16_t server_port);
 
-        // int readMsgFromSk(int src_fd, struct sock_id original_socket);
         int writeMsg(int src_fd, struct sock_id original_socket);
-        // void copyMsgIntoSharedBuff();
 
-        int readMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, uint32_t start_read_index, uint32_t end_read_index);
+        int readMsgLoop();
         void updateRemoteReadIndex(uint32_t r_idx);
 
         void setPollingStatus(uint32_t is_polling);
@@ -206,11 +186,15 @@ namespace rdma
         const std::string getOpName(CommunicationCode code);
         uint64_t getTimeMS();
         void waitForContextToBeReady();
-        void updateRemoteWriteIndex(uint32_t new_idx);
-        DataReturn flushWrQueue();
-        bool shouldFlushWrQueue();
 
     private:
+        std::unique_ptr<ThreadPool> thPoolContext; // thread pool
+        std::thread flush_th;
+        bool is_flush_th_running;
+
+        std::thread reader_th;
+        bool is_reader_th_running;
+
         std::mutex mtx_qp_idx;
         std::condition_variable cv_qp_idx;
         bool is_qp_idx_available[Config::QP_N] = {true};
@@ -220,26 +204,33 @@ namespace rdma
         size_t local_remote_read_index_offset;
         uintptr_t remote_addr_read_index;
 
+        bpf::BpfMng &bpf_ctx;
+        std::vector<sk::client_sk_t> &client_sks;
+
+        std::atomic<uint32_t> seq_number_write{1}; // start from one since the shared mem is all 0 at the beginning
+        std::atomic<uint32_t> seq_number_read{1};  // start from one since the shared mem is all 0 at the beginning
+
+        void flushThread();
+        void readerThread();
+        
         int tcpConnect(uint32_t ip);
         int tcpWaitForConnection();
         ibv_context *openDevice();
         uint32_t getPsn();
         void sendNotification(CommunicationCode code);
         void pollCqSend(ibv_cq *send_cq_to_poll, int num_entry = 1);
-        int parseMsg(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks, rdma_msg_t &msg);
+        int parseMsg(rdma_msg_t &msg);
         void sendDataReady();
         conn_info rdmaSetupPreHs();
         void rdmaSetupPostHs(conn_info remote, conn_info local);
         void showDevices();
         void enqueueWr(uint32_t start_idx, uint32_t end_idx, size_t data_size);
-        void executeWrNow(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
-        void executeWrNow(WorkRequest wr, bool signaled);
-
-        void postWrBatch(std::vector<WorkRequest *> &wr_batch, int start, int end, int qp_idx);
 
         WorkRequest createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
 
-        WorkRequest *createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, uint32_t idx, bool signaled);
+        void createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, uint32_t idx);
+
+        void postWrBatchListOnQp(std::vector<WorkRequest *> &wr_batch, int start, int end, int qp_idx);
 
         int getFreeQpIndex();
         std::vector<int> getFreeQpIndexes(int n);
