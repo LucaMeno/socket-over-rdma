@@ -24,9 +24,9 @@ void handle_signal(int signal)
 
 int main(int argc, char *argv[])
 {
-    if (argc != 2)
+    if (argc != 4)
     {
-        std::cerr << "Usage: " << argv[0] << " <ip>\n";
+        std::cerr << "Usage: " << argv[0] << " <ip> <dev_idx> <GID>\n";
         return 1;
     }
 
@@ -35,6 +35,12 @@ int main(int argc, char *argv[])
 
     std::string ip = argv[1];
     uint32_t ipNum = ipToUint32(ip);
+
+    int dev_idx = std::atoi(argv[2]);
+    int gid = std::atoi(argv[3]);
+
+    RdmaTestConf::setDevIdx(dev_idx);
+    RdmaTestConf::setRdmaDevGidIdx(gid);
 
     Manager::Manager manager;
     manager.client(ipNum);
@@ -112,7 +118,7 @@ void client_thread()
 
         int n = send_all_2(sock, buf, BUFFER_SIZE_BYTES);
 
-        // this_thread::sleep_for(std::chrono::milliseconds(10));
+        // this_thread::sleep_for(std::chrono::milliseconds(5));
 
         if (n == 0)
         {
@@ -195,6 +201,21 @@ int server_local()
         return -1;
     }
     std::cout << "local Client connected, waiting for data…\n";
+
+    int flags = fcntl(client_fd, F_GETFL, 0);
+    if (flags == -1)
+    {
+        std::cerr << "Errore F_GETFL\n";
+        return -1;
+    }
+
+    flags |= O_NONBLOCK;
+
+    if (fcntl(client_fd, F_SETFL, flags) == -1)
+    {
+        std::cerr << "Errore F_SETFL\n";
+        return -1;
+    }
 
     return client_fd;
 }

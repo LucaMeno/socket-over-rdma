@@ -91,8 +91,8 @@ namespace rdmat
         struct sock_id original_sk_id;            // id of the socket
         uint32_t msg_size;                        // size of the message
         uint32_t number_of_slots;                 // number of slots
-        uint32_t seq_number_tail;                 // sequence number
         char msg[RdmaTestConf::MAX_PAYLOAD_SIZE]; // message
+        uint32_t seq_number_tail;                 // sequence number
     } rdma_msg_t;
 
     typedef struct
@@ -101,7 +101,7 @@ namespace rdmat
         std::atomic<uint32_t> remote_write_index;
         std::atomic<uint32_t> remote_read_index;
         uint32_t local_write_index;
-        uint32_t local_read_index;
+        std::atomic<uint32_t> local_read_index;
         rdma_msg_t data[RdmaTestConf::MAX_MSG_BUFFER];
     } rdma_ringbuffer_t;
 
@@ -124,6 +124,8 @@ namespace rdmat
 
         WrBatch() : wr_batch(new std::vector<WorkRequest *>), indexes(new std::vector<uint32_t>) {}
     };
+
+    const sock_id_t SOCK_TO_USE = {1, 2, 3, 4};
 
     class RdmaTransfer
     {
@@ -177,6 +179,8 @@ namespace rdmat
         WrBatch getPollingBatch();
         void postWrBatch(WrBatch dr);
 
+        void flushThread();
+
         RdmaTransfer();
         ~RdmaTransfer();
 
@@ -187,7 +191,7 @@ namespace rdmat
         int writeMsg(int src_fd, struct sock_id original_socket);
 
         void readMsgLoop(int dest_fd);
-        void updateRemoteReadIndex(uint32_t new_idx);
+        void updateRemoteReadIndex();
 
         uint64_t getTimeMS();
 
@@ -211,7 +215,7 @@ namespace rdmat
         uint32_t getPsn();
         void pollCqSend(ibv_cq *send_cq_to_poll, int num_entry = 1);
 
-        void postWrBatchListOnQp(std::vector<WorkRequest *> &wr_batch, int start, int end, int qp_idx);
+        void postWrBatchListOnQp(std::vector<WorkRequest *> &wr_batch, int qp_idx);
 
         conn_info rdmaSetupPreHs();
         void rdmaSetupPostHs(conn_info remote, conn_info local);

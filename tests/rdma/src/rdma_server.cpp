@@ -16,8 +16,19 @@ void handle_signal(int signal)
     STOP = true;
 }
 
-int main(int argc, char **argv)
+int main(int argc, char *argv[])
 {
+    if (argc != 3)
+    {
+        std::cerr << "Usage: " << argv[0] << " <dev_idx> <GID>\n";
+        return 1;
+    }
+
+    int dev_idx = std::atoi(argv[1]);
+    int gid = std::atoi(argv[2]);
+
+    RdmaTestConf::setDevIdx(dev_idx);
+    RdmaTestConf::setRdmaDevGidIdx(gid);
     signal(SIGINT, handle_signal);
     signal(SIGTSTP, handle_signal);
 
@@ -102,10 +113,10 @@ void server_thread()
         if (is_first && counter_test != counter)
         {
             is_first = false;
-            std::cerr << "Data mismatch: expected " << counter << ", got " << counter_test << "\n";
-            /*close(client_fd);
+            std::cerr << "------------------------------------- Data mismatch: expected " << counter << ", got " << counter_test << "\n";
+            /*close(sock);
             delete[] buf;
-            return 1;*/
+            return;*/
         }
         ++counter;
         if (tot_bytes >= BYTES_PER_GB * i)
@@ -167,6 +178,20 @@ int server_local()
         return -1;
     }
     std::cout << "local Client connected, waiting for data…\n";
+    int flags = fcntl(client_fd, F_GETFL, 0);
+    if (flags == -1)
+    {
+        std::cerr << "Errore F_GETFL\n";
+        return -1;
+    }
+
+    flags |= O_NONBLOCK;
+
+    if (fcntl(client_fd, F_SETFL, flags) == -1)
+    {
+        std::cerr << "Errore F_SETFL\n";
+        return -1;
+    }
 
     return client_fd;
 }

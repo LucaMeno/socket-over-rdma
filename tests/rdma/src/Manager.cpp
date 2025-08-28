@@ -33,10 +33,13 @@ namespace Manager
         stop_threads.store(true, memory_order_release);
         if (reading_thread.joinable())
             reading_thread.join();
-        if (flush_thread.joinable())
-            flush_thread.join();
+        for (size_t i = 0; i < RdmaTestConf::QP_N - 1; i++)
+            if (flush_thread[i].joinable())
+                flush_thread[i].join();
         if (writer_threads.joinable())
             writer_threads.join();
+        if (update_idx_thread.joinable())
+            update_idx_thread.join();
     }
 
     void Manager::run(int fd)
@@ -45,45 +48,24 @@ namespace Manager
             throw runtime_error("Invalid socket fd or ctx in run");
 
         reading_thread = thread(&Manager::readerThread, this, fd);
-        flush_thread = thread(&Manager::flushThread, this);
+        for (size_t i = 0; i < RdmaTestConf::QP_N - 1; i++)
+            flush_thread[i] = thread(&Manager::flushThread, this);
         writer_threads = thread(&Manager::writerThread, this, fd);
+        update_idx_thread = thread(&Manager::updateIdxThread, this);
     }
 
     void Manager::writerThread(int fd)
     {
         if (fd < 0 || ctx == nullptr)
             throw runtime_error("Invalid socket fd or ctx in writer thread");
-
-        int flags = fcntl(fd, F_GETFL, 0);
-        if (flags == -1)
-        {
-            std::cerr << "Errore F_GETFL\n";
-            return;
-        }
-
-        flags |= O_NONBLOCK;
-
-        if (fcntl(fd, F_SETFL, flags) == -1)
-        {
-            std::cerr << "Errore F_SETFL\n";
-            return;
-        }
         try
         {
             while (!stop_threads.load())
             {
-                vector<int> ready_fd = waitOnSelect({fd});
-
-                for (size_t i = 0; i < ready_fd.size(); ++i)
-                {
-                    int fd = ready_fd[i];
-
-                    sock_id_t tmp = {0};
-                    int ret = ctx->writeMsg(fd, tmp);
-
-                    if (ret <= 0 && errno != EAGAIN && errno != EWOULDBLOCK)
-                        throw runtime_error("Connection closed - writerThread err: " + std::to_string(ret) + " errno: " + std::to_string(errno));
-                }
+                sock_id_t tmp = {0};
+                int ret = ctx->writeMsg(fd, tmp);
+                if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+                    throw runtime_error("Error in writeMsg, ret: " + to_string(ret));
             }
         }
         catch (const std::exception &e)
@@ -117,9 +99,17 @@ namespace Manager
         if (ctx == nullptr)
             ctx = new rdmat::RdmaTransfer();
 
-        ctx->remote_ip = ip;
-
-        ctx->clientConnect(ip);
+        try
+        {
+            ctx->remote_ip = ip;
+            ctx->clientConnect(ip);
+        }
+        catch (const std::exception &e)
+        {
+            cerr << "Exception in client: " << e.what() << endl;
+            perror("Details");
+            throw; // Re-throw the exception to be handled by the caller
+        }
     }
 
     void Manager::server()
@@ -155,13 +145,25 @@ namespace Manager
 
         while (stop_threads.load() == false)
         {
-            auto data = ctx->getPollingBatch(); // copy
-            thPool->enqueue([this, data]() {    // lambda has its own copy
-                ctx->postWrBatch(data);
-            });
+            ctx->flushThread();
         }
 
         cout << "[Shutdown] Flush thread stopped" << endl;
+    }
+
+    void Manager::updateIdxThread()
+    {
+        if (ctx == nullptr)
+            throw runtime_error("Invalid ctx in updateIdx thread");
+
+        cout << "[Startup] -- UpdateIdx thread started" << endl;
+
+        while (stop_threads.load() == false)
+        {
+            ctx->updateRemoteReadIndex();
+        }
+
+        cout << "[Shutdown] UpdateIdx thread stopped" << endl;
     }
 
     vector<int> Manager::waitOnSelect(const vector<int> &fds)
