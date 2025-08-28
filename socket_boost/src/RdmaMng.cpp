@@ -27,7 +27,6 @@ namespace rdmaMng
         cout << " Proxy IP: " << Config::SERVER_IP << endl;
         cout << " MAX_PAYLOAD_SIZE: " << (Config::MAX_PAYLOAD_SIZE / 1024) << "kB" << endl;
         cout << " MAX_MSG_BUFFER: " << (Config::MAX_MSG_BUFFER / 1024) << "k" << endl;
-        cout << " THRESHOLD: " << Config::THRESHOLD_NOT_AUTOSCALER << endl;
         cout << " N_WRITER_THREADS: " << Config::N_WRITER_THREADS << endl;
         cout << " N_THREAD_POOL_THREADS: " << Config::N_THREAD_POOL_THREADS << endl;
         cout << " Q pairs: " << Config::QP_N << endl;
@@ -42,6 +41,11 @@ namespace rdmaMng
     RdmaMng::~RdmaMng()
     {
         stop_threads.store(true, memory_order_release);
+
+        // Cleanup RDMA contexts
+        cout << "[Cleanup ] Clearing RDMA contexts..." << endl;
+        ctxs.clear();
+        cout << "[Cleanup ] RDMA contexts cleared" << endl;
 
         for (auto &ctx : ctxs)
             ctx->stop.store(true);
@@ -66,11 +70,6 @@ namespace rdmaMng
             notification_thread.join();
             cout << "[Shutdown] Notification thread joined" << endl;
         }
-
-        // Cleanup RDMA contexts
-        cout << "[Cleanup ] Clearing RDMA contexts..." << endl;
-        ctxs.clear();
-        cout << "[Cleanup ] RDMA contexts cleared" << endl;
 
         // bpf and socket managers cleanup are handled in their destructors automatically
     }

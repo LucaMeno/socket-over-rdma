@@ -91,7 +91,7 @@ namespace rdma
         std::atomic<uint32_t> remote_write_index;
         std::atomic<uint32_t> remote_read_index;
         uint32_t local_write_index;
-        uint32_t local_read_index;
+        std::atomic<uint32_t> local_read_index;
         rdma_msg_t data[Config::MAX_MSG_BUFFER];
     } rdma_ringbuffer_t;
 
@@ -151,8 +151,6 @@ namespace rdma
         std::mutex mtx_rx_commit;
         std::condition_variable cond_rx_read; // used to signal the read operation is done
 
-        uint64_t last_flush_ms; // last time the buffer was flushed, used to avoid flushing too often
-
         rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server
         rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
 
@@ -165,8 +163,10 @@ namespace rdma
 
         std::atomic<int> outgoing_wrs[Config::QP_N]{0};
 
-        WrBatch getPollingBatch();
-        void postWrBatch(WrBatch dr);
+        std::thread flush_threads[Config::QP_N - 1];
+        std::thread update_remote_r_thread;
+        std::thread reader_thread;
+
 
         RdmaContext(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks);
         ~RdmaContext();
@@ -178,7 +178,6 @@ namespace rdma
         int writeMsg(int src_fd, struct sock_id original_socket);
 
         int readMsgLoop();
-        void updateRemoteReadIndex(uint32_t r_idx);
 
         void setPollingStatus(uint32_t is_polling);
         void postReceive(int qpIdx, bool allQp);
@@ -188,13 +187,6 @@ namespace rdma
         void waitForContextToBeReady();
 
     private:
-        std::unique_ptr<ThreadPool> thPoolContext; // thread pool
-        std::thread flush_th;
-        bool is_flush_th_running;
-
-        std::thread reader_th;
-        bool is_reader_th_running;
-
         std::mutex mtx_qp_idx;
         std::condition_variable cv_qp_idx;
         bool is_qp_idx_available[Config::QP_N] = {true};
@@ -212,7 +204,8 @@ namespace rdma
 
         void flushThread();
         void readerThread();
-        
+        void updateRemoteReadIndexThread();
+
         int tcpConnect(uint32_t ip);
         int tcpWaitForConnection();
         ibv_context *openDevice();
@@ -230,7 +223,7 @@ namespace rdma
 
         void createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, uint32_t idx);
 
-        void postWrBatchListOnQp(std::vector<WorkRequest *> &wr_batch, int start, int end, int qp_idx);
+        void postWrBatchListOnQp(std::vector<WorkRequest *> &wr_batch, int qp_idx);
 
         int getFreeQpIndex();
         std::vector<int> getFreeQpIndexes(int n);
