@@ -567,6 +567,11 @@ namespace rdmat
         lock_rx.unlock();
     }
 
+    inline int RdmaTransfer::getQueueIdx()
+    {
+        return queue_idx++ % RdmaTestConf::N_OF_QUEUES;
+    }
+
     inline void RdmaTransfer::enqueueWr(uint32_t start_idx, uint32_t end_idx, size_t data_size)
     {
         uint32_t idx;
@@ -594,7 +599,7 @@ namespace rdmat
 
         createWrAtIdx(remote_addr_2, batch_start, data_size, idx);
 
-        if (!wr_busy_idx_queue.push(idx))
+        if (!wr_busy_idx_queue[getQueueIdx()].push(idx))
             throw runtime_error("Failed to push index to wr_busy_idx_queue");
     }
 
@@ -671,6 +676,8 @@ namespace rdmat
 
         int qp_idx = getFreeQpIndex();
 
+        int queue_idx = (qp_idx - 1) % RdmaTestConf::N_OF_QUEUES; // start from a different queue each time
+
         while (stop.load() == false)
         {
             uint32_t idx = 0;
@@ -696,7 +703,7 @@ namespace rdmat
                     break;
                 }
 
-                if (!wr_busy_idx_queue.pop(idx))
+                if (!wr_busy_idx_queue[queue_idx].pop(idx))
                     continue;
 
                 wr = &wr_pool[idx];
@@ -743,7 +750,7 @@ namespace rdmat
 
             this_thread::yield(); // backoff
 
-            if (COUNT % 10000000 == 0)
+            if (COUNT % 1000000 == 0)
                 cout << "Waiting for space in the ringbuffer (" << COUNT << ")... " << " remote_read_idx: " << end_w_index << endl;
 
             if (stop.load() == true)
@@ -827,12 +834,84 @@ namespace rdmat
     {
         return std::memcmp(&sk1, &sk2, sizeof(sock_id_t)) == 0;
     }
+
+    inline void sendMsg(struct mmsghdr *msgs, int n_of_msg, int dest_fd)
+    {
+        int sent = 0;
+        while (sent < n_of_msg)
+        {
+            int n = sendmmsg(dest_fd, &msgs[sent], n_of_msg - sent, MSG_NOSIGNAL);
+            if (n < 0)
+            {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                {
+                    std::this_thread::yield();
+                    cerr << "WARN!!" << endl;
+                    continue;
+                }
+                perror("sendmmsg");
+                throw std::runtime_error("sendmmsg failed");
+            }
+            else if (n == 0)
+            {
+                throw std::runtime_error("sendmmsg sent 0 messages, socket closed?");
+            }
+            sent += n;
+        }
+    }
+
+    inline void parseRxMsg(char *ptr, size_t rem, int dest_fd)
+    {
+        int c = 0;
+        while (rem > 0)
+        {
+            int size = send(dest_fd, ptr, rem, 0);
+            if (size <= 0)
+            {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                {
+                    size ^= size;
+                }
+                else
+                {
+                    cerr << "Failed to send message - parseMsg: " + string(strerror(errno)) << endl;
+                    return;
+                }
+            }
+            rem -= size;
+            ptr += size;
+            if (c++ > 1)
+                cout << "Warn - " << c << endl;
+        }
+    }
+
     void RdmaTransfer::readMsgLoop(int dest_fd)
     {
         if (!buffer_to_read)
             throw runtime_error("ringbuffer is nullptr - readMsg");
 
-        uint32_t n_msg_parsed = 0;
+        const int BATCH_SIZE = 32;
+        struct mmsghdr msgs[BATCH_SIZE];
+        struct iovec iovs[BATCH_SIZE];
+        int idx_batch = 0;
+
+        /*int sz = 4 << 20; // 4MB
+        setsockopt(dest_fd, SOL_SOCKET, SO_SNDBUF, &sz, sizeof(sz));*/
+
+        memset(msgs, 0, sizeof(msgs));
+        memset(iovs, 0, sizeof(iovs));
+        for (int i = 0; i < BATCH_SIZE; i++)
+        {
+            msgs[i].msg_hdr.msg_iov = &iovs[i];
+            msgs[i].msg_hdr.msg_iovlen = 1;
+        }
+
+        auto flush = [&]
+        {
+            sendMsg(msgs, idx_batch, dest_fd);
+            buffer_to_read->local_read_index.fetch_add(idx_batch, std::memory_order_release);
+            idx_batch = 0;
+        };
 
         while (stop.load() == false)
         {
@@ -843,36 +922,35 @@ namespace rdmat
                 uint32_t sn = seq_number_read.fetch_add(1);
                 while (msg->seq_number_head != sn || msg->seq_number_tail != sn)
                 {
-                    this_thread::yield();
+                    if (idx_batch != 0)
+                    {
+                        // flush();
+                        //  cout << "QUA0" << endl;
+                    }
+                    else
+                        this_thread::yield();
+
                     if (stop.load() == true)
                         return; // stop the reading
                 }
 
-                // cout << "READ: " << sn << " size: " << msg->msg_size << endl;
-
                 if (msg->msg_size == 0 || msg->number_of_slots != 1 || !areSkEqual(msg->original_sk_id, SOCK_TO_USE))
                     throw runtime_error("Invalid message received: " + to_string(msg->msg_size) + ", " + to_string(msg->number_of_slots));
 
-                int rem = msg->msg_size;
-                char *ptr = msg->msg;
-                int c = 0;
-                while (rem > 0)
-                {
-                    int size = send(dest_fd, ptr, rem, 0);
-                    if (size <= 0)
-                    {
-                        cerr << "Failed to send message - parseMsg: " + string(strerror(errno)) << endl;
-                        return;
-                    }
-                    rem -= size;
-                    ptr += size;
-                    if (c++ > 1)
-                        cout << "Warn - " << c << endl;
-                }
+                /*iovs[idx_batch].iov_base = msg->msg;
+                iovs[idx_batch].iov_len = msg->msg_size;
+
+                idx_batch++;
+
+                if (idx_batch == BATCH_SIZE)
+                    flush();*/
+
+                parseRxMsg(msg->msg, msg->msg_size, dest_fd);
+                buffer_to_read->local_read_index.fetch_add(msg->number_of_slots, std::memory_order_release);
+
+                // cout << "READ: " << sn << " size: " << msg->msg_size << endl;
 
                 i += msg->number_of_slots;
-                buffer_to_read->local_read_index.fetch_add(msg->number_of_slots, memory_order_release);
-                n_msg_parsed++;
             }
         }
     }

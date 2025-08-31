@@ -131,7 +131,8 @@ namespace rdmat
     {
 
     public:
-        boost::lockfree::queue<uint32_t, boost::lockfree::capacity<RdmaTestConf::WORK_REQUEST_POOL_SIZE>> wr_busy_idx_queue;
+        boost::lockfree::queue<uint32_t, boost::lockfree::capacity<RdmaTestConf::WORK_REQUEST_POOL_SIZE>> wr_busy_idx_queue[RdmaTestConf::N_OF_QUEUES];
+        int queue_idx{0};
         boost::lockfree::queue<uint32_t, boost::lockfree::capacity<RdmaTestConf::WORK_REQUEST_POOL_SIZE>> wr_available_idx_queue;
         WorkRequest wr_pool[RdmaTestConf::WORK_REQUEST_POOL_SIZE];
 
@@ -229,6 +230,8 @@ namespace rdmat
         std::vector<int> getFreeQpIndexes(int n);
         void releaseQpIndex(int index);
         void releaseQpIndexes(const std::vector<int> &indexes);
+
+        int getQueueIdx();
     };
 
 } // namespace rdma

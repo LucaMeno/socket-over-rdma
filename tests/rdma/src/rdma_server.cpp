@@ -119,6 +119,7 @@ void server_thread()
             return;*/
         }
         ++counter;
+
         if (tot_bytes >= BYTES_PER_GB * i)
         {
             ++i;

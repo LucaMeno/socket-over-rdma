@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <vector>
 
-constexpr int PORT = 7777;
+constexpr int PORT = 7787;
 constexpr size_t BUFFER_SIZE_BYTES = 1024 * 1024; // 1 MB
 constexpr double DEFAULT_TOTAL_GB = 50.0;         // GB di default
 constexpr uint64_t BYTES_PER_GB = 1024ULL * 1024ULL * 1024ULL;
@@ -31,11 +31,13 @@ public:
     inline static const int MAX_MSG_BUFFER = (2048);         // POWER OF 2!!!!!!!!!!!
     inline static const int TIME_TO_WAIT_IF_NO_SPACE_MS = 2; // ms
     inline static const int MAX_PAYLOAD_SIZE = (64 * 1024);  // 64 KB
-    inline static const int QP_N = 16 + 1;                   // Number of QPs
+    inline static const int QP_N = 4 + 1;                    // Number of QPs
     inline static const int DEFAULT_QP_IDX = 0;              // Default QP index
 
     inline static const int POLL_CQ_AFTER_WR = 32;
     inline static const int MAX_WR_PER_POST_PER_QP = 256;
+
+    inline static const int N_OF_QUEUES = 4;
 
     inline static const size_t MAX_SEND_WR = MAX_WR_PER_POST_PER_QP * POLL_CQ_AFTER_WR;
     inline static const size_t MAX_RECV_WR = 16;

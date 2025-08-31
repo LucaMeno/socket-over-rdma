@@ -118,7 +118,7 @@ void client_thread()
 
         int n = send_all_2(sock, buf, BUFFER_SIZE_BYTES);
 
-        // this_thread::sleep_for(std::chrono::milliseconds(5));
+        //this_thread::sleep_for(std::chrono::milliseconds(5));
 
         if (n == 0)
         {
@@ -134,6 +134,13 @@ void client_thread()
             cout << "Sent " << (sent_bytes / BYTES_PER_GB) << " GB so far\n";
     }
 
+    auto t1 = std::chrono::high_resolution_clock::now();
+    double sec = std::chrono::duration<double>(t1 - t0).count();
+    double gbyte = sent_bytes / static_cast<double>(BYTES_PER_GB);
+    double gbps = gbyte / sec;
+    gbps *= 8; // Convert to Gb/s
+    std::cout << "TX " << gbyte << " GB in " << sec << " s (" << gbps << " Gb/s)\n";
+
     std::cout << "Tx ended, waiting for ACK…\n";
 
     // shutdown(sock, SHUT_WR);
@@ -141,10 +148,10 @@ void client_thread()
     char ack[16] = {};
     ssize_t ackn = recv(sock, ack, sizeof(ack) - 1, 0);
 
-    auto t1 = std::chrono::high_resolution_clock::now();
-    double sec = std::chrono::duration<double>(t1 - t0).count();
-    double gbyte = sent_bytes / static_cast<double>(BYTES_PER_GB);
-    double gbps = gbyte / sec;
+    t1 = std::chrono::high_resolution_clock::now();
+    sec = std::chrono::duration<double>(t1 - t0).count();
+    gbyte = sent_bytes / static_cast<double>(BYTES_PER_GB);
+    gbps = gbyte / sec;
     gbps *= 8; // Convert to Gb/s
 
     if (ackn < 0)
