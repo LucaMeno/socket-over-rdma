@@ -10,6 +10,7 @@ constexpr double DEFAULT_TOTAL_GB = 50.0;         // GB di default
 constexpr uint64_t BYTES_PER_GB = 1024ULL * 1024ULL * 1024ULL;
 constexpr const char *ACK_MESSAGE = "OK";
 constexpr const char *LOCALHOST = "127.0.0.1";
+constexpr bool CHECK_INTEGRITY = true;
 
 class RdmaTestConf
 {
@@ -28,14 +29,14 @@ public:
     inline static const int ALIGNMENT = 4096; // Size of a memory page
 
     inline static const char *RDMA_TCP_PORT = "7472";        // Default RDMA port for TCP parameters exchange
-    inline static const int MAX_MSG_BUFFER = (2048);         // POWER OF 2!!!!!!!!!!!
+    inline static const int MAX_MSG_BUFFER = (128);         // POWER OF 2!!!!!!!!!!!
     inline static const int TIME_TO_WAIT_IF_NO_SPACE_MS = 2; // ms
-    inline static const int MAX_PAYLOAD_SIZE = (64 * 1024);  // 64 KB
+    inline static const int MAX_PAYLOAD_SIZE = (1024 * 1024);  // 64 KB
     inline static const int QP_N = 4 + 1;                    // Number of QPs
     inline static const int DEFAULT_QP_IDX = 0;              // Default QP index
 
     inline static const int POLL_CQ_AFTER_WR = 32;
-    inline static const int MAX_WR_PER_POST_PER_QP = 256;
+    inline static const int MAX_WR_PER_POST_PER_QP = 4;
 
     inline static const int N_OF_QUEUES = 4;
 
@@ -52,6 +53,11 @@ public:
     inline static const int N_THREAD_POOL_THREADS = 24;
 
     inline static const char *SERVER_IP = "127.0.0.1";
+
+    inline static int IOVS_BATCH_SIZE = 32;
+    inline static int PRINT_NO_SPACE_EVERY = 10000000;
+    inline static bool EXCLUDE_RECEIVER = false;
+
     static std::vector<uint16_t> getTargetPorts()
     {
         return {TARGET_PORT_1, TARGET_PORT_2, TARGET_PORT_3};

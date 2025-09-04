@@ -114,11 +114,15 @@ void client_thread()
 
     while (remaining > 0)
     {
-        memcpy(buf, &counter, sizeof(counter));
+        if (CHECK_INTEGRITY)
+        {
+            memcpy(buf, &counter, sizeof(counter));
+            counter++;
+        }
 
         int n = send_all_2(sock, buf, BUFFER_SIZE_BYTES);
 
-        //this_thread::sleep_for(std::chrono::milliseconds(5));
+        // this_thread::sleep_for(std::chrono::milliseconds(5));
 
         if (n == 0)
         {
@@ -128,7 +132,6 @@ void client_thread()
 
         sent_bytes += static_cast<uint64_t>(BUFFER_SIZE_BYTES);
         remaining -= static_cast<uint64_t>(BUFFER_SIZE_BYTES);
-        counter++;
 
         if (sent_bytes % (BYTES_PER_GB) == 0)
             cout << "Sent " << (sent_bytes / BYTES_PER_GB) << " GB so far\n";

@@ -750,7 +750,7 @@ namespace rdmat
 
             this_thread::yield(); // backoff
 
-            if (COUNT % 1000000 == 0)
+            if (COUNT % RdmaTestConf::PRINT_NO_SPACE_EVERY == 0)
                 cout << "Waiting for space in the ringbuffer (" << COUNT << ")... " << " remote_read_idx: " << end_w_index << endl;
 
             if (stop.load() == true)
@@ -773,7 +773,6 @@ namespace rdmat
             uint32_t sn = seq_number_write.fetch_add(1);
             msg->seq_number_head = sn;
             msg->seq_number_tail = sn;
-            // cout << "WRITE: " << sn << " size: " << msg->msg_size << endl;
 
             buffer_to_write->local_write_index += msg->number_of_slots;
 
@@ -835,6 +834,31 @@ namespace rdmat
         return std::memcmp(&sk1, &sk2, sizeof(sock_id_t)) == 0;
     }
 
+    inline void parseRxMsg(char *ptr, size_t rem, int dest_fd)
+    {
+        int c = 0;
+        while (rem > 0)
+        {
+            int size = send(dest_fd, ptr, rem, MSG_NOSIGNAL);
+            if (size <= 0)
+            {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                {
+                    size ^= size;
+                }
+                else
+                {
+                    cerr << "Failed to send message - parseMsg: " + string(strerror(errno)) << endl;
+                    return;
+                }
+            }
+            rem -= size;
+            ptr += size;
+            if (c++ > 1)
+                cout << "Warn - " << c << endl;
+        }
+    }
+
     inline void sendMsg(struct mmsghdr *msgs, int n_of_msg, int dest_fd)
     {
         int sent = 0;
@@ -860,47 +884,18 @@ namespace rdmat
         }
     }
 
-    inline void parseRxMsg(char *ptr, size_t rem, int dest_fd)
-    {
-        int c = 0;
-        while (rem > 0)
-        {
-            int size = send(dest_fd, ptr, rem, 0);
-            if (size <= 0)
-            {
-                if (errno == EAGAIN || errno == EWOULDBLOCK)
-                {
-                    size ^= size;
-                }
-                else
-                {
-                    cerr << "Failed to send message - parseMsg: " + string(strerror(errno)) << endl;
-                    return;
-                }
-            }
-            rem -= size;
-            ptr += size;
-            if (c++ > 1)
-                cout << "Warn - " << c << endl;
-        }
-    }
-
     void RdmaTransfer::readMsgLoop(int dest_fd)
     {
         if (!buffer_to_read)
             throw runtime_error("ringbuffer is nullptr - readMsg");
 
-        const int BATCH_SIZE = 32;
-        struct mmsghdr msgs[BATCH_SIZE];
-        struct iovec iovs[BATCH_SIZE];
+        struct mmsghdr msgs[RdmaTestConf::IOVS_BATCH_SIZE];
+        struct iovec iovs[RdmaTestConf::IOVS_BATCH_SIZE];
         int idx_batch = 0;
-
-        /*int sz = 4 << 20; // 4MB
-        setsockopt(dest_fd, SOL_SOCKET, SO_SNDBUF, &sz, sizeof(sz));*/
 
         memset(msgs, 0, sizeof(msgs));
         memset(iovs, 0, sizeof(iovs));
-        for (int i = 0; i < BATCH_SIZE; i++)
+        for (int i = 0; i < RdmaTestConf::IOVS_BATCH_SIZE; i++)
         {
             msgs[i].msg_hdr.msg_iov = &iovs[i];
             msgs[i].msg_hdr.msg_iovlen = 1;
@@ -908,10 +903,16 @@ namespace rdmat
 
         auto flush = [&]
         {
+            /*if (idx_batch != RdmaTestConf::IOVS_BATCH_SIZE)
+            {
+                cout << "Flushing partial batch: " << idx_batch << endl;
+            }*/
             sendMsg(msgs, idx_batch, dest_fd);
             buffer_to_read->local_read_index.fetch_add(idx_batch, std::memory_order_release);
             idx_batch = 0;
         };
+
+        int c = 0;
 
         while (stop.load() == false)
         {
@@ -923,10 +924,7 @@ namespace rdmat
                 while (msg->seq_number_head != sn || msg->seq_number_tail != sn)
                 {
                     if (idx_batch != 0)
-                    {
-                        // flush();
-                        //  cout << "QUA0" << endl;
-                    }
+                        flush();
                     else
                         this_thread::yield();
 
@@ -937,19 +935,27 @@ namespace rdmat
                 if (msg->msg_size == 0 || msg->number_of_slots != 1 || !areSkEqual(msg->original_sk_id, SOCK_TO_USE))
                     throw runtime_error("Invalid message received: " + to_string(msg->msg_size) + ", " + to_string(msg->number_of_slots));
 
-                /*iovs[idx_batch].iov_base = msg->msg;
+                if (RdmaTestConf::EXCLUDE_RECEIVER)
+                {
+                    c++;
+                    if (c > 5)
+                    {
+                        buffer_to_read->local_read_index.fetch_add(msg->number_of_slots, std::memory_order_release);
+                        i += msg->number_of_slots;
+                        continue;
+                    }
+                }
+
+                iovs[idx_batch].iov_base = msg->msg;
                 iovs[idx_batch].iov_len = msg->msg_size;
 
                 idx_batch++;
 
-                if (idx_batch == BATCH_SIZE)
-                    flush();*/
+                if (idx_batch == RdmaTestConf::IOVS_BATCH_SIZE)
+                    flush();
 
-                parseRxMsg(msg->msg, msg->msg_size, dest_fd);
-                buffer_to_read->local_read_index.fetch_add(msg->number_of_slots, std::memory_order_release);
-
-                // cout << "READ: " << sn << " size: " << msg->msg_size << endl;
-
+                /*parseRxMsg(msg->msg, msg->msg_size, dest_fd);
+                buffer_to_read->local_read_index.fetch_add(1, std::memory_order_release);*/
                 i += msg->number_of_slots;
             }
         }

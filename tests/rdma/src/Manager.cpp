@@ -62,6 +62,7 @@ namespace Manager
         {
             while (!stop_threads.load())
             {
+                waitOnSelect({fd});
                 sock_id_t tmp = {0};
                 int ret = ctx->writeMsg(fd, tmp);
                 if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK)

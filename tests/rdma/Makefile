@@ -1,6 +1,6 @@
 
 CXX = g++
-CXXFLAGS = -Wall -O2 -Iinclude -MMD -MP
+CXXFLAGS = -Wall -O2 -Iinclude -MMD -MP -g
 LDFLAGS = -libverbs
 
 SRC_DIR = src

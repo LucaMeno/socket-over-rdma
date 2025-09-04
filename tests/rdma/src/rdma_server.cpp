@@ -2,6 +2,8 @@
 #include <Manager.h>
 #include <signal.h>
 #include <optional>
+#include <thread>
+#include <future>
 
 int STOP = false;
 
@@ -51,6 +53,56 @@ int main(int argc, char *argv[])
     return 0;
 }
 
+void thread_worker(int thread_id, int sock, char *buf, uint64_t &tot_bytes,
+                   uint64_t &quantity_of_data_to_rx, uint64_t &counter,
+                   std::mutex &buf_mutex, bool &is_first, int &i)
+{
+    uint64_t local_counter_test;
+
+    while (true)
+    {
+        ssize_t n;
+
+        // Accesso sicuro al buffer e ai contatori condivisi
+        {
+            std::lock_guard<std::mutex> lock(buf_mutex);
+            if (quantity_of_data_to_rx == 0)
+                break;
+
+            n = recv_all(sock, buf, BUFFER_SIZE_BYTES);
+            if (n <= 0)
+            {
+                if (n < 0)
+                    perror("recv");
+                break;
+            }
+
+            tot_bytes += static_cast<uint64_t>(n);
+            quantity_of_data_to_rx -= static_cast<uint64_t>(n);
+
+            if (CHECK_INTEGRITY)
+            {
+                memcpy(&local_counter_test, buf, sizeof(local_counter_test));
+                if (is_first && local_counter_test != counter)
+                {
+                    is_first = false;
+                    cerr << "Thread " << thread_id
+                         << " - Data mismatch: expected " << counter
+                         << ", got " << local_counter_test << "\n";
+                }
+                ++counter;
+            }
+        }
+
+        if (tot_bytes >= BYTES_PER_GB * i)
+        {
+            ++i;
+            cout << "Thread " << thread_id << " - Recv "
+                 << (tot_bytes / BYTES_PER_GB) << " GB so far\n";
+        }
+    }
+}
+
 void server_thread()
 {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -90,42 +142,18 @@ void server_thread()
     bool is_first = true;
     uint64_t counter = 0;
     uint64_t counter_test;
-    while (quantity_of_data_to_rx > 0)
-    {
-        ssize_t n = recv_all(sock, buf, BUFFER_SIZE_BYTES);
-        if (n <= 0)
-        {
-            if (n < 0)
-                perror("recv");
-            break;
-        }
-        else if (n != BUFFER_SIZE_BYTES)
-        {
-            cerr << "Received less data than expected: " << n << " bytes\n";
-            break;
-        }
 
-        tot_bytes += static_cast<uint64_t>(n);
-        quantity_of_data_to_rx -= static_cast<uint64_t>(n);
+    std::mutex buf_mutex;
 
-        // check if the data is valid
-        memcpy(&counter_test, buf, sizeof(counter_test));
-        if (is_first && counter_test != counter)
-        {
-            is_first = false;
-            std::cerr << "------------------------------------- Data mismatch: expected " << counter << ", got " << counter_test << "\n";
-            /*close(sock);
-            delete[] buf;
-            return;*/
-        }
-        ++counter;
+    // Creazione dei thread
+    thread th1(thread_worker, 1, sock, buf, std::ref(tot_bytes), std::ref(quantity_of_data_to_rx),
+               std::ref(counter), std::ref(buf_mutex), std::ref(is_first), std::ref(i));
+    thread th2(thread_worker, 2, sock, buf, std::ref(tot_bytes), std::ref(quantity_of_data_to_rx),
+               std::ref(counter), std::ref(buf_mutex), std::ref(is_first), std::ref(i));
 
-        if (tot_bytes >= BYTES_PER_GB * i)
-        {
-            ++i;
-            cout << "Recv " << (tot_bytes / BYTES_PER_GB) << " GB so far\n";
-        }
-    }
+    th1.join();
+    th2.join();
+
     auto t1 = std::chrono::high_resolution_clock::now();
 
     double sec = std::chrono::duration<double>(t1 - t0).count();
@@ -200,15 +228,20 @@ int server_local()
 ssize_t recv_all(int socket, void *buffer, size_t length)
 {
     size_t total_received = 0;
+    int c = 0;
     while (total_received < length)
     {
-        ssize_t bytes = recv(socket, (char *)buffer + total_received, length - total_received, 0);
+        size_t bytes = recv(socket, (char *)buffer + total_received, length - total_received, 0);
         if (bytes <= 0)
         {
             cerr << "Error receiving data: " << strerror(errno) << "\n";
             return bytes; // error or disconnect
         }
         total_received += bytes;
+        /*if (bytes != length)
+            cout << "Received only " << bytes << " bytes, expected " << length << " bytes.\n";*/
+        /*if (c++ > 2)
+            cout << "Warn - " << c << endl;*/
     }
     return total_received;
 }
