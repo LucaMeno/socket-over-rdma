@@ -11,9 +11,6 @@ namespace Manager
         ctx = nullptr;
         stop_threads.store(false);
 
-        // setup the pool
-        thPool = make_unique<ThreadPool>(RdmaTestConf::N_THREAD_POOL_THREADS);
-
         cout << "==================  RdmaTestConfURATION ==================" << endl;
 
         cout << "RdmaTestConfuration:" << endl;

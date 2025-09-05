@@ -492,7 +492,6 @@ namespace rdmat
 
     RdmaTransfer::RdmaTransfer()
     {
-        thPoolTransfer = make_unique<ThreadPool>(RdmaTestConf::N_THREAD_POOL_THREADS);
         stop.store(false);
         buffer = nullptr;
         pd = nullptr;

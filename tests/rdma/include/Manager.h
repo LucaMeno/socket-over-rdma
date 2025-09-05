@@ -39,7 +39,6 @@ namespace Manager
         std::atomic<bool> stop_threads; // flag to stop the threads
 
         uint16_t rdma_port;                               // port used for RDMA
-        std::unique_ptr<ThreadPool> thPool;               // thread pool
         std::thread reading_thread;                       // thread for polling the circular buffer
         std::thread flush_thread[RdmaTestConf::QP_N - 1]; // thread for flushing the circular buffer
         std::thread writer_threads;                       // threads for writing to the circular buffer

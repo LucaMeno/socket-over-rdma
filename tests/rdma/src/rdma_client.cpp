@@ -104,6 +104,9 @@ void client_thread()
     char *buf = new char[BUFFER_SIZE_BYTES];
     std::memset(buf, 0, BUFFER_SIZE_BYTES);
 
+    cout << "Waiting for user input to start sending data...\n";
+    std::cin.get();
+
     std::cout << "Sending " << gb_to_send << " GB…\n";
 
     uint64_t sent_bytes = 0;

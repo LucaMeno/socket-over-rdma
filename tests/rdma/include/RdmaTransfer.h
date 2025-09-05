@@ -197,7 +197,6 @@ namespace rdmat
         uint64_t getTimeMS();
 
     private:
-        std::unique_ptr<ThreadPool> thPoolTransfer; // thread pool
         std::mutex mtx_qp_idx;
         std::condition_variable cv_qp_idx;
         bool is_qp_idx_available[RdmaTestConf::QP_N] = {true};
