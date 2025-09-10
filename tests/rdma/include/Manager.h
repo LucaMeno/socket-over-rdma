@@ -16,6 +16,7 @@
 #include <functional>
 #include <sys/epoll.h>
 #include <fcntl.h>
+#include <pthread.h>
 
 #include "RdmaTransfer.h"
 #include "ThreadPool.h"

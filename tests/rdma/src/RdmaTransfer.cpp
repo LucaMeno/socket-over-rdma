@@ -568,7 +568,10 @@ namespace rdmat
 
     inline int RdmaTransfer::getQueueIdx()
     {
-        return queue_idx++ % RdmaTestConf::N_OF_QUEUES;
+        int tmp = queue_idx / RdmaTestConf::MAX_WR_PER_POST_PER_QP;
+        queue_idx++;
+
+        return tmp % RdmaTestConf::N_OF_QUEUES;
     }
 
     inline void RdmaTransfer::enqueueWr(uint32_t start_idx, uint32_t end_idx, size_t data_size)
@@ -698,7 +701,7 @@ namespace rdmat
 
                 if (getTimeMS() - local_last_flush > RdmaTestConf::FLUSH_INTERVAL_MS && j > 0)
                 {
-                    // cout << "TIME, j: " << j << endl;
+                    cout << "TIME, j: " << j << endl;
                     break;
                 }
 
@@ -788,11 +791,12 @@ namespace rdmat
 
     void RdmaTransfer::updateRemoteReadIndex()
     {
+        int counter = 0;
         while (stop.load() == false)
         {
             while (buffer_to_read->local_read_index.load() == buffer_to_read->remote_read_index.load())
             {
-                this_thread::yield();
+                // this_thread::yield();
                 if (stop.load() == true)
                     return; // stop the reading
             }
@@ -824,7 +828,12 @@ namespace rdmat
                 throw runtime_error("Failed to post write - updateRemoteReadIndex - code: " + to_string(ret));
             }
 
-            pollCqSend(send_cqs[RdmaTestConf::DEFAULT_QP_IDX], 1);
+            counter++;
+            if (counter >= RdmaTestConf::POLL_CQ_AFTER_WR)
+            {
+                pollCqSend(send_cqs[RdmaTestConf::DEFAULT_QP_IDX], counter);
+                counter = 0;
+            }
         }
     }
 
@@ -885,6 +894,7 @@ namespace rdmat
 
     void RdmaTransfer::readMsgLoop(int dest_fd)
     {
+        cout << "Starting readMsgLoop thread..." << endl;
         if (!buffer_to_read)
             throw runtime_error("ringbuffer is nullptr - readMsg");
 
@@ -902,10 +912,8 @@ namespace rdmat
 
         auto flush = [&]
         {
-            /*if (idx_batch != RdmaTestConf::IOVS_BATCH_SIZE)
-            {
+            if (idx_batch != RdmaTestConf::IOVS_BATCH_SIZE)
                 cout << "Flushing partial batch: " << idx_batch << endl;
-            }*/
             sendMsg(msgs, idx_batch, dest_fd);
             buffer_to_read->local_read_index.fetch_add(idx_batch, std::memory_order_release);
             idx_batch = 0;
@@ -920,16 +928,27 @@ namespace rdmat
                 rdma_msg_t *msg = &buffer_to_read->data[i];
 
                 uint32_t sn = seq_number_read.fetch_add(1);
-                while (msg->seq_number_head != sn || msg->seq_number_tail != sn)
+                bool p = true;
+                while (msg->seq_number_tail != sn)
                 {
                     if (idx_batch != 0)
                         flush();
-                    else
-                        this_thread::yield();
+                    /*else if (p)
+                    {
+                        p = false;
+                        cout << "Waiting for message seq_number_tail: " << sn << " current: " << msg->seq_number_tail << " at index: " << i << endl;
+                    }*/
 
                     if (stop.load() == true)
                         return; // stop the reading
                 }
+
+                /*if (msg->msg_size != RdmaTestConf::MAX_PAYLOAD_SIZE)
+                {
+                    double perc = (double)msg->msg_size / (double)RdmaTestConf::MAX_PAYLOAD_SIZE * 100.0;
+                    if (perc < 85.0)
+                        cout << "Received msg size: " << msg->msg_size << " expected: " << RdmaTestConf::MAX_PAYLOAD_SIZE << " - " << perc << "%" << endl;
+                }*/
 
                 if (msg->msg_size == 0 || msg->number_of_slots != 1 || !areSkEqual(msg->original_sk_id, SOCK_TO_USE))
                     throw runtime_error("Invalid message received: " + to_string(msg->msg_size) + ", " + to_string(msg->number_of_slots));

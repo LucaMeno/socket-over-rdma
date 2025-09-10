@@ -4,6 +4,7 @@
 #include <optional>
 #include <thread>
 #include <future>
+#include <pthread.h>
 
 int STOP = false;
 
@@ -11,7 +12,7 @@ using namespace std;
 
 void server_thread();
 int server_local();
-ssize_t recv_all(int socket, void *buffer, size_t length);
+ssize_t recv_all_test_rdma(int socket, void *buffer, size_t length);
 
 void handle_signal(int signal)
 {
@@ -39,6 +40,7 @@ int main(int argc, char *argv[])
     manager.server();
 
     thread server_th(server_thread);
+    pthread_setname_np(server_th.native_handle(), "SERVER_RX");
     int fd = server_local();
     cout << "FD: " << fd << endl;
 
@@ -78,9 +80,28 @@ void server_thread()
     }
 
     char start_buf[16] = {};
-
     recv(sock, start_buf, sizeof(start_buf), 0);
     send(sock, start_buf, sizeof(start_buf), 0);
+
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags == -1)
+    {
+        std::cerr << " AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA Errore F_GETFL\n";
+        return;
+    }
+
+    if (flags & O_NONBLOCK)
+        cout << "Socket is already non-blocking\n";
+    else
+        cout << "Socket is blocking, setting to non-blocking\n";
+
+    flags |= O_NONBLOCK;
+
+    if (fcntl(sock, F_SETFL, flags) == -1)
+    {
+        std::cerr << " AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA Errore F_SETFL\n";
+        return;
+    }
 
     char *buf = new char[BUFFER_SIZE_BYTES];
     uint64_t tot_bytes = 0;
@@ -100,11 +121,11 @@ void server_thread()
         if (quantity_of_data_to_rx == 0)
             break;
 
-        n = recv_all(sock, buf, BUFFER_SIZE_BYTES);
+        n = recv_all_test_rdma(sock, buf, BUFFER_SIZE_BYTES);
         if (n <= 0)
         {
             if (n < 0)
-                perror("recv");
+                perror("recv - srv");
             break;
         }
 
@@ -129,6 +150,8 @@ void server_thread()
             cout << "Recv " << (tot_bytes / BYTES_PER_GB) << " GB so far\n";
         }
     }
+
+    cout << "EXIT" << std::endl;
 
     auto t1 = std::chrono::high_resolution_clock::now();
 
@@ -201,22 +224,29 @@ int server_local()
     return client_fd;
 }
 
-ssize_t recv_all(int socket, void *buffer, size_t length)
+ssize_t recv_all_test_rdma(int socket, void *buffer, size_t length)
 {
     size_t total_received = 0;
+
     while (total_received < length)
     {
-        size_t bytes = recv(socket, (char *)buffer + total_received, length - total_received, 0);
-        if (bytes <= 0)
+        ssize_t bytes = recv(socket, (char *)buffer + total_received, length - total_received, 0);
+        if (bytes < 0)
         {
-            cerr << "Error receiving data: " << strerror(errno) << "\n";
-            return bytes; // error or disconnect
+            if (errno != EAGAIN && errno != EWOULDBLOCK)
+            {
+                cerr << "Error receiving data: " << strerror(errno) << "\n";
+                return -1; // error
+            }
+            continue; // try again
         }
+        else if (bytes == 0)
+        {
+            cerr << "Connection closed by peer\n";
+            return total_received; // partial receive
+        }
+
         total_received += bytes;
-        /*if (bytes != length)
-            cout << "Received only " << bytes << " bytes, expected " << length << " bytes.\n";*/
-        /*if (c++ > 2)
-            cout << "Warn - " << c << endl;*/
     }
     return total_received;
 }

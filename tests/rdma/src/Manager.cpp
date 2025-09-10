@@ -45,10 +45,16 @@ namespace Manager
             throw runtime_error("Invalid socket fd or ctx in run");
 
         reading_thread = thread(&Manager::readerThread, this, fd);
+        pthread_setname_np(reading_thread.native_handle(), "READING_TH");
         for (size_t i = 0; i < RdmaTestConf::QP_N - 1; i++)
+        {
             flush_thread[i] = thread(&Manager::flushThread, this);
+            pthread_setname_np(flush_thread[i].native_handle(), ("FLUSH_TH" + to_string(i)).c_str());
+        }
         writer_threads = thread(&Manager::writerThread, this, fd);
+        pthread_setname_np(writer_threads.native_handle(), "WRITER_TH");
         update_idx_thread = thread(&Manager::updateIdxThread, this);
+        pthread_setname_np(update_idx_thread.native_handle(), "UPD_IDX_TH");
     }
 
     void Manager::writerThread(int fd)

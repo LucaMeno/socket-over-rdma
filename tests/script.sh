@@ -1,21 +1,13 @@
-
-lmenozzi  641534  640354    0    9 09:15 pts/1    00:00:00 ./rdma_server 3 1
-lmenozzi  641534  640354    0    9 09:15 pts/1    00:00:00 ./rdma_server 3 1
-lmenozzi  641534  640354   99    9 09:15 pts/1    00:00:58 ./rdma_server 3 1
-lmenozzi  641534  640354   99    9 09:15 pts/1    00:00:58 ./rdma_server 3 1
-lmenozzi  641534  640354   99    9 09:15 pts/1    00:00:58 ./rdma_server 3 1
-lmenozzi  641534  640354   99    9 09:15 pts/1    00:00:58 ./rdma_server 3 1
-lmenozzi  641534  640354   99    9 09:15 pts/1    00:00:58 ./rdma_server 3 1
-lmenozzi  641534  640354    0    9 09:15 pts/1    00:00:00 ./rdma_server 3 1
-lmenozzi  641534  640354   99    9 09:15 pts/1    00:00:58 ./rdma_server 3 1
+#!/bin/bash
 
 ps -eLf | grep rdma_server
+ 
+THREADS=($(ps -eLf | awk '/rdma_server/ && !/awk/ {print $4}'))
 
-
-THREADS="641534 641535 641536 641537 641538 641539 641540 641541 641542"
+echo "${THREADS[@]}"
 
 CORE=0
-for TID in $THREADS; do
+for TID in "${THREADS[@]}"; do
   echo "Pin TID $TID on core $CORE"
   sudo taskset -cp $CORE $TID
 
@@ -30,7 +22,7 @@ wait
 
 
 
-N_THREADS=$(echo $THREADS | wc -w)
+N_THREADS=${#THREADS[@]}
 FLAMEGRAPH_DIR=FlameGraph
 OUT_DIR=flamegraphs
 mkdir -p $OUT_DIR
