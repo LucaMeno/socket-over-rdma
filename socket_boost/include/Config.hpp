@@ -25,14 +25,13 @@ public:
     inline static const int ALIGNMENT = 4096; // Size of a memory page
 
     inline static const char *RDMA_TCP_PORT = "7472";                        // Default RDMA port for TCP parameters exchange
-    inline static const int MAX_MSG_BUFFER = (2048);                         // POWER OF 2!!!!!!!!!!!
-    inline static const int TIME_TO_WAIT_IF_NO_SPACE_MS = 2;                 // ms
-    inline static const int MAX_PAYLOAD_SIZE = (64 * 1024);                  // 64 KB
-    inline static const int QP_N = 16 + 1;                                   // Number of QPs
+    inline static const int MAX_MSG_BUFFER = (256);                          // POWER OF 2!!!!!!!!!!!
+    inline static const int MAX_PAYLOAD_SIZE = (128 * 1024);                 // 64 KB
+    inline static const int QP_N = 4 + 1;                                    // Number of QPs
     inline static const int DEFAULT_QP_IDX = 0;                              // Default QP index
     inline static const uint32_t TIME_BTW_DATA_READY_NOTIFICATIONS_MS = 500; // 500 ms
 
-    inline static const int WORK_REQUEST_POOL_SIZE = MAX_MSG_BUFFER; // Capacity of the write queue POWER OF 2!!!!!!!!!!!
+    inline static const int N_OF_QUEUES = QP_N - 1; // Exclude the default QP
 
     inline static const int POLL_CQ_AFTER_WR = 32;
     inline static const int MAX_WR_PER_POST_PER_QP = 256;
@@ -44,10 +43,15 @@ public:
     inline static const int MAX_CQ_ENTRIES = POLL_CQ_AFTER_WR; // Maximum number of entries in the completion queue
 
     // RDMA manager
-    inline static const int N_WRITER_THREADS = 1;     // 1 thread per proxy socket
-    inline static const int TIME_STOP_SELECT_SEC = 5; // 5 seconds
-    inline static const int FLUSH_INTERVAL_MS = 10;   // ms
-    inline static const int N_OF_FLUSHES_BEFORE_UPDATE_INDEX = 4;
+    inline static const int N_WRITER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket
+    inline static const int TIME_STOP_SELECT_SEC = 5;             // 5 seconds
+    inline static const int FLUSH_INTERVAL_MS = 2;                // ms
+
+    inline static int IOVS_BATCH_SIZE = 8;
+    inline static int PRINT_NO_SPACE_EVERY = 100000000;
+    //inline static const ibv_mtu RDMA_MTU = IBV_MTU_1024;
+    inline static int N_RETRY_WRITE_MSG = 30;
+
     inline static const int N_THREAD_POOL_THREADS = 24;
 
     inline static const char *SERVER_IP = "127.0.0.1";

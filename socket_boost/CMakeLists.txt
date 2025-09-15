@@ -19,6 +19,7 @@ add_executable(scap
     src/RdmaContext.cpp
     src/ThreadPool.cpp
     src/RdmaMng.cpp
+    src/IndexCycle.cpp
 )
 
 # === BPF ===

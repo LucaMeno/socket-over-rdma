@@ -23,14 +23,13 @@
 #include "Config.hpp"
 #include "SockMap.hpp"
 #include "ThreadPool.h"
+#include "IndexCycle.h"
 
 #define RING_IDX(i) ((i) & (Config::MAX_MSG_BUFFER - 1))
 
 #define NOTIFICATION_OFFSET_SIZE (sizeof(notification_t))
 #define RING_BUFFER_OFFSET_SIZE (sizeof(rdma_ringbuffer_t))
 #define MR_SIZE ((sizeof(rdma_ringbuffer_t) * 2) + NOTIFICATION_OFFSET_SIZE)
-
-#define MSG_HEADER_SIZE (sizeof(rdma_msg_t) - sizeof(rdma_msg_t::msg))
 
 namespace rdma
 {
@@ -107,128 +106,120 @@ namespace rdma
         ibv_sge sge;
     };
 
-    struct WrBatch
-    {
-        std::vector<WorkRequest *> *wr_batch;
-        std::vector<uint32_t> *indexes;
-
-        WrBatch() : wr_batch(new std::vector<WorkRequest *>), indexes(new std::vector<uint32_t>) {}
-    };
-
     class RdmaContext
     {
 
     public:
-        boost::lockfree::queue<uint32_t, boost::lockfree::capacity<Config::WORK_REQUEST_POOL_SIZE>> wr_busy_idx_queue;
-        boost::lockfree::queue<uint32_t, boost::lockfree::capacity<Config::WORK_REQUEST_POOL_SIZE>> wr_available_idx_queue;
-        WorkRequest wr_pool[Config::WORK_REQUEST_POOL_SIZE];
-
-        ibv_context *ctx;
-        ibv_pd *pd;
-        ibv_mr *mr;
-
-        ibv_qp *qps[Config::QP_N];      // queue pairs
-        struct ibv_srq *srq;            // shared receive queue
-        ibv_cq *send_cqs[Config::QP_N]; // send completion queues
+        // Context id
+        uint32_t remote_ip;             // Remote IP address
+        char *buffer;                   // pointer to the beginning of the memory region
+        ibv_comp_channel *comp_channel; // completion channel
         ibv_cq *recv_cq;                // receive completion queue
 
-        char *buffer;
-        uintptr_t remote_addr; // remote address of the buffer
-        uint32_t remote_rkey;
-        ibv_comp_channel *comp_channel;
-
-        // Context id
-        uint32_t remote_ip; // Remote IP
-
-        bool is_server;             // TRUE if server, FALSE if client
-        std::atomic<bool> is_ready; // TRUE if the context is ready
-        std::atomic<bool> stop;     // TRUE if the context should stop
-
-        std::mutex mtx_tx;               // used to wait for the context to be ready
-        std::condition_variable cond_tx; // used to signal the context is ready
-
-        std::mutex mtx_rx_read;
-        std::mutex mtx_rx_commit;
-        std::condition_variable cond_rx_read; // used to signal the read operation is done
-
-        rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server
-        rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
-
-        rdma_ringbuffer_t *buffer_to_write; // buffer to write data
-        rdma_ringbuffer_t *buffer_to_read;  // buffer to read data
-
-        uint64_t last_notification_data_ready_ns;
-
-        std::unordered_map<sock_id_t, int> sockid_to_fd_map; // Map of sock_id to fd for fast access
-
-        std::atomic<int> outgoing_wrs[Config::QP_N]{0};
-
-        std::thread flush_threads[Config::QP_N - 1];
-        std::thread update_remote_r_thread;
-        std::thread reader_thread;
-
+        bool is_server;         // TRUE if server, FALSE if client
+        std::atomic<bool> stop; // TRUE if the context should stop
 
         RdmaContext(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks);
         ~RdmaContext();
 
+        /* CONNECTION HANDLER */
         serverConnection_t serverSetup();
         void serverHandleNewClient(serverConnection_t &sc);
         void clientConnect(uint32_t server_ip, uint16_t server_port);
 
+        /** SEND */
         int writeMsg(int src_fd, struct sock_id original_socket);
 
-        int readMsgLoop();
-
+        /* OTHERS */
+        const std::string getOpName(CommunicationCode code);
+        void waitForContextToBeReady();
         void setPollingStatus(uint32_t is_polling);
         void postReceive(int qpIdx, bool allQp);
 
-        const std::string getOpName(CommunicationCode code);
-        uint64_t getTimeMS();
-        void waitForContextToBeReady();
-
     private:
-        std::mutex mtx_qp_idx;
-        std::condition_variable cv_qp_idx;
-        bool is_qp_idx_available[Config::QP_N] = {true};
+        boost::lockfree::queue<uint32_t, boost::lockfree::capacity<Config::MAX_MSG_BUFFER>> msgs_idx_to_flush_queue[Config::N_OF_QUEUES];
 
-        size_t local_remote_write_index_offset;
-        uintptr_t remote_addr_write_index;
-        size_t local_remote_read_index_offset;
-        uintptr_t remote_addr_read_index;
+        /* RDMA CONFIG */
+
+        ibv_context *ctx;               // device context
+        ibv_pd *pd;                     // protection domain
+        ibv_mr *mr;                     // memory region
+        ibv_qp *qps[Config::QP_N];      // queue pairs
+        struct ibv_srq *srq;            // shared receive queue
+        ibv_cq *send_cqs[Config::QP_N]; // send completion queues
+
+        uintptr_t remote_addr; // remote address of the buffer
+        uint32_t remote_rkey;  // remote key of the memory region
+
+        std::atomic<bool> is_ready; // TRUE if the context is ready
 
         bpf::BpfMng &bpf_ctx;
         std::vector<sk::client_sk_t> &client_sks;
 
+        // Used to cycle through the QPs for load balancing
+        IndexCycle qp_index_repeater{Config::N_OF_QUEUES, Config::MAX_WR_PER_POST_PER_QP};
+
+        // Offsets and remote addresses of the indexes in the remote memory region
+        size_t local_remote_write_index_offset;
+        uintptr_t remote_addr_write_index;
+        size_t local_remote_read_index_offset;
+        uintptr_t remote_addr_read_index;
+        rdma_ringbuffer_t *ringbuffer_server; // Ring buffer for server
+        rdma_ringbuffer_t *ringbuffer_client; // Ring buffer for client
+        rdma_ringbuffer_t *buffer_to_write;   // buffer to write data
+        rdma_ringbuffer_t *buffer_to_read;    // buffer to read data
+
+        std::unordered_map<sock_id_t, int> sockid_to_fd_map; // Map of sock_id to fd for fast access
+
+        // Counters for outgoing WRs to kwnow when to poll the CQ
+        int outgoing_wrs[Config::QP_N]{0};
+
+        // Threads
+        std::thread flush_threads[Config::QP_N - 1];
+        std::thread update_remote_r_thread;
+        std::thread reader_thread;
+
+        // Synchronization
+        std::mutex mtx_tx;
+
+        std::mutex mtx_ctx_ready;
+        std::condition_variable cond_ctx_ready;
+
+        uint64_t last_notification_data_ready_ns;
+
         std::atomic<uint32_t> seq_number_write{1}; // start from one since the shared mem is all 0 at the beginning
         std::atomic<uint32_t> seq_number_read{1};  // start from one since the shared mem is all 0 at the beginning
 
-        void flushThread();
-        void readerThread();
-        void updateRemoteReadIndexThread();
+        /* TX */
+        void flushThread(int id);
 
-        int tcpConnect(uint32_t ip);
-        int tcpWaitForConnection();
-        ibv_context *openDevice();
-        uint32_t getPsn();
-        void sendNotification(CommunicationCode code);
-        void pollCqSend(ibv_cq *send_cq_to_poll, int num_entry = 1);
-        int parseMsg(rdma_msg_t &msg);
-        void sendDataReady();
-        conn_info rdmaSetupPreHs();
-        void rdmaSetupPostHs(conn_info remote, conn_info local);
-        void showDevices();
-        void enqueueWr(uint32_t start_idx, uint32_t end_idx, size_t data_size);
-
-        WorkRequest createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
-
-        void createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, uint32_t idx);
-
+        void createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, WorkRequest *wr);
+        void createWrAtIdxFromBufferIdx(uint32_t buffer_idx, WorkRequest *wr);
         void postWrBatchListOnQp(std::vector<WorkRequest *> &wr_batch, int qp_idx);
 
-        int getFreeQpIndex();
-        std::vector<int> getFreeQpIndexes(int n);
-        void releaseQpIndex(int index);
-        void releaseQpIndexes(const std::vector<int> &indexes);
+        /* RX */
+        void readerThread();
+        int readMsgLoop();
+        void updateRemoteReadIndexThread();
+        int parseMsg(rdma_msg_t &msg);
+
+        /* CONNECTION */
+        uint32_t getPsn();
+        void showDevices();
+        ibv_context *openDevice();
+        int tcpConnect(uint32_t ip);
+        int tcpWaitForConnection();
+        conn_info rdmaSetupPreHs();
+        void rdmaSetupPostHs(conn_info remote, conn_info local);
+
+        /* UTILS */
+        uint64_t getTimeMS();
+        void signalContextReady();
+        void pollCqSend(ibv_cq *send_cq_to_poll, int num_entry = 1);
+
+        /* NOTIFICATIONS */
+        void sendNotification(CommunicationCode code);
+        void sendDataReady();
     };
 
 } // namespace rdma
