@@ -117,24 +117,50 @@ namespace rdmat
         ibv_sge sge;
     };
 
-    struct WrBatch
-    {
-        std::vector<WorkRequest *> *wr_batch;
-        std::vector<uint32_t> *indexes;
-
-        WrBatch() : wr_batch(new std::vector<WorkRequest *>), indexes(new std::vector<uint32_t>) {}
-    };
-
     const sock_id_t SOCK_TO_USE = {1, 2, 3, 4};
+
+    class IndexedRepeater
+    {
+    public:
+        IndexedRepeater(int x, int y)
+            : maxIndices(x), repeatCount(y), currentIndex(0), currentRepeat(0) {}
+
+        int get()
+        {
+            int repeat = currentRepeat.fetch_add(1, std::memory_order_acq_rel);
+            if (repeat + 1 >= repeatCount)
+            {
+                currentRepeat.store(0, std::memory_order_release);
+                advanceIndex();
+            }
+            return currentIndex.load(std::memory_order_acquire);
+        }
+
+        void reset()
+        {
+            currentRepeat.store(0, std::memory_order_release);
+            advanceIndex();
+        }
+
+    private:
+        const int maxIndices;
+        const int repeatCount;
+        std::atomic<int> currentIndex;
+        std::atomic<int> currentRepeat;
+
+        void advanceIndex()
+        {
+            int idx = currentIndex.load(std::memory_order_acquire);
+            int next = (idx + 1) % maxIndices;
+            currentIndex.store(next, std::memory_order_release);
+        }
+    };
 
     class RdmaTransfer
     {
 
     public:
-        boost::lockfree::queue<uint32_t, boost::lockfree::capacity<RdmaTestConf::WORK_REQUEST_POOL_SIZE>> wr_busy_idx_queue[RdmaTestConf::N_OF_QUEUES];
-        int queue_idx{0};
-        boost::lockfree::queue<uint32_t, boost::lockfree::capacity<RdmaTestConf::WORK_REQUEST_POOL_SIZE>> wr_available_idx_queue;
-        WorkRequest wr_pool[RdmaTestConf::WORK_REQUEST_POOL_SIZE];
+        boost::lockfree::queue<uint32_t, boost::lockfree::capacity<RdmaTestConf::MAX_MSG_BUFFER>> msgs_idx_to_flush_queue[RdmaTestConf::N_OF_QUEUES];
 
         ibv_context *ctx;
         ibv_pd *pd;
@@ -177,10 +203,8 @@ namespace rdmat
 
         std::atomic<int> outgoing_wrs[RdmaTestConf::QP_N]{0};
 
-        WrBatch getPollingBatch();
-        void postWrBatch(WrBatch dr);
-
-        void flushThread();
+        void flushThread(int id);
+        void createWrAtIdxFromBufferIdx(uint32_t buffer_idx, WorkRequest *wr);
 
         RdmaTransfer();
         ~RdmaTransfer();
@@ -200,6 +224,8 @@ namespace rdmat
         std::mutex mtx_qp_idx;
         std::condition_variable cv_qp_idx;
         bool is_qp_idx_available[RdmaTestConf::QP_N] = {true};
+
+        IndexedRepeater qp_index_repeater{RdmaTestConf::N_OF_QUEUES, RdmaTestConf::MAX_WR_PER_POST_PER_QP};
 
         size_t local_remote_write_index_offset;
         uintptr_t remote_addr_write_index;
@@ -222,8 +248,7 @@ namespace rdmat
         void showDevices();
         void enqueueWr(uint32_t start_idx, uint32_t end_idx, size_t data_size);
 
-        WorkRequest createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled);
-        void createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, uint32_t idx);
+        void createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, WorkRequest *wr);
 
         int getFreeQpIndex();
         std::vector<int> getFreeQpIndexes(int n);

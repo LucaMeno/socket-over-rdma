@@ -11,7 +11,7 @@ constexpr uint64_t BYTES_PER_GB = 1024ULL * 1024ULL * 1024ULL;
 constexpr const char *ACK_MESSAGE = "OK";
 constexpr const char *LOCALHOST = "127.0.0.1";
 constexpr bool CHECK_INTEGRITY = true;
-constexpr bool WAIT_FOR_INPUT_BEFORE_START = true;
+constexpr bool WAIT_FOR_INPUT_BEFORE_START = false;
 
 class RdmaTestConf
 {
@@ -32,7 +32,7 @@ public:
     inline static const char *RDMA_TCP_PORT = "7472";        // Default RDMA port for TCP parameters exchange
     inline static const int MAX_MSG_BUFFER = (256);          // POWER OF 2!!!!!!!!!!!
     inline static const int MAX_PAYLOAD_SIZE = (128 * 1024); // 64 KB
-    inline static const int QP_N = 6 + 1;                    // Number of QPs
+    inline static const int QP_N = 8 + 1;                    // Number of QPs
     inline static const int DEFAULT_QP_IDX = 0;              // Default QP index
 
     inline static const int POLL_CQ_AFTER_WR = 64;
@@ -46,18 +46,17 @@ public:
     inline static const size_t MAX_RECV_SGE = 1;
     inline static const int MAX_CQ_ENTRIES = POLL_CQ_AFTER_WR; // Maximum number of entries in the completion queue
 
-    inline static const int WORK_REQUEST_POOL_SIZE = MAX_MSG_BUFFER; // Capacity of the write queue POWER OF 2!!!!!!!!!!!
     // RDMA manager
     inline static const int TIME_STOP_SELECT_SEC = 5;
-    inline static const int FLUSH_INTERVAL_MS = 100;
+    inline static const int FLUSH_INTERVAL_MS = 1;
 
     inline static const char *SERVER_IP = "127.0.0.1";
 
-    inline static int IOVS_BATCH_SIZE = 32;
-    inline static int PRINT_NO_SPACE_EVERY = 10000000;
+    inline static int IOVS_BATCH_SIZE = 8;
+    inline static int PRINT_NO_SPACE_EVERY = 100000000;
     inline static bool EXCLUDE_RECEIVER = false;
 
-    inline static int N_RETRY_WRITE_MSG = 10;
+    inline static int N_RETRY_WRITE_MSG = 30;
 
     static std::vector<uint16_t> getTargetPorts()
     {

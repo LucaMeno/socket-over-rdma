@@ -47,7 +47,7 @@ namespace Manager
 
         // Background thread functions
         void readerThread(int fd);
-        void flushThread();
+        void flushThread(int id);
         void updateIdxThread();
         void writerThread(int fd);
 

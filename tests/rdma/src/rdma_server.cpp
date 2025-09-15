@@ -176,7 +176,7 @@ void server_thread()
 
     // wait for the client to finish
     char ack[16] = {};
-    recv(sock, ack, sizeof(ack) - 1, 0);
+    recv_all_test_rdma(sock, ack, sizeof(ack) - 1);
 
     close(sock);
     delete[] buf;

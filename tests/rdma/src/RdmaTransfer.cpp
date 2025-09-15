@@ -76,7 +76,8 @@ namespace rdmat
                 .max_send_wr = RdmaTestConf::MAX_SEND_WR,
                 .max_recv_wr = RdmaTestConf::MAX_RECV_WR,
                 .max_send_sge = RdmaTestConf::MAX_SEND_SGE,
-                .max_recv_sge = RdmaTestConf::MAX_RECV_SGE};
+                .max_recv_sge = RdmaTestConf::MAX_RECV_SGE,
+                .max_inline_data = sizeof(rdma_ringbuffer_t::remote_read_index)}; // used only for the remote read index update
 
             qps[i] = ibv_create_qp(pd, &qpa);
             if (!qps[i])
@@ -511,10 +512,6 @@ namespace rdmat
         last_flush_ms = 0;
         remote_ip = 0;
 
-        for (uint32_t i = 0; i < RdmaTestConf::WORK_REQUEST_POOL_SIZE; i++)
-            if (!wr_available_idx_queue.push(i))
-                throw std::runtime_error("Work request pool is exhausted");
-
         for (int i = 0; i < RdmaTestConf::QP_N; i++)
             is_qp_idx_available[i] = true;
         is_qp_idx_available[RdmaTestConf::DEFAULT_QP_IDX] = false;
@@ -564,71 +561,23 @@ namespace rdmat
         lock_rx.unlock();
     }
 
-    inline int RdmaTransfer::getQueueIdx()
+    inline void RdmaTransfer::createWrAtIdxFromBufferIdx(uint32_t buffer_idx, WorkRequest *wr)
     {
-        int tmp = queue_idx / RdmaTestConf::MAX_WR_PER_POST_PER_QP;
-        queue_idx++;
+        uint32_t wrapped_idx = RING_IDX(buffer_idx);
+        rdma_msg_t *msg = &buffer_to_write->data[wrapped_idx];
 
-        return tmp % RdmaTestConf::N_OF_QUEUES;
-    }
-
-    inline void RdmaTransfer::enqueueWr(uint32_t start_idx, uint32_t end_idx, size_t data_size)
-    {
-        uint32_t idx;
-        bool p = false;
-        while (!wr_available_idx_queue.pop(idx))
-        {
-            if (!p)
-            {
-                cout << "No available work request indices, waiting..." << endl;
-                p = true;
-            }
-            this_thread::yield(); // backoff
-            if (stop.load() == true)
-            {
-                cout << "Stopping readMsgFromSk due to stop signal" << endl;
-                break;
-            }
-        }
-
-        uint32_t r_idx = RING_IDX(start_idx);
-
-        uintptr_t batch_start = (uintptr_t)&buffer_to_write->data[r_idx];
+        uintptr_t batch_start = (uintptr_t)&buffer_to_write->data[wrapped_idx];
         uintptr_t remote_addr_2 = remote_addr +
                                   ((uintptr_t)batch_start - (uintptr_t)buffer); // offset
 
-        createWrAtIdx(remote_addr_2, batch_start, data_size, idx);
-
-        if (!wr_busy_idx_queue[getQueueIdx()].push(idx))
-            throw runtime_error("Failed to push index to wr_busy_idx_queue");
+        createWrAtIdx(remote_addr_2,
+                      (uintptr_t)msg,
+                      sizeof(rdma_msg_t),
+                      wr);
     }
 
-    inline WorkRequest RdmaTransfer::createWr(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, bool signaled)
+    inline void RdmaTransfer::createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, WorkRequest *wr)
     {
-        WorkRequest wr = {0};
-
-        wr.sge.addr = local_addr;      // Local address of the buffer
-        wr.sge.length = size_to_write; // Size of the data to write
-        wr.sge.lkey = mr->lkey;        // Local key from registered memory region
-
-        wr.wr.wr_id = 0; // Set to 0 for simplicity
-        wr.wr.sg_list = &wr.sge;
-        wr.wr.num_sge = 1;
-        wr.wr.opcode = IBV_WR_RDMA_WRITE;
-        wr.wr.next = nullptr;
-        wr.wr.wr.rdma.remote_addr = remote_addr; // Remote address to write to
-        wr.wr.wr.rdma.rkey = remote_rkey;        // Remote key
-        wr.wr.send_flags = 0;
-        if (signaled)
-            wr.wr.send_flags |= IBV_SEND_SIGNALED;
-
-        return wr;
-    }
-
-    inline void RdmaTransfer::createWrAtIdx(uintptr_t remote_addr, uintptr_t local_addr, size_t size_to_write, uint32_t idx)
-    {
-        WorkRequest *wr = &wr_pool[idx];
-
         wr->sge.addr = local_addr;      // Local address of the buffer
         wr->sge.length = size_to_write; // Size of the data to write
         wr->sge.lkey = mr->lkey;        // Local key from registered memory region
@@ -666,29 +615,25 @@ namespace rdmat
         // cout << "Posted: " << end - start << " wr on qp: " << qp_idx << endl;
     }
 
-    void RdmaTransfer::flushThread()
+    void RdmaTransfer::flushThread(int id)
     {
-        auto *wr_batch = new std::vector<WorkRequest *>();
-        wr_batch->reserve(RdmaTestConf::MAX_WR_PER_POST_PER_QP);
+        auto local_wr_batch = vector<WorkRequest *>();
+        local_wr_batch.reserve(RdmaTestConf::MAX_WR_PER_POST_PER_QP);
 
-        auto *indexes = new std::vector<uint32_t>();
-        indexes->reserve(RdmaTestConf::MAX_WR_PER_POST_PER_QP);
+        WorkRequest wr_array[RdmaTestConf::MAX_WR_PER_POST_PER_QP];
+        memset(wr_array, 0, sizeof(wr_array));
 
         int qp_idx = getFreeQpIndex();
-
         int queue_idx = (qp_idx - 1) % RdmaTestConf::N_OF_QUEUES; // start from a different queue each time
 
         while (stop.load() == false)
         {
             uint32_t idx = 0;
-            WorkRequest *wr;
             int j = 0;
 
-            wr_batch->clear();
-            indexes->clear();
-
-            uint64_t local_last_flush = getTimeMS();
-
+            uint64_t local_last_flush = 0;
+            local_wr_batch.clear();
+            bool started = false;
             while (true)
             {
                 if (stop.load() == true)
@@ -697,23 +642,38 @@ namespace rdmat
                 if (j >= RdmaTestConf::MAX_WR_PER_POST_PER_QP)
                     break;
 
-                if (getTimeMS() - local_last_flush > RdmaTestConf::FLUSH_INTERVAL_MS && j > 0)
+                if (started &&
+                    j > 0 &&
+                    getTimeMS() - local_last_flush > RdmaTestConf::FLUSH_INTERVAL_MS)
                 {
-                    cout << "TIME, j: " << j << endl;
+                    qp_index_repeater.reset(); // avoid other WR to be posted on this QP
+                    if (msgs_idx_to_flush_queue[queue_idx].pop(idx))
+                    {
+                        createWrAtIdxFromBufferIdx(idx, &wr_array[j]);
+                        local_wr_batch.push_back(&wr_array[j]);
+                    }
+
+                    if (j < 5)
+                        cout << "TIME wr:" << j << " on qp_idx: " << qp_idx << endl;
                     break;
                 }
 
-                if (!wr_busy_idx_queue[queue_idx].pop(idx))
+                if (!msgs_idx_to_flush_queue[queue_idx].pop(idx))
                     continue;
 
-                wr = &wr_pool[idx];
-                wr_batch->push_back(wr);
-                indexes->push_back(idx);
+                if (!started)
+                {
+                    local_last_flush = getTimeMS();
+                    started = true;
+                }
 
+                createWrAtIdxFromBufferIdx(idx, &wr_array[j]);
+
+                local_wr_batch.push_back(&wr_array[j]);
                 j++;
             }
 
-            postWrBatchListOnQp(*wr_batch, qp_idx);
+            postWrBatchListOnQp(local_wr_batch, qp_idx);
             outgoing_wrs[qp_idx].fetch_add(1);
             uint32_t n = outgoing_wrs[qp_idx].load();
             if (n >= RdmaTestConf::POLL_CQ_AFTER_WR)
@@ -721,10 +681,6 @@ namespace rdmat
                 pollCqSend(send_cqs[qp_idx], n);
                 outgoing_wrs[qp_idx].fetch_sub(n);
             }
-
-            for (size_t i = 0; i < indexes->size(); i++)
-                if (!wr_available_idx_queue.push((*indexes)[i]))
-                    throw runtime_error("Failed to push index to wr_available_idx_queue");
         }
     }
 
@@ -749,7 +705,7 @@ namespace rdmat
 
             COUNT++;
 
-            this_thread::yield(); // backoff
+            // this_thread::yield(); // backoff
 
             if (COUNT % RdmaTestConf::PRINT_NO_SPACE_EVERY == 0)
                 cout << "Waiting for space in the ringbuffer (" << COUNT << ")... " << " remote_read_idx: " << end_w_index << endl;
@@ -759,6 +715,66 @@ namespace rdmat
         }
 
         // write all possible messages in the buffer
+        /*const int N_IOVEC = 16;
+
+        struct mmsghdr msgs[N_IOVEC];
+        struct iovec iovs[N_IOVEC];
+
+        memset(msgs, 0, sizeof(msgs));
+        memset(iovs, 0, sizeof(iovs));
+        for (int i = 0; i < N_IOVEC; i++)
+        {
+            msgs[i].msg_hdr.msg_iov = &iovs[i];
+            msgs[i].msg_hdr.msg_iovlen = 1;
+        }
+
+        // write all possible messages in the buffer
+        while (available_space >= 1)
+        {
+            int batch_size = std::min<int>(available_space, N_IOVEC);
+
+            for (int i = 0; i < batch_size; i++)
+            {
+                rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index + i)];
+
+                iovs[i].iov_base = msg->msg;
+                iovs[i].iov_len = RdmaTestConf::MAX_PAYLOAD_SIZE;
+            }
+
+            // timeout: 0 = non block mode
+            struct timespec timeout = {0, 20 * 1000}; // 10 microsecond
+
+            int ret = recvmmsg(src_fd, msgs, batch_size, MSG_WAITFORONE, &timeout);
+            if (ret < 0)
+                return ret;
+
+            // cout << "Received " << ret << " messages on socket." << endl;
+            for (int i = 0; i < ret; i++)
+            {
+                rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index)];
+
+                msg->msg_size = msgs[i].msg_len;
+                if (msg->msg_size == 0)
+                {
+                    cout << "EOF received on socket, stopping writeMsg." << endl;
+                    return 0; // EOF
+                }
+
+                msg->msg_flags = 0;
+                msg->original_sk_id = SOCK_TO_USE;
+                msg->number_of_slots = 1;
+                uint32_t sn = seq_number_write.fetch_add(1);
+                msg->seq_number_head = sn;
+                msg->seq_number_tail = sn;
+
+                msgs_idx_to_flush_queue[qp_index_repeater.get()].push(buffer_to_write->local_write_index);
+
+                buffer_to_write->local_write_index += msg->number_of_slots;
+                available_space -= msg->number_of_slots;
+                start_w_index += msg->number_of_slots;
+            }
+        }*/
+
         while (available_space >= 1)
         {
             rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index)];
@@ -780,7 +796,7 @@ namespace rdmat
             }
 
             if (msg->msg_size == 0)
-                return 0; // EOF
+                return 1; // EOF
 
             msg->msg_flags = 0;
             msg->original_sk_id = SOCK_TO_USE;
@@ -789,12 +805,9 @@ namespace rdmat
             msg->seq_number_head = sn;
             msg->seq_number_tail = sn;
 
+            msgs_idx_to_flush_queue[qp_index_repeater.get()].push(buffer_to_write->local_write_index);
+
             buffer_to_write->local_write_index += msg->number_of_slots;
-
-            enqueueWr(start_w_index,
-                      start_w_index + msg->number_of_slots,
-                      sizeof(rdma_msg_t));
-
             available_space -= msg->number_of_slots;
             start_w_index += msg->number_of_slots;
         }
@@ -805,6 +818,7 @@ namespace rdmat
     void RdmaTransfer::updateRemoteReadIndex()
     {
         int counter = 0;
+        WorkRequest wr;
         while (stop.load() == false)
         {
             while (buffer_to_read->local_read_index.load() == buffer_to_read->remote_read_index.load())
@@ -815,10 +829,13 @@ namespace rdmat
             }
 
             buffer_to_read->remote_read_index.store(buffer_to_read->local_read_index.load(), memory_order_release);
-            WorkRequest wr = createWr(remote_addr_read_index,
-                                      (uintptr_t)(buffer + local_remote_read_index_offset),
-                                      sizeof(buffer_to_read->remote_read_index),
-                                      true);
+
+            createWrAtIdx(remote_addr_read_index,
+                          (uintptr_t)(buffer + local_remote_read_index_offset),
+                          sizeof(buffer_to_read->remote_read_index),
+                          &wr);
+
+            wr.wr.send_flags = IBV_SEND_SIGNALED; // We want a completion for this WR
 
             wr.wr.sg_list = &wr.sge; // Link the SGE to the WR
             wr.wr.num_sge = 1;       // Set the number of SG
@@ -885,12 +902,12 @@ namespace rdmat
         int sent = 0;
         while (sent < n_of_msg)
         {
-            int n = sendmmsg(dest_fd, &msgs[sent], n_of_msg - sent, MSG_NOSIGNAL);
+            int n = sendmmsg(dest_fd, &msgs[sent], n_of_msg - sent, MSG_NOSIGNAL | MSG_ZEROCOPY);
             if (n < 0)
             {
                 if (errno == EAGAIN || errno == EWOULDBLOCK)
                 {
-                    std::this_thread::yield();
+                    //std::this_thread::yield();
                     cerr << "WARN!!" << endl;
                     continue;
                 }
@@ -949,18 +966,18 @@ namespace rdmat
                     else if (p && is_server)
                     {
                         p = false;
-                        cout << "Waiting for message seq_number_tail: " << sn << " current: " << msg->seq_number_tail << " at index: " << i << endl;
+                        // cout << "Waiting for message seq_number_tail: " << sn << " current: " << msg->seq_number_tail << " at index: " << i << endl;
                     }
 
                     if (stop.load() == true)
                         return; // stop the reading
                 }
 
-                if (msg->msg_size != RdmaTestConf::MAX_PAYLOAD_SIZE)
+                /*if (msg->msg_size != RdmaTestConf::MAX_PAYLOAD_SIZE)
                 {
                     double perc = (double)msg->msg_size / (double)RdmaTestConf::MAX_PAYLOAD_SIZE * 100.0;
                     cout << "Received msg size: " << msg->msg_size << " expected: " << RdmaTestConf::MAX_PAYLOAD_SIZE << " - " << perc << "%" << endl;
-                }
+                }*/
 
                 if (msg->msg_size == 0 || msg->number_of_slots != 1 || !areSkEqual(msg->original_sk_id, SOCK_TO_USE))
                     throw runtime_error("Invalid message received: " + to_string(msg->msg_size) + ", " + to_string(msg->number_of_slots));
@@ -976,6 +993,9 @@ namespace rdmat
                     }
                 }
 
+                /*parseRxMsg(msg->msg, msg->msg_size, dest_fd);
+                buffer_to_read->local_read_index.fetch_add(msg->number_of_slots, std::memory_order_release);*/
+
                 iovs[idx_batch].iov_base = msg->msg;
                 iovs[idx_batch].iov_len = msg->msg_size;
 
@@ -984,8 +1004,6 @@ namespace rdmat
                 if (idx_batch == RdmaTestConf::IOVS_BATCH_SIZE)
                     flush();
 
-                /*parseRxMsg(msg->msg, msg->msg_size, dest_fd);
-                buffer_to_read->local_read_index.fetch_add(1, std::memory_order_release);*/
                 i += msg->number_of_slots;
             }
         }

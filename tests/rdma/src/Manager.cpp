@@ -47,7 +47,7 @@ namespace Manager
         pthread_setname_np(reading_thread.native_handle(), "READING_TH");
         for (size_t i = 0; i < RdmaTestConf::QP_N - 1; i++)
         {
-            flush_thread[i] = thread(&Manager::flushThread, this);
+            flush_thread[i] = thread(&Manager::flushThread, this, i);
             pthread_setname_np(flush_thread[i].native_handle(), ("FLUSH_TH" + to_string(i)).c_str());
         }
         writer_threads = thread(&Manager::writerThread, this, fd);
@@ -67,7 +67,12 @@ namespace Manager
                 waitOnSelect({fd});
                 sock_id_t tmp = {0};
                 int ret = ctx->writeMsg(fd, tmp);
-                if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+                if (ret == 0)
+                {
+                    cout << "EOF received on socket, stopping writerThread." << endl;
+                    break; // EOF
+                }
+                else if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
                     throw runtime_error("Error in writeMsg, ret: " + to_string(ret));
             }
         }
@@ -139,7 +144,7 @@ namespace Manager
         }
     }
 
-    void Manager::flushThread()
+    void Manager::flushThread(int id)
     {
         if (ctx == nullptr)
             throw runtime_error("Invalid ctx in flush thread");
@@ -148,7 +153,7 @@ namespace Manager
 
         while (stop_threads.load() == false)
         {
-            ctx->flushThread();
+            ctx->flushThread(id);
         }
 
         cout << "[Shutdown] Flush thread stopped" << endl;
