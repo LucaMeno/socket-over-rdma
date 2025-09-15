@@ -86,7 +86,7 @@ void server_thread()
     int flags = fcntl(sock, F_GETFL, 0);
     if (flags == -1)
     {
-        std::cerr << " AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA Errore F_GETFL\n";
+        std::cerr << "Errore F_GETFL\n";
         return;
     }
 
@@ -99,7 +99,7 @@ void server_thread()
 
     if (fcntl(sock, F_SETFL, flags) == -1)
     {
-        std::cerr << " AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA Errore F_SETFL\n";
+        std::cerr << "Errore F_SETFL\n";
         return;
     }
 
@@ -114,6 +114,7 @@ void server_thread()
     uint64_t local_counter_test;
 
     auto t0 = std::chrono::high_resolution_clock::now();
+    bool first = true;
     while (true)
     {
         ssize_t n;
@@ -122,6 +123,12 @@ void server_thread()
             break;
 
         n = recv_all_test_rdma(sock, buf, BUFFER_SIZE_BYTES);
+        if (first)
+        {
+            t0 = std::chrono::high_resolution_clock::now();
+            first = false;
+        }
+
         if (n <= 0)
         {
             if (n < 0)
@@ -140,6 +147,7 @@ void server_thread()
                 is_first = false;
                 cerr << "------------------- Data mismatch: expected " << counter
                      << ", got " << local_counter_test << "\n";
+                throw runtime_error("Data integrity error");
             }
             ++counter;
         }

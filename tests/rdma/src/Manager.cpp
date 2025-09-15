@@ -18,7 +18,6 @@ namespace Manager
         cout << " RDMA TCP port: " << RdmaTestConf::RDMA_TCP_PORT << endl;
         cout << " MAX_PAYLOAD_SIZE: " << (RdmaTestConf::MAX_PAYLOAD_SIZE / 1024) << "kB" << endl;
         cout << " MAX_MSG_BUFFER: " << (RdmaTestConf::MAX_MSG_BUFFER / 1024) << "k" << endl;
-        cout << " N_THREAD_POOL_THREADS: " << RdmaTestConf::N_THREAD_POOL_THREADS << endl;
         cout << " Q pairs: " << RdmaTestConf::QP_N << endl;
 
         cout << endl

@@ -5,8 +5,6 @@ using namespace std;
 
 namespace rdmat
 {
-    int COUNT = 0; // for debugging
-
     conn_info RdmaTransfer::rdmaSetupPreHs()
     {
         srand48(getpid());
@@ -730,6 +728,7 @@ namespace rdmat
         }
     }
 
+    int COUNT = 0; // for debugging
     int RdmaTransfer::writeMsg(int src_fd, struct sock_id original_socket)
     {
         uint32_t start_w_index, end_w_index, available_space;
@@ -764,10 +763,24 @@ namespace rdmat
         {
             rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index)];
 
-            msg->msg_size = recv(src_fd, msg->msg, RdmaTestConf::MAX_PAYLOAD_SIZE, 0);
+            int retry = RdmaTestConf::N_RETRY_WRITE_MSG;
+            msg->msg_size = 0;
+            while (retry > 0)
+            {
+                int sz = recv(src_fd, msg->msg + msg->msg_size, RdmaTestConf::MAX_PAYLOAD_SIZE - msg->msg_size, 0);
+                if (sz > 0)
+                    msg->msg_size += sz;
+                else if (sz == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
+                    return sz; // error
 
-            if ((int)msg->msg_size <= 0)
-                return msg->msg_size;
+                if (msg->msg_size >= RdmaTestConf::MAX_PAYLOAD_SIZE)
+                    break;
+
+                retry--;
+            }
+
+            if (msg->msg_size == 0)
+                return 0; // EOF
 
             msg->msg_flags = 0;
             msg->original_sk_id = SOCK_TO_USE;
@@ -912,8 +925,8 @@ namespace rdmat
 
         auto flush = [&]
         {
-            if (idx_batch != RdmaTestConf::IOVS_BATCH_SIZE)
-                cout << "Flushing partial batch: " << idx_batch << endl;
+            /*if (idx_batch != RdmaTestConf::IOVS_BATCH_SIZE)
+                cout << "Flushing partial batch: " << idx_batch << endl;*/
             sendMsg(msgs, idx_batch, dest_fd);
             buffer_to_read->local_read_index.fetch_add(idx_batch, std::memory_order_release);
             idx_batch = 0;
@@ -933,22 +946,21 @@ namespace rdmat
                 {
                     if (idx_batch != 0)
                         flush();
-                    /*else if (p)
+                    else if (p && is_server)
                     {
                         p = false;
                         cout << "Waiting for message seq_number_tail: " << sn << " current: " << msg->seq_number_tail << " at index: " << i << endl;
-                    }*/
+                    }
 
                     if (stop.load() == true)
                         return; // stop the reading
                 }
 
-                /*if (msg->msg_size != RdmaTestConf::MAX_PAYLOAD_SIZE)
+                if (msg->msg_size != RdmaTestConf::MAX_PAYLOAD_SIZE)
                 {
                     double perc = (double)msg->msg_size / (double)RdmaTestConf::MAX_PAYLOAD_SIZE * 100.0;
-                    if (perc < 85.0)
-                        cout << "Received msg size: " << msg->msg_size << " expected: " << RdmaTestConf::MAX_PAYLOAD_SIZE << " - " << perc << "%" << endl;
-                }*/
+                    cout << "Received msg size: " << msg->msg_size << " expected: " << RdmaTestConf::MAX_PAYLOAD_SIZE << " - " << perc << "%" << endl;
+                }
 
                 if (msg->msg_size == 0 || msg->number_of_slots != 1 || !areSkEqual(msg->original_sk_id, SOCK_TO_USE))
                     throw runtime_error("Invalid message received: " + to_string(msg->msg_size) + ", " + to_string(msg->number_of_slots));
