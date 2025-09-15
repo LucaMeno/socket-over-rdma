@@ -180,7 +180,7 @@ namespace bpf
 
     BpfMng::~BpfMng()
     {
-        cout << "Cleaning up BPF resources..." << endl;
+        cout << "[Cleanup ] -- Cleaning up BPF resources..." << endl;
 
         stop_threads = true;
         int err = 0;
@@ -223,7 +223,7 @@ namespace bpf
         // Destroy BPF object
         bpf_object__close(obj);
 
-        cout << "BPF resources cleaned up successfully." << endl;
+        cout << "[Cleanup ] -- eBPF resources cleaned up successfully." << endl;
     }
 
     void BpfMng::setTargetPort(const vector<uint16_t> &target_ports, uint16_t server_port)

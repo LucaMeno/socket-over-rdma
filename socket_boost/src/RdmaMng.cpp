@@ -28,7 +28,6 @@ namespace rdmaMng
         cout << " MAX_PAYLOAD_SIZE: " << (Config::MAX_PAYLOAD_SIZE / 1024) << "kB" << endl;
         cout << " MAX_MSG_BUFFER: " << (Config::MAX_MSG_BUFFER / 1024) << "k" << endl;
         cout << " N_WRITER_THREADS: " << Config::N_WRITER_THREADS << endl;
-        cout << " N_THREAD_POOL_THREADS: " << Config::N_THREAD_POOL_THREADS << endl;
         cout << " Q pairs: " << Config::QP_N << endl;
         cout << " Target ports: ";
         for (const auto &port : Config::getTargetPorts())
@@ -78,7 +77,6 @@ namespace rdmaMng
     {
         // start the server thread
         server_thread = thread(&RdmaMng::serverThread, this);
-        cout << "Server th created" << endl;
 
         // start the writer threads
         const int per_thread = Config::NUMBER_OF_SOCKETS / Config::N_WRITER_THREADS;
