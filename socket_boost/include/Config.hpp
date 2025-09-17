@@ -21,6 +21,7 @@ public:
 
     /* RDMA MANAGER */
     inline static const int N_WRITER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket
+    inline static const int N_READER_THREADS = NUMBER_OF_SOCKETS; // 1 thread per proxy socket FIXED
     inline static const int TIME_STOP_SELECT_SEC = 5;             // 5 seconds
 
     /* RDMA COMMUNICATION */

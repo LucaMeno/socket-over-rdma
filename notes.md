@@ -7,7 +7,7 @@ sudo cpupower frequency-set -g performance
 
 sudo numactl --cpunodebind=0 --membind=0 ./bin/scap x y
 
-
+sudo lshw -class network -businfo
 ```
 
 ```sh

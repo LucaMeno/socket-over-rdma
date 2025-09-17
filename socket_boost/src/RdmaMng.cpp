@@ -57,10 +57,8 @@ namespace rdmaMng
         }
 
         for (auto &thread : writer_threads)
-        {
             if (thread.joinable())
                 thread.join();
-        }
         cout << "[Shutdown] Writer threads joined" << endl;
 
         if (notification_thread.joinable())
@@ -69,6 +67,15 @@ namespace rdmaMng
             notification_thread.join();
             cout << "[Shutdown] Notification thread joined" << endl;
         }
+
+        // Notify all reader threads to exit
+        wakeReaderThread();
+        for (auto &thread : reader_threads)
+            if (thread.joinable())
+                thread.join();
+        cout << "[Shutdown] Reader threads joined" << endl;
+
+        cout << "[Cleanup ] RdmaMng cleanup completed" << endl;
 
         // bpf and socket managers cleanup are handled in their destructors automatically
     }
@@ -109,6 +116,16 @@ namespace rdmaMng
                 throw std::runtime_error(
                     "Failed to create writer thread: " + std::string(e.what()));
             }
+        }
+
+        reader_threads.reserve(Config::N_READER_THREADS);
+        for (int i = 0; i < Config::N_READER_THREADS; i++)
+        {
+            reader_threads.emplace_back(
+                [this, target_socket = sk_ctx.client_sk_fd[i]]()
+                {
+                    readerThread(target_socket);
+                });
         }
     }
 
@@ -180,6 +197,42 @@ namespace rdmaMng
         ctx->waitForContextToBeReady();
 
         return WriterThreadData(app, ctx);
+    }
+
+    void RdmaMng::wakeReaderThread()
+    {
+        scoped_lock lock(mtx_reader_thread);
+        cv_reader_thread.notify_all();
+    }
+
+    void RdmaMng::readerThread(sk::client_sk_t target_socket)
+    {
+        try
+        {
+            sock_id_t sk = target_socket.sk_id;
+            int fd = target_socket.fd;
+
+            cout << "Reader thread initializing for socket: " << sk_ctx.get_printable_sockid(&sk) << " fd: " << fd << endl;
+
+            this_thread::sleep_for(chrono::seconds(5));
+
+            // wait for the socket to be assigned
+            {
+                std::unique_lock<std::mutex> lock(mtx_reader_thread);
+                cv_reader_thread.wait(lock, [this, &sk]()
+                                      { return bpf_ctx.getAppSkFromProxySk(sk).dip != 0 || stop_threads.load(); });
+            }
+
+            if (stop_threads.load())
+                return;
+
+            cout << "Reader thread started for socket: " << sk_ctx.get_printable_sockid(&sk) << " fd: " << fd << endl;
+        }
+        catch (const std::exception &e)
+        {
+            cerr << "Exception in readerThread: " << e.what() << endl;
+            perror("Details");
+        }
     }
 
     void RdmaMng::writerThread(vector<sk::client_sk_t> sk_to_monitor)

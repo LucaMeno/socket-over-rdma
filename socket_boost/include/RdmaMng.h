@@ -117,6 +117,8 @@ namespace rdmaMng
             return 0;
         }
 
+        void wakeReaderThread();
+
     private:
         std::vector<std::unique_ptr<rdma::RdmaContext>> ctxs; // vector of active RDMA contexts
         uint16_t rdma_port;                                   // port used for RDMA
@@ -125,6 +127,7 @@ namespace rdmaMng
         std::thread notification_thread;                      // thread for the notification
         std::thread server_thread;                            // thread for the server
         std::vector<std::thread> writer_threads;              // threads for writing to the circular buffer
+        std::vector<std::thread> reader_threads;              // threads for writing to the circular buffer
         std::atomic<bool> stop_threads;                       // flag to stop the threads
 
         std::mutex mtx_sk_removal_tx;
@@ -135,11 +138,16 @@ namespace rdmaMng
         std::vector<struct sock_id> sk_to_remove_rx;
         std::atomic<bool> remove_sk_rx;
 
+        std::mutex mtx_reader_thread;
+        std::condition_variable cv_reader_thread;
+        std::vector<struct sock_id> ready_sockets_to_read;
+
         // Background thread functions
         void launchBackgroundThreads();
         void listenThread();
         void serverThread();
         void writerThread(std::vector<sk::client_sk_t> sk_to_monitor);
+        void readerThread(sk::client_sk_t target_socket);
 
         // Utils
         int getFreeContextId();
@@ -147,7 +155,6 @@ namespace rdmaMng
         void startPolling(rdma::RdmaContext &ctx);
         void stopPolling(rdma::RdmaContext &ctx);
         void parseNotification(rdma::RdmaContext &ctx);
-        int consumeRingbuffer(rdma::RdmaContext &ctx);
         std::vector<int> waitOnSelect(const std::vector<int> &fds);
 
         WriterThreadData populateWriterThreadData(std::vector<sk::client_sk_t> &sockets, int fd);
