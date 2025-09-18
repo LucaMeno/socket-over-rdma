@@ -3,6 +3,7 @@
 
 #include "RdmaMng.h"
 #include "Config.hpp"
+#include "Logger.h"
 
 int STOP = false;
 
@@ -34,9 +35,10 @@ std::optional<uint32_t> parseNumber(const string &arg)
 
 int main(int argc, char *argv[])
 {
+    Logger logger("Main");
     try
     {
-        Logger logger("Main");
+        logger.log(LogLevel::MAIN, "Starting Socket over RDMA application...");
 
         signal(SIGINT, handle_signal);
         signal(SIGTSTP, handle_signal);
@@ -76,6 +78,8 @@ int main(int argc, char *argv[])
                            Config::RDMA_SERVER_PORT,
                            Config::getTargetPorts());
 
+        r.run();
+
         logger.log(LogLevel::INFO, "Waiting for messages, press Ctrl+C to exit...");
         logger.log(LogLevel::INFO, "-----------------------------------------------------------");
         while (!STOP)
@@ -84,8 +88,7 @@ int main(int argc, char *argv[])
     }
     catch (const std::exception &e)
     {
-        fprintf(stderr, "Error: %s\n", e.what());
-        perror("Exception caught");
+        logger.log(LogLevel::ERROR, "Exception in main: " + std::string(e.what()));
         return EXIT_FAILURE;
     }
     return 0;

@@ -24,8 +24,7 @@ namespace bpf
             *server_port,
             *free_sk,
             *rb_map,
-            *target_ip,
-            *sock_proxyfd_association;
+            *target_ip;
 
         // find the maps in the object file
         intercepted_sockets = bpf_object__find_map_by_name(obj, "intercepted_sockets");
@@ -56,10 +55,6 @@ namespace bpf
         if (!target_ip)
             throw runtime_error("Failed to find the target_ip map");
 
-        sock_proxyfd_association = bpf_object__find_map_by_name(obj, "sock_proxyfd_association");
-        if (!sock_proxyfd_association)
-            throw runtime_error("Failed to find the sock_proxyfd_association map");
-
         // get the file descriptor for the map
         intercepted_sk_fd = bpf_map__fd(intercepted_sockets);
         if (intercepted_sk_fd < 0)
@@ -88,10 +83,6 @@ namespace bpf
         target_ip_fd = bpf_map__fd(target_ip);
         if (target_ip_fd < 0)
             throw runtime_error("Failed to get target_ip fd");
-
-        sock_proxyfd_association_fd = bpf_map__fd(sock_proxyfd_association);
-        if (sock_proxyfd_association_fd < 0)
-            throw runtime_error("Failed to get sock_proxyfd_association fd");
 
         // find the programs in the object file
         struct bpf_program *prog_sockops, *prog_sk_msg;
@@ -139,13 +130,15 @@ namespace bpf
             throw runtime_error("Failed to attach tcp_destroy_sock_prog to tracepoint");
 
         // create a thread to poll the ring buffer
-        thread t = thread(&BpfMng::threadPollRb, this);
-        t.detach();
+        stop_threads = false;
+        rb_thread = thread(&BpfMng::threadPollRb, this);
+        rb_thread.detach();
+        logger.log(LogLevel::EBPF_EV, "Started polling thread for new socket events.");
 
         pushSockToMap(client_sks);
         setTargetPort(target_ports_to_set, proxy_port);
 
-        cout << "BPF programs attached successfully." << endl;
+        logger.log(LogLevel::EBPF, "BPF programs attached successfully.");
     }
 
     void BpfMng::threadPollRb()
@@ -172,7 +165,7 @@ namespace bpf
                     // if we are stopping, just exit the loop
                     break;
                 }
-                perror("Failed to poll ring buffer - bpf_ringbuf_poll");
+                logger.log(LogLevel::ERROR, "Failed to poll ring buffer - bpf_ringbuf_poll");
                 break;
             }
         }
@@ -180,7 +173,7 @@ namespace bpf
 
     BpfMng::~BpfMng()
     {
-        cout << "[Cleanup ] -- Cleaning up BPF resources..." << endl;
+        logger.log(LogLevel::INFO, "Cleaning up BPF resources...");
 
         stop_threads = true;
         int err = 0;
@@ -190,7 +183,7 @@ namespace bpf
         {
             err = bpf_prog_detach2(prog_fd_sk_msg, intercepted_sk_fd, BPF_SK_MSG_VERDICT);
             if (err != 0)
-                perror("Failed to detach sk_msg_prog from sockmap");
+                logger.log(LogLevel::ERROR, "Failed to detach sk_msg_prog from sockmap");
         }
 
         // Detach sockops_prog from cgroup
@@ -198,7 +191,7 @@ namespace bpf
         {
             err = bpf_prog_detach2(prog_fd_sockops, cgroup_fd, BPF_CGROUP_SOCK_OPS);
             if (err != 0)
-                perror("Failed to detach sockops_prog from cgroup");
+                logger.log(LogLevel::ERROR, "Failed to detach sockops_prog from cgroup");
         }
 
         // Detach tcp_destroy_sock_prog from tracepoint
@@ -206,7 +199,7 @@ namespace bpf
         {
             err = bpf_link__destroy(tcp_destroy_link);
             if (err != 0)
-                perror("Failed to detach tcp_destroy_sock_prog from tracepoint");
+                logger.log(LogLevel::ERROR, "Failed to detach tcp_destroy_sock_prog from tracepoint");
         }
 
         // Close all file descriptors
@@ -223,7 +216,11 @@ namespace bpf
         // Destroy BPF object
         bpf_object__close(obj);
 
-        cout << "[Cleanup ] -- eBPF resources cleaned up successfully." << endl;
+        if (rb_thread.joinable())
+            rb_thread.join();
+        logger.log(LogLevel::CLEANUP, "Polling thread stopped.");
+
+        logger.log(LogLevel::SHUTDOWN, "eBPF resources cleaned up successfully.");
     }
 
     void BpfMng::setTargetPort(const vector<uint16_t> &target_ports, uint16_t server_port)
@@ -272,7 +269,7 @@ namespace bpf
             err = bpf_map_update_elem(intercepted_sk_fd, &client_sk.sk_id, &client_sk.fd, BPF_ANY);
             if (err != 0)
             {
-                cerr << "Error on update intercepted_sockets map: " << strerror(errno) << endl;
+                logger.log(LogLevel::ERROR, "Error on update intercepted_sockets map: " + std::string(strerror(errno)));
                 throw runtime_error("Failed to add socket to intercepted_sockets map");
             }
         }
@@ -302,7 +299,7 @@ namespace bpf
 
         if (j == Config::NUMBER_OF_SOCKETS)
         {
-            perror("Failed to find socket in client_sks");
+            logger.log(LogLevel::ERROR, "Failed to find socket in client_sks");
             return app_sk;
         }
 

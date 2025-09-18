@@ -12,6 +12,7 @@
 
 #include <common.h>
 #include <SocketMng.h>
+#include <Logger.h>
 
 using RawCallback = int (*)(void *, std::size_t);
 
@@ -44,7 +45,6 @@ namespace bpf
         int target_ip_fd;
         int ring_buffer_fd;
         struct ring_buffer *rb;
-        int sock_proxyfd_association_fd;
 
         pthread_t thread_pool_rb;
         bool stop_threads;
@@ -60,6 +60,9 @@ namespace bpf
         struct sock_id getAppSkFromProxySk(struct sock_id proxy_sk);
 
     private:
+        Logger logger{"BpfMng"};
+        std::thread rb_thread;
+
         void threadPollRb();
         void wrapClose(int fd);
         void setTargetPort(const std::vector<uint16_t> &target_ports, uint16_t server_port);

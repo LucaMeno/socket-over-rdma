@@ -2,6 +2,7 @@
 
 #include <string>
 #include <fstream>
+#include <sstream>
 
 #include "Config.hpp"
 
@@ -18,7 +19,10 @@ enum class LogLevel
     CLEANUP,
     MAIN,
     DEVICES,
-    CONFIG
+    CONFIG,
+    EBPF_EV,
+    CONNECT,
+    EBPF,
 };
 
 class Logger

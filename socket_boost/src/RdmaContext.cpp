@@ -45,7 +45,7 @@ namespace rdma
         // srq = nullptr;
         if (!srq)
         {
-            cerr << "WARNING: Failed to create shared receive queue, using default receive CQ\n";
+            logger.log(LogLevel::WARNING, "Failed to create shared receive queue, using default receive CQ");
             srq = nullptr; // Use default receive CQ if SRQ creation fails
         }
 
@@ -205,40 +205,40 @@ namespace rdma
             buffer_to_read = ringbuffer_server;
         }
 
-        cout << " ==================== CONNECTION INFO ====================\n";
+        logger.log(LogLevel::CONNECT, " ==================== CONNECTION INFO ====================");
 
-        cout << "## LOCAL ##" << endl;
-        std::cout << "Local QPN and PSN: " << endl;
+        logger.log(LogLevel::CONNECT, "## LOCAL ##");
+        logger.log(LogLevel::CONNECT, "Local QPN and PSN: ");
         for (int i = 0; i < Config::QP_N; i++)
-            std::cout << "- QPN[" << i << "]: " << local.qp_num[i] << " PSN: " << local.rq_psn[i] << "\n";
-        cout << "Local LID: " << local.lid << "\n"
-             << "Local BUFFER client: " << std::hex << ringbuffer_client << std::dec << "\n"
-             << "Local BUFFER server: " << std::hex << ringbuffer_server << std::dec << "\n"
-             << "Local RKEY: " << local.rkey << "\n"
-             << "Local GID: ";
+            logger.log(LogLevel::CONNECT, "- QPN[" + std::to_string(i) + "]: " + std::to_string(local.qp_num[i]) + " PSN: " + std::to_string(local.rq_psn[i]));
+        logger.log(LogLevel::CONNECT, "Local LID: " + std::to_string(local.lid));
+        logger.log(LogLevel::CONNECT, "Local BUFFER client: " + std::to_string(reinterpret_cast<uintptr_t>(ringbuffer_client)));
+        logger.log(LogLevel::CONNECT, "Local BUFFER server: " + std::to_string(reinterpret_cast<uintptr_t>(ringbuffer_server)));
+        logger.log(LogLevel::CONNECT, "Local RKEY: " + std::to_string(local.rkey));
+        logger.log(LogLevel::CONNECT, "Local GID: ");
+        std::ostringstream oss1;
         for (int i = 0; i < 16; i++)
-            std::printf("%02x", local.gid.raw[i]);
+            oss1 << std::hex << std::setw(2) << std::setfill('0') << (int)local.gid.raw[i];
+        logger.log(LogLevel::CONNECT, "Local GID: " + oss1.str());
 
-        std::cout << endl
-                  << endl
-                  << "## REMOTE ##" << endl;
+        logger.log(LogLevel::CONNECT, "## REMOTE ##");
 
-        cout << "Remote QPN and PSN: " << endl;
+        logger.log(LogLevel::CONNECT, "Remote QPN and PSN: ");
         for (int i = 0; i < Config::QP_N; i++)
-            std::cout << "- QPN[" << i << "]: " << remote.qp_num[i] << " PSN: " << remote.rq_psn[i] << "\n";
-        cout << "Remote LID: " << remote.lid << "\n"
-             << "Remote BUFFER: " << std::hex << remote.addr << std::dec << "\n"
-             << "Remote RKEY: " << remote.rkey << "\n"
-             << "Remote GID: ";
+            logger.log(LogLevel::CONNECT, "- QPN[" + std::to_string(i) + "]: " + std::to_string(remote.qp_num[i]) + " PSN: " + std::to_string(remote.rq_psn[i]));
+        logger.log(LogLevel::CONNECT, "Remote LID: " + std::to_string(remote.lid));
+        logger.log(LogLevel::CONNECT, "Remote BUFFER: " + std::to_string(reinterpret_cast<uintptr_t>(remote.addr)));
+        logger.log(LogLevel::CONNECT, "Remote RKEY: " + std::to_string(remote.rkey));
+        logger.log(LogLevel::CONNECT, "Remote GID: ");
+        std::ostringstream oss2;
         for (int i = 0; i < 16; i++)
-            std::printf("%02x", remote.gid.raw[i]);
+            oss2 << std::hex << std::setw(2) << std::setfill('0') << (int)remote.gid.raw[i];
 
-        std::cout << endl
-                  << endl
-                  << "## DEVICES ##" << endl;
+        logger.log(LogLevel::INFO, "Remote GID: " + oss2.str());
+
         showDevices();
 
-        std::cout << "\n ==========================================================\n";
+        logger.log(LogLevel::CONNECT, "==========================================================");
 
         local_remote_write_index_offset = (size_t)((char *)buffer_to_write - (char *)buffer) +
                                           offsetof(rdma_ringbuffer_t, remote_write_index);
@@ -259,7 +259,7 @@ namespace rdma
         conn_info local = rdmaSetupPreHs();
 
         int listen_fd = tcpWaitForConnection();
-        std::cout << "Server ready\n";
+        logger.log(LogLevel::INFO, "Server ready");
 
         serverConnection_t sc;
         sc.fd = listen_fd;
@@ -284,7 +284,7 @@ namespace rdma
         remote_ip = addr.sin_addr.s_addr;
         close(sc.fd);
 
-        std::cout << "Accepted new client connection\n";
+        logger.log(LogLevel::INFO, "Accepted new client connection");
 
         rdmaSetupPostHs(remote, local);
 
@@ -300,28 +300,28 @@ namespace rdma
         int sock = tcpConnect(server_ip);
         if (sock < 0)
         {
-            std::cerr << "Failed to connect to server: " << strerror(errno) << "\n";
+            logger.log(LogLevel::ERROR, "Failed to connect to server: " + std::string(strerror(errno)));
             throw runtime_error("tcpConnect failed");
         }
 
         conn_info remote;
         if (read(sock, &remote, sizeof(remote)) < 0)
         {
-            perror("read");
+            logger.log(LogLevel::ERROR, "Failed to read remote connection info");
             close(sock);
             throw runtime_error("Failed to read remote connection info");
         }
 
         if (write(sock, &local, sizeof(local)) < 0)
         {
-            perror("write");
+            logger.log(LogLevel::ERROR, "Failed to write local connection info");
             close(sock);
             throw runtime_error("Failed to write local connection info");
         }
 
         close(sock);
 
-        cout << "Connected to server\n";
+        logger.log(LogLevel::INFO, "Connected to server");
 
         rdmaSetupPostHs(remote, local);
 
@@ -343,14 +343,14 @@ namespace rdma
 
         if (getaddrinfo(ip_str.c_str(), Config::RDMA_TCP_PORT, &hints, &res) != 0)
         {
-            perror("getaddrinfo");
+            logger.log(LogLevel::ERROR, "getaddrinfo failed");
             return -1;
         }
 
         int fd = socket(res->ai_family, res->ai_socktype, 0);
         if (fd < 0 || connect(fd, res->ai_addr, res->ai_addrlen) != 0)
         {
-            perror("connect");
+            logger.log(LogLevel::ERROR, "connect failed");
             freeaddrinfo(res);
             return -1;
         }
@@ -385,8 +385,9 @@ namespace rdma
         int num_devices = 0;
         ibv_device **device_list = ibv_get_device_list(&num_devices);
         if (!device_list || num_devices == 0)
-            std::cerr << "No RDMA devices found.\n";
+            logger.log(LogLevel::ERROR, "No RDMA devices found.");
 
+        logger.log(LogLevel::CONNECT, "## DEVICES ##");
         for (int i = 0; i < num_devices; ++i)
         {
             ibv_context *ctx = ibv_open_device(device_list[i]);
@@ -394,22 +395,23 @@ namespace rdma
                 continue;
 
             ibv_port_attr port_attr;
+
             if (ibv_query_port(ctx, Config::RDMA_DEV_PORT, &port_attr) == 0)
             {
-                if (port_attr.state == IBV_PORT_ACTIVE)
-                    std::cout << "[" << i << "] device UP: " << ibv_get_device_name(device_list[i]);
-                else
-                    std::cout << "[" << i << "] device DOWN: " << ibv_get_device_name(device_list[i]);
+                std::ostringstream oss;
 
-                if (port_attr.link_layer == IBV_LINK_LAYER_ETHERNET)
-                    std::cout << " (Ethernet)\n";
-                else
-                    std::cout << " (InfiniBand)\n";
+                oss << "[" << i << "] device "
+                    << (port_attr.state == IBV_PORT_ACTIVE ? "UP: " : "DOWN: ")
+                    << ibv_get_device_name(device_list[i])
+                    << " ("
+                    << (port_attr.link_layer == IBV_LINK_LAYER_ETHERNET ? "Ethernet" : "InfiniBand")
+                    << ")";
+
+                logger.log(LogLevel::CONNECT, oss.str());
             }
-
             ibv_close_device(ctx);
         }
-        cout << "Target RDMA device index: " << Config::getDevIdx() << " - GID: " << Config::getRdmaDevGidIdx() << "\n";
+        logger.log(LogLevel::CONNECT, "Target RDMA device index: " + std::to_string(Config::getDevIdx()) + " - GID: " + std::to_string(Config::getRdmaDevGidIdx()));
         ibv_free_device_list(device_list);
     }
 
@@ -419,7 +421,7 @@ namespace rdma
         ibv_device **device_list = ibv_get_device_list(&num_devices);
         if (!device_list || num_devices == 0)
         {
-            std::cerr << "No RDMA devices found.\n";
+            logger.log(LogLevel::ERROR, "No RDMA devices found.");
             return nullptr;
         }
 
@@ -451,7 +453,7 @@ namespace rdma
 
         if (active_count == 0)
         {
-            std::cerr << "No active RDMA devices found.\n";
+            logger.log(LogLevel::ERROR, "No active RDMA devices found.");
             ibv_free_device_list(device_list);
             return nullptr;
         }
@@ -459,14 +461,14 @@ namespace rdma
         int devIndex = Config::getDevIdx();
         if (devIndex >= active_devices.size())
         {
-            std::cerr << "Invalid device index (only " << active_devices.size() << " active devices available).\n";
+            logger.log(LogLevel::ERROR, "Invalid device index (only " + std::to_string(active_devices.size()) + " active devices available).");
             ibv_free_device_list(device_list);
             throw std::runtime_error("Invalid device index");
         }
 
         if (!active_devices[devIndex])
         {
-            std::cerr << "Selected device is not active, trying to use the first active device...\n";
+            logger.log(LogLevel::WARNING, "Selected device is not active, trying to use the first active device...");
             for (int i = 0; i < active_devices.size(); ++i)
             {
                 if (active_devices[i])
@@ -480,7 +482,7 @@ namespace rdma
         ibv_context *ctx = ibv_open_device(device_list[devIndex]);
         if (!ctx)
         {
-            std::cerr << "Failed to open selected RDMA device.\n";
+            logger.log(LogLevel::ERROR, "Failed to open selected RDMA device.");
             ibv_free_device_list(device_list);
             return nullptr;
         }
@@ -560,20 +562,15 @@ namespace rdma
         // Wake up threads waiting for the context to be ready
         signalContextReady();
 
-        cout << "[Shutdown] -- Waiting for update remote read index thread to finish" << endl;
+        logger.log(LogLevel::SHUTDOWN, "Waiting for update remote read index thread to finish");
         if (update_remote_r_thread.joinable())
             update_remote_r_thread.join();
-        cout << "[Shutdown] -- Update remote read index thread joined" << endl;
-        cout << "[Shutdown] -- Waiting for flush threads to finish" << endl;
+        logger.log(LogLevel::SHUTDOWN, "Update remote read index thread joined");
+        logger.log(LogLevel::SHUTDOWN, "Waiting for flush threads to finish");
         for (int i = 0; i < Config::QP_N - 1; i++)
-        {
             if (flush_threads[i].joinable())
-            {
                 flush_threads[i].join();
-                cout << "[Shutdown] -- Flush thread " << i << " joined" << endl;
-            }
-        }
-        cout << "[Shutdown] -- All flush threads joined" << endl;
+        logger.log(LogLevel::SHUTDOWN, "All flush threads joined");
     }
 
     void RdmaContext::sendNotification(CommunicationCode code)
@@ -612,7 +609,7 @@ namespace rdma
 
         // Poll the completion queue
         pollCqSend(send_cqs[qp_index]);
-        cout << "Sent notification: " << getOpName(code) << endl;
+        logger.log(LogLevel::DEBUG, "Sent notification: " + getOpName(code));
     }
 
     void RdmaContext::sendDataReady()
@@ -672,12 +669,11 @@ namespace rdma
         if (ret != 0)
             throw runtime_error("Failed to post write - flushWrQueue - code: " + to_string(ret) + " on QP_idx: " + to_string(qp_idx));
 
-        // cout << "Posted: " << end - start << " wr on qp: " << qp_idx << endl;
+        // logger.log(LogLevel::DEBUG, "Posted: " + std::to_string(end - start) + " wr on qp: " + std::to_string(qp_idx));
     }
 
     void RdmaContext::flushThread(int id)
     {
-        cout << "[Debug] -- starting FlushThread on QP idx: " << id << endl;
         waitForContextToBeReady();
 
         auto local_wr_batch = vector<WorkRequest *>();
@@ -717,7 +713,7 @@ namespace rdma
                     }
 
                     /*if (j < 5)
-                        cout << "TIME wr:" << j << " on qp_idx: " << qp_idx << endl;*/
+                        logger.log(LogLevel::DEBUG, "TIME wr:" + std::to_string(j) + " on qp_idx: " + std::to_string(qp_idx));*/
 
                     break;
                 }
@@ -773,14 +769,14 @@ namespace rdma
             // this_thread::yield(); // backoff
 
             if (COUNT % Config::PRINT_NO_SPACE_EVERY == 0)
-                cout << "Waiting for space in the ringbuffer (" << COUNT << ")... " << " remote_read_idx: " << end_w_index << endl;
+                logger.log(LogLevel::DEBUG, "Waiting for space in the ringbuffer (" + std::to_string(COUNT) + ")... " + " remote_read_idx: " + std::to_string(end_w_index));
 
             if (stop.load() == true)
                 throw runtime_error("Stopping writeMsg due to stop signal");
 
             if (!is_valid())
             {
-                cerr << "[Debug   ] -- Socket not valid anymore, stopping writeMsg" << endl;
+                logger.log(LogLevel::DEBUG, "Socket not valid anymore, stopping writeMsg");
                 return 1; // stop writing if the socket is not valid anymore
             }
         }
@@ -858,14 +854,14 @@ namespace rdma
             int ret = ibv_post_send(qps[Config::DEFAULT_QP_IDX], &wr.wr, &bad_send_wr_data);
             if (ret != 0) // Post the send work request
             {
-                cout << "Wr failed: " << endl
-                     << "- Remote Address: " << std::hex << wr.wr.wr.rdma.remote_addr << std::dec << endl
-                     << "- Local Address: " << std::hex << wr.sge.addr << std::dec << endl
-                     << "- Size: " << wr.sge.length << endl
-                     << "- RKey: " << wr.wr.wr.rdma.rkey << endl;
-                cout << "- Error code: " << ret << endl;
-                cout << "- Bad send WR data: " << (bad_send_wr_data ? "not null" : "null") << endl;
-                cout << "- QP index: " << Config::DEFAULT_QP_IDX << endl;
+                logger.log(LogLevel::ERROR, "Wr failed: ");
+                logger.log(LogLevel::ERROR, "- Remote Address: " + std::to_string(wr.wr.wr.rdma.remote_addr));
+                logger.log(LogLevel::ERROR, "- Local Address: " + std::to_string(wr.sge.addr));
+                logger.log(LogLevel::ERROR, "- Size: " + std::to_string(wr.sge.length));
+                logger.log(LogLevel::ERROR, "- RKey: " + std::to_string(wr.wr.wr.rdma.rkey));
+                logger.log(LogLevel::ERROR, "- Error code: " + std::to_string(ret));
+                logger.log(LogLevel::ERROR, "- Bad send WR data: " + std::string(bad_send_wr_data ? "not null" : "null"));
+                logger.log(LogLevel::ERROR, "- QP index: " + std::to_string(Config::DEFAULT_QP_IDX));
 
                 throw runtime_error("Failed to post write - updateRemoteReadIndex - code: " + to_string(ret));
             }
@@ -880,7 +876,7 @@ namespace rdma
         }
     }
 
-    inline void sendMsg(struct mmsghdr *msgs, int n_of_msg, int dest_fd)
+    inline void RdmaContext::sendMsg(struct mmsghdr *msgs, int n_of_msg, int dest_fd)
     {
         int sent = 0;
         while (sent < n_of_msg)
@@ -891,10 +887,10 @@ namespace rdma
                 if (errno == EAGAIN || errno == EWOULDBLOCK)
                 {
                     // std::this_thread::yield();
-                    cerr << "WARN!!" << endl;
+                    logger.log(LogLevel::WARNING, "sendmmsg would block");
                     continue;
                 }
-                perror("sendmmsg");
+                logger.log(LogLevel::ERROR, "sendmmsg failed");
                 throw std::runtime_error("sendmmsg failed");
             }
             else if (n == 0)
@@ -925,7 +921,7 @@ namespace rdma
         auto flush = [&]
         {
             /*if (idx_batch != Config::IOVS_BATCH_SIZE)
-                cout << "Flushing partial batch: " << idx_batch << endl;*/
+                logger.log(LogLevel::DEBUG, "Flushing partial batch: " + std::to_string(idx_batch));*/
             sendMsg(msgs, idx_batch, dest_fd);
             buffer_to_read->local_read_index.fetch_add(idx_batch, std::memory_order_release);
             idx_batch = 0;
@@ -953,7 +949,7 @@ namespace rdma
 
                     if (!is_valid())
                     {
-                        cerr << "[Debug   ] -- Socket not valid anymore, stopping readMsgLoop" << endl;
+                        logger.log(LogLevel::DEBUG, "Socket not valid anymore, stopping readMsgLoop");
                         return 1;
                     }
 
@@ -970,7 +966,7 @@ namespace rdma
                 /*if (msg->msg_size != RdmaTestConf::MAX_PAYLOAD_SIZE)
                 {
                     double perc = (double)msg->msg_size / (double)RdmaTestConf::MAX_PAYLOAD_SIZE * 100.0;
-                    cout << "Received msg size: " << msg->msg_size << " expected: " << RdmaTestConf::MAX_PAYLOAD_SIZE << " - " << perc << "%" << endl;
+                    logger.log(LogLevel::DEBUG, "Received msg size: " + std::to_string(msg->msg_size) + " expected: " + std::to_string(RdmaTestConf::MAX_PAYLOAD_SIZE) + " - " + std::to_string(perc) + "%");
                 }*/
 
                 if (msg->msg_size == 0 || msg->number_of_slots != 1)
@@ -1016,7 +1012,7 @@ namespace rdma
         size_t offset = (size_t)((char *)buffer_to_write - (char *)buffer);
         uintptr_t remote_addr_2 = remote_addr + offset;
 
-        cout << "Polling status updated: " << (is_polling ? "ON" : "OFF") << endl;
+        logger.log(LogLevel::INFO, "Polling status updated: " + string(is_polling ? "ON" : "OFF"));
     }
 
     void RdmaContext::pollCqSend(ibv_cq *send_cq_to_poll, int num_entry)
@@ -1040,7 +1036,7 @@ namespace rdma
 
             if (stop.load() == true)
             {
-                cout << "Interrupted while polling CQ, no completions found." << endl;
+                logger.log(LogLevel::WARNING, "Interrupted while polling CQ, no completions found.");
                 return; // no completions found, just return
             }
 

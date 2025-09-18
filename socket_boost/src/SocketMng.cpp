@@ -46,8 +46,8 @@ namespace sk
 
         in_addr ip_addr{};
         ip_addr.s_addr = server_ip;
-        std::cout << "Server listening on " << inet_ntoa(ip_addr) << ":" << server_port << "\n";
-        std::cout << "Launching client threads...\n";
+        logger.log(LogLevel::INFO, "Server listening on " + std::string(inet_ntoa(ip_addr)) + ":" + std::to_string(server_port));
+        logger.log(LogLevel::INFO, "Launching client threads...");
 
         for (int i = 0; i < Config::NUMBER_OF_SOCKETS; ++i)
         {
@@ -71,12 +71,12 @@ namespace sk
             thread.detach();
         }
 
-        std::cout << "All clients connected (" << Config::NUMBER_OF_SOCKETS << ")\n";
+        logger.log(LogLevel::INFO, "All clients connected (" + std::to_string(Config::NUMBER_OF_SOCKETS) + ")");
     }
 
     SocketMng::~SocketMng()
     {
-        std::cout << "[Shutdown] -- Destroying SocketMng...\n";
+        logger.log(LogLevel::CLEANUP, "Destroying SocketMng...");
 
         // Notify all threads to exit
         unique_lock<std::mutex> lock(mutex);

@@ -17,6 +17,7 @@
 #include <memory>
 #include <queue>
 #include <boost/lockfree/queue.hpp>
+#include <iomanip>
 
 #include "BpfMng.h"
 #include "SocketMng.h"
@@ -24,6 +25,7 @@
 #include "SockMap.hpp"
 #include "ThreadPool.h"
 #include "IndexCycle.h"
+#include "Logger.h"
 
 #define RING_IDX(i) ((i) & (Config::MAX_MSG_BUFFER - 1))
 
@@ -149,6 +151,8 @@ namespace rdma
         struct ibv_srq *srq;            // shared receive queue
         ibv_cq *send_cqs[Config::QP_N]; // send completion queues
 
+        Logger logger{"RdmaContext"};
+
         uintptr_t remote_addr; // remote address of the buffer
         uint32_t remote_rkey;  // remote key of the memory region
 
@@ -199,6 +203,7 @@ namespace rdma
 
         /* RX */
         void updateRemoteReadIndexThread();
+        void sendMsg(struct mmsghdr *msgs, int n_of_msg, int dest_fd);
 
         /* CONNECTION */
         uint32_t getPsn();

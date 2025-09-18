@@ -15,6 +15,8 @@
 #include <common.h>
 #include <Config.hpp>
 
+#include "Logger.h"
+
 namespace sk
 {
     typedef struct
@@ -74,6 +76,8 @@ namespace sk
         std::mutex mutex;
         std::condition_variable cond_var;
         std::vector<std::thread> client_threads;
+
+        Logger logger{"SocketMng"};
 
         void setSocketNonblocking(int sockfd);
         void clientThread(int client_id);

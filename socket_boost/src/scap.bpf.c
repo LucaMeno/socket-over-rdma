@@ -246,7 +246,7 @@ int sockops_prog(struct bpf_sock_ops *skops)
 
 		break;
 	default:
-		bpf_printk("Unknown socket operation: %d\n", op);
+		// bpf_printk("Unknown socket operation: %d\n", op);
 		break;
 #endif // EBPF_DEBUG_SOCKET
 	}

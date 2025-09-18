@@ -39,9 +39,8 @@ namespace rdmaMng
         {
             std::ostringstream oss;
             oss << "FD: " << fd
-                << " | Proxy: " << sk::SocketMng::getPrintableSkId(proxy)
-                << " | App: " << sk::SocketMng::getPrintableSkId(app)
-                << " | Ctx: " << (ctx ? "ok" : "nullptr");
+                << " " << sk::SocketMng::getPrintableSkId(proxy)
+                << "-" << sk::SocketMng::getPrintableSkId(app);
             return oss.str();
         }
     };
@@ -59,6 +58,60 @@ namespace rdmaMng
             return self->bpfEventHandler(data, len);
         }
 
+        int bpfEventHandler(void *data, size_t len)
+        {
+            struct userspace_data_t *user_data = (struct userspace_data_t *)data;
+
+            // Lambda for logging
+            auto logSocketEvent = [this](const std::string &prefix,
+                                         struct sock_id &app,
+                                         struct sock_id &proxy,
+                                         const std::string &role,
+                                         int fd)
+            {
+                logger.log(LogLevel::EBPF_EV,
+                           prefix + "-" + sk::SocketMng::getPrintableSkId(app) + "-" + sk::SocketMng::getPrintableSkId(proxy) + " " + role + " fd:" + std::to_string(fd));
+            };
+
+            switch (user_data->event_type)
+            {
+            case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
+            {
+                // client side, connect the RDMA context
+                connect(user_data->association.app);
+                int fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
+                logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "C", fd);
+                setFdSkAssociation(fd, user_data->association.app);
+                wakeReaderThread();
+                break;
+            }
+            case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
+            {
+                // server side, do not connect the RDMA context
+                int fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
+                logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "S", fd);
+                setFdSkAssociation(fd, user_data->association.app);
+                wakeReaderThread();
+                break;
+            }
+            case REMOVE_SOCKET:
+            {
+                int fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
+                setFdSkAssociation(fd, {0});
+                logSocketEvent("REMOVE", user_data->association.app, user_data->association.proxy, "ND", fd);
+                break;
+            }
+            default:
+                logger.log(LogLevel::WARNING, "Unknown event type: " + std::to_string(user_data->event_type));
+                return -1; // Unknown event type
+            }
+
+            return 0;
+        }
+
+        void connect(struct sock_id original_socket);
+        void wakeReaderThread();
+        void run();
 
     private:
         std::vector<std::unique_ptr<rdma::RdmaContext>> ctxs; // vector of active RDMA contexts
@@ -100,9 +153,6 @@ namespace rdmaMng
         void setFdSkAssociation(int fd, sock_id_t sk_id);
         bool isFdValid(int fd);
 
-        int bpfEventHandler(void *data, size_t len);
-        void connect(struct sock_id original_socket);
-        void wakeReaderThread();
-        void run();
+        // int bpfEventHandler(void *data, size_t len);
     };
 }

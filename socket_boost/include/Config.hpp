@@ -57,6 +57,8 @@ public:
     inline static const char *LOG_FILE = "rdma_proxy.log";
     inline static const char *LOG_FILE_ERR = "rdma_proxy_err.log";
     inline static const bool LOG_TO_FILE = false;
+    inline static const bool LOG_TIME = false;
+    inline static const bool PRINT_CLASS_NAME = false;
 
     static std::vector<uint16_t> getTargetPorts()
     {

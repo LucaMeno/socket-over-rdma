@@ -20,28 +20,25 @@ namespace rdmaMng
 
         logger.log(LogLevel::CONFIG, "==================  CONFIGURATION ==================");
 
-        cout << "Configuration:" << endl;
-        cout << " RDMA port: " << rdma_port << endl;
-        cout << " RDMA TCP port: " << Config::RDMA_TCP_PORT << endl;
-        cout << " Proxy port: " << Config::PROXY_PORT << endl;
-        cout << " Proxy IP: " << Config::SERVER_IP << endl;
-        cout << " MAX_PAYLOAD_SIZE: " << (Config::MAX_PAYLOAD_SIZE / 1024) << "kB" << endl;
-        cout << " MAX_MSG_BUFFER: " << (Config::MAX_MSG_BUFFER / 1024) << "k" << endl;
-        cout << " N_WRITER_THREADS: " << Config::N_WRITER_THREADS << endl;
-        cout << " Q pairs: " << Config::QP_N << endl;
-        cout << " Target ports: ";
+        logger.log(LogLevel::CONFIG, " RDMA port: " + std::to_string(rdma_port));
+        logger.log(LogLevel::CONFIG, string(" RDMA TCP port: ") + Config::RDMA_TCP_PORT);
+        logger.log(LogLevel::CONFIG, " Proxy port: " + std::to_string(Config::PROXY_PORT));
+        logger.log(LogLevel::CONFIG, string(" Proxy IP: ") + Config::SERVER_IP);
+        logger.log(LogLevel::CONFIG, " MAX_PAYLOAD_SIZE: " + std::to_string(Config::MAX_PAYLOAD_SIZE / 1024) + "kB");
+        logger.log(LogLevel::CONFIG, " MAX_MSG_BUFFER: " + std::to_string(Config::MAX_MSG_BUFFER / 1024) + "k");
+        logger.log(LogLevel::CONFIG, " N_WRITER_THREADS: " + std::to_string(Config::N_WRITER_THREADS));
+        logger.log(LogLevel::CONFIG, " Q pairs: " + std::to_string(Config::QP_N));
+        logger.log(LogLevel::CONFIG, " Target ports: ");
         for (const auto &port : Config::getTargetPorts())
             logger.log(LogLevel::CONFIG, "  " + std::to_string(port));
 
-        logger.log(LogLevel::CONFIG, "=======================================================");
+        logger.log(LogLevel::CONFIG, "==================  END CONFIGURATION ==================");
 
         for (int i = 0; i < Config::NUMBER_OF_SOCKETS; i++)
         {
             int fd = sk_ctx.client_sk_fd[i].fd;
             fd_sk_asoc_map[fd] = {0};
         }
-
-        run();
     }
 
     RdmaMng::~RdmaMng()
@@ -49,30 +46,30 @@ namespace rdmaMng
         stop_threads.store(true, memory_order_release);
 
         // Cleanup RDMA contexts
-        cout << "[Cleanup ] -- Clearing RDMA contexts..." << endl;
+        logger.log(LogLevel::CLEANUP, "Cleaning up RDMA contexts");
         ctxs.clear();
-        cout << "[Cleanup ] -- RDMA contexts cleared" << endl;
+        logger.log(LogLevel::CLEANUP, "RDMA contexts cleared");
 
         for (auto &ctx : ctxs)
             ctx->stop.store(true);
 
         if (server_thread.joinable())
         {
-            cout << "[Shutdown] -- Waiting for server thread to finish..." << endl;
+            logger.log(LogLevel::CLEANUP, "Waiting for server thread to finish...");
             server_thread.join();
-            cout << "[Shutdown] -- Server thread joined" << endl;
+            logger.log(LogLevel::CLEANUP, "Server thread joined");
         }
 
         for (auto &thread : writer_threads)
             if (thread.joinable())
                 thread.join();
-        cout << "[Shutdown] Writer threads joined" << endl;
+        logger.log(LogLevel::CLEANUP, "Writer threads joined");
 
         if (notification_thread.joinable())
         {
-            cout << "[Shutdown] Waiting for notification thread to finish..." << endl;
+            logger.log(LogLevel::CLEANUP, "Waiting for notification thread to finish...");
             notification_thread.join();
-            cout << "[Shutdown] Notification thread joined" << endl;
+            logger.log(LogLevel::CLEANUP, "Notification thread joined");
         }
 
         // Notify all reader threads to exit
@@ -80,69 +77,17 @@ namespace rdmaMng
         for (auto &thread : reader_threads)
             if (thread.joinable())
                 thread.join();
-        cout << "[Shutdown] Reader threads joined" << endl;
+        logger.log(LogLevel::CLEANUP, "Reader threads joined");
 
-        cout << "[Cleanup ] RdmaMng cleanup completed" << endl;
+        logger.log(LogLevel::CLEANUP, "RdmaMng cleanup completed");
 
         // bpf and socket managers cleanup are handled in their destructors automatically
     }
 
-    int RdmaMng::bpfEventHandler(void *data, size_t len)
-    {
-        struct userspace_data_t *user_data = (struct userspace_data_t *)data;
-
-        // Lambda for logging
-        auto logSocketEvent = [this](const std::string &prefix,
-                                     struct sock_id &app,
-                                     struct sock_id &proxy,
-                                     const std::string &role,
-                                     int fd)
-        {
-            std::cout << prefix << " "
-                      << sk::SocketMng::getPrintableSkId(app) << " <-> "
-                      << sk::SocketMng::getPrintableSkId(proxy) << " - "
-                      << role << " - fd: " << fd
-                      << std::endl;
-        };
-
-        switch (user_data->event_type)
-        {
-        case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
-        {
-            // client side, connect the RDMA context
-            connect(user_data->association.app);
-            int fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
-            logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "CLIENT", fd);
-            setFdSkAssociation(fd, user_data->association.app);
-            wakeReaderThread();
-            break;
-        }
-        case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
-        {
-            // server side, do not connect the RDMA context
-            int fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
-            logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "SERVER", fd);
-            setFdSkAssociation(fd, user_data->association.app);
-            wakeReaderThread();
-            break;
-        }
-        case REMOVE_SOCKET:
-        {
-            int fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
-            setFdSkAssociation(fd, {0});
-            logSocketEvent("REMOVE", user_data->association.app, user_data->association.proxy, "ND", fd);
-            break;
-        }
-        default:
-            std::cerr << "Unknown event type: " << user_data->event_type << std::endl;
-            return -1; // Unknown event type
-        }
-
-        return 0;
-    }
-
     void RdmaMng::run()
     {
+        logger.log(LogLevel::INIT, "Starting RdmaMng...");
+
         // start the server thread
         server_thread = thread(&RdmaMng::serverThread, this);
 
@@ -197,7 +142,7 @@ namespace rdmaMng
     {
         try
         {
-            cout << "Server thread started" << endl;
+            logger.log(LogLevel::INFO, "Server thread started");
 
             while (stop_threads.load() == false)
             {
@@ -225,8 +170,7 @@ namespace rdmaMng
         }
         catch (const std::exception &e)
         {
-            cerr << "Exception in serverThread: " << e.what() << endl;
-            perror("Details");
+            logger.log(LogLevel::ERROR, "Exception in serverThread: " + std::string(e.what()));
             throw; // Re-throw the exception to be handled by the caller
         }
     }
@@ -300,7 +244,7 @@ namespace rdmaMng
                     return;
 
                 fillThreadContext(tc);
-                cout << "[RT      ] -- RT started: " << tc.toString() << endl;
+                logger.log(LogLevel::INFO, "RT: " + tc.toString());
 
                 sock_id_t swapped_sk = {0};
                 swapped_sk.sip = tc.app.dip;
@@ -314,8 +258,7 @@ namespace rdmaMng
         }
         catch (const std::exception &e)
         {
-            cerr << "Exception in readerThread: " << e.what() << endl;
-            perror("Details");
+            logger.log(LogLevel::ERROR, "Exception in readerThread: " + std::string(e.what()));
         }
     }
 
@@ -380,8 +323,7 @@ namespace rdmaMng
         }
         catch (const std::exception &e)
         {
-            cerr << "Exception in writerThread: " << e.what() << endl;
-            perror("   - Details");
+            logger.log(LogLevel::ERROR, "Exception in writerThread: " + std::string(e.what()));
             throw; // Re-throw the exception to be handled by the caller
         }
     }
@@ -442,13 +384,13 @@ namespace rdmaMng
         {
             code = notification->from_client.code;
             notification->from_client.code = rdma::CommunicationCode::NONE; // reset the code
-            cout << "S: Received: " << ctx.getOpName(code) << " (" << static_cast<int>(code) << ")" << endl;
+            logger.log(LogLevel::INFO, "S: Received: " + ctx.getOpName(code) + " (" + std::to_string(static_cast<int>(code)) + ")");
         }
         else // client
         {
             code = notification->from_server.code;
             notification->from_server.code = rdma::CommunicationCode::NONE; // reset the code
-            cout << "C: Received: " << ctx.getOpName(code) << " (" << static_cast<int>(code) << ")" << endl;
+            logger.log(LogLevel::INFO, "C: Received: " + ctx.getOpName(code) + " (" + std::to_string(static_cast<int>(code)) + ")");
         }
 
         switch (code)
@@ -461,7 +403,7 @@ namespace rdmaMng
 
         default:
         {
-            cout << "Unknown notification code: " << static_cast<int>(code) << endl;
+            logger.log(LogLevel::WARNING, "Unknown notification code: " + std::to_string(static_cast<int>(code)));
             break;
         }
         }
@@ -471,7 +413,7 @@ namespace rdmaMng
     {
         try
         {
-            std::cout << "Listening for notifications..." << std::endl;
+            logger.log(LogLevel::INFO, "Listening for notifications...");
 
             vector<int> fds_to_monitor;
             for (const auto &ctx_ptr : ctxs)
@@ -479,7 +421,7 @@ namespace rdmaMng
                 RdmaContext *ctx = ctx_ptr.get();
                 if (!ctx->recv_cq || !ctx->comp_channel)
                 {
-                    std::cerr << "Context not ready, skipping\n";
+                    logger.log(LogLevel::WARNING, "Context not ready, skipping");
                     continue;
                 }
                 fds_to_monitor.push_back(ctx->comp_channel->fd);
@@ -508,7 +450,7 @@ namespace rdmaMng
                     void *ev_ctx = nullptr;
                     if (ibv_get_cq_event(ctx->comp_channel, &ev_cq, &ev_ctx))
                     {
-                        perror("ibv_get_cq_event");
+                        logger.log(LogLevel::ERROR, "ibv_get_cq_event failed");
                         continue;
                     }
 
@@ -516,7 +458,7 @@ namespace rdmaMng
 
                     if (ibv_req_notify_cq(ctx->recv_cq, 0))
                     {
-                        perror("ibv_req_notify_cq");
+                        logger.log(LogLevel::ERROR, "ibv_req_notify_cq failed");
                         continue;
                     }
 
@@ -524,7 +466,7 @@ namespace rdmaMng
                     int num_completions = ibv_poll_cq(ctx->recv_cq, 1, &wc);
                     if (num_completions < 0)
                     {
-                        std::cerr << "Failed to poll CQ: " << strerror(errno) << std::endl;
+                        logger.log(LogLevel::ERROR, "Failed to poll CQ: " + std::string(strerror(errno)));
                         continue;
                     }
 
@@ -533,7 +475,7 @@ namespace rdmaMng
 
                     if (wc.status != IBV_WC_SUCCESS)
                     {
-                        std::cerr << "CQ error: " << ibv_wc_status_str(wc.status) << "\n";
+                        logger.log(LogLevel::ERROR, "CQ error: " + std::string(ibv_wc_status_str(wc.status)));
                         continue;
                     }
 
@@ -545,8 +487,7 @@ namespace rdmaMng
         }
         catch (const std::exception &e)
         {
-            cerr << "Exception in listenThread: " << e.what() << endl;
-            perror("Details");
+            logger.log(LogLevel::ERROR, "Exception in listenThread: " + std::string(e.what()));
             throw; // Re-throw the exception to be handled by the caller
         }
     }

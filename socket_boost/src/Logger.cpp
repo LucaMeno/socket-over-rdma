@@ -28,6 +28,8 @@ Logger::~Logger()
 
 std::string Logger::getTimestamp() const
 {
+    if (!Config::LOG_TIME)
+        return "";
     std::time_t now = std::time(nullptr);
     char buffer[20];
     std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
@@ -36,9 +38,6 @@ std::string Logger::getTimestamp() const
 
 void Logger::log(LogLevel level, const std::string &message)
 {
-    if (!logFile.is_open())
-        return;
-
     std::string levelStr;
     switch (level)
     {
@@ -67,7 +66,6 @@ void Logger::log(LogLevel level, const std::string &message)
         levelStr = "[CLEANUP  ]";
         break;
     case LogLevel::DEBUG:
-    default:
         levelStr = "[DEBUG    ]";
         break;
     case LogLevel::MAIN:
@@ -79,17 +77,43 @@ void Logger::log(LogLevel level, const std::string &message)
     case LogLevel::CONFIG:
         levelStr = "[CONFIG   ]";
         break;
+    case LogLevel::EBPF_EV:
+        levelStr = "[EBPF_EV  ]";
+        break;
+    case LogLevel::CONNECT:
+        levelStr = "[CONNECT  ]";
+        break;
+    case LogLevel::EBPF:
+        levelStr = "[EBPF     ]";
+        break;
+    default:
+        levelStr = "[?????????]";
+        break;
     }
 
-    if (!Config::LOG_TO_FILE)
-    {
-        std::cout << "[" << getTimestamp() << "] " << levelStr << " " << message << std::endl;
-        return;
-    }
+    std::ostringstream oss;
+    if (Config::LOG_TIME)
+        oss << "[" << getTimestamp() << "] ";
+    if (Config::PRINT_CLASS_NAME)
+        oss << "[" << className << "] ";
+
+    oss << levelStr << " " << message;
+
+    std::string logStr = oss.str();
 
     if (level == LogLevel::ERROR || level == LogLevel::WARNING)
     {
-        logFileErr << "[" << getTimestamp() << "] [" << levelStr << "] " << message << std::endl;
+        if (!Config::LOG_TO_FILE)
+            std::cout << logStr << std::endl;
+        else if (logFileErr.is_open())
+            logFileErr << logStr << std::endl;
+        perror(message.c_str());
     }
-    logFile << "[" << getTimestamp() << "] [" << levelStr << "] " << message << std::endl;
+    else
+    {
+        if (!Config::LOG_TO_FILE)
+            std::cout << logStr << std::endl;
+        else if (logFile.is_open())
+            logFile << logStr << std::endl;
+    }
 }
