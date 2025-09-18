@@ -29,8 +29,10 @@ namespace rdmaMng
         logger.log(LogLevel::CONFIG, " N_WRITER_THREADS: " + std::to_string(Config::N_WRITER_THREADS));
         logger.log(LogLevel::CONFIG, " Q pairs: " + std::to_string(Config::QP_N));
         logger.log(LogLevel::CONFIG, " Target ports: ");
+        ostringstream oss;
         for (const auto &port : Config::getTargetPorts())
-            logger.log(LogLevel::CONFIG, "  " + std::to_string(port));
+            oss << port << " ";
+        logger.log(LogLevel::CONFIG, "  " + oss.str());
 
         logger.log(LogLevel::CONFIG, "==================  END CONFIGURATION ==================");
 

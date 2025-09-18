@@ -133,7 +133,7 @@ namespace bpf
         stop_threads = false;
         rb_thread = thread(&BpfMng::threadPollRb, this);
         rb_thread.detach();
-        logger.log(LogLevel::EBPF_EV, "Started polling thread for new socket events.");
+        logger.log(LogLevel::SOCKOPS, "Started polling thread for new socket events.");
 
         pushSockToMap(client_sks);
         setTargetPort(target_ports_to_set, proxy_port);

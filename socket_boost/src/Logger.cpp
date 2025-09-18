@@ -77,8 +77,8 @@ void Logger::log(LogLevel level, const std::string &message)
     case LogLevel::CONFIG:
         levelStr = "[CONFIG   ]";
         break;
-    case LogLevel::EBPF_EV:
-        levelStr = "[EBPF_EV  ]";
+    case LogLevel::SOCKOPS:
+        levelStr = "[SOCKOPS  ]";
         break;
     case LogLevel::CONNECT:
         levelStr = "[CONNECT  ]";

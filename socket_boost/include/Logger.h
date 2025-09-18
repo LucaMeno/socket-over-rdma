@@ -20,7 +20,7 @@ enum class LogLevel
     MAIN,
     DEVICES,
     CONFIG,
-    EBPF_EV,
+    SOCKOPS,
     CONNECT,
     EBPF,
 };

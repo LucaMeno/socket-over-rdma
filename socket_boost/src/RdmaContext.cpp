@@ -817,6 +817,12 @@ namespace rdma
             buffer_to_write->local_write_index += msg->number_of_slots;
             available_space -= msg->number_of_slots;
             start_w_index += msg->number_of_slots;
+
+            if (!is_valid())
+            {
+                logger.log(LogLevel::DEBUG, "Socket not valid anymore, stopping writeMsg");
+                return 1; // stop writing if the socket is not valid anymore
+            }
         }
 
         return 1;
@@ -950,6 +956,22 @@ namespace rdma
                     if (!is_valid())
                     {
                         logger.log(LogLevel::DEBUG, "Socket not valid anymore, stopping readMsgLoop");
+                        this_thread::sleep_for(std::chrono::milliseconds(100));
+                        // Before to quit, flush the data not read yet
+                        // TODO: this logic should be improved to avoid data loss
+                        buffer_to_read->local_read_index.fetch_add(idx_batch, std::memory_order_release);
+                        int k = 0;
+                        for (int j = 0; j < Config::MAX_MSG_BUFFER; j++)
+                        {
+                            msg = &buffer_to_read->data[j];
+                            if (sk::SocketMng::areSkEqual(msg->original_sk_id, target_sk) &&
+                                (msg->msg_flags & static_cast<uint32_t>(MsgFlag::MSG_ALREADY_READ)) == 0)
+                            {
+                                msg->msg_flags |= static_cast<uint32_t>(MsgFlag::MSG_ALREADY_READ);
+                                k++;
+                            }
+                        }
+                        buffer_to_read->local_read_index.fetch_add(k, std::memory_order_release);
                         return 1;
                     }
 
@@ -976,6 +998,8 @@ namespace rdma
                 iovs[idx_batch].iov_len = msg->msg_size;
 
                 idx_batch++;
+
+                msg->msg_flags |= static_cast<uint32_t>(MsgFlag::MSG_ALREADY_READ);
 
                 if (idx_batch == Config::IOVS_BATCH_SIZE)
                     flush();

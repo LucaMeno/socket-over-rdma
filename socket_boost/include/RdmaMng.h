@@ -69,7 +69,7 @@ namespace rdmaMng
                                          const std::string &role,
                                          int fd)
             {
-                logger.log(LogLevel::EBPF_EV,
+                logger.log(LogLevel::SOCKOPS,
                            prefix + "-" + sk::SocketMng::getPrintableSkId(app) + "-" + sk::SocketMng::getPrintableSkId(proxy) + " " + role + " fd:" + std::to_string(fd));
             };
 

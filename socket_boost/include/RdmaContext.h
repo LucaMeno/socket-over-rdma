@@ -75,6 +75,11 @@ namespace rdma
         RING_BUFFER_CAN_POLLING = 8
     };
 
+    enum class MsgFlag : int32_t
+    {
+        MSG_ALREADY_READ = 1,
+    };
+
     typedef struct
     {
         uint32_t seq_number_head;
