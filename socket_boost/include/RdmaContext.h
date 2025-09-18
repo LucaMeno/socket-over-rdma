@@ -128,7 +128,8 @@ namespace rdma
         void clientConnect(uint32_t server_ip, uint16_t server_port);
 
         /** SEND */
-        int writeMsg(int src_fd, struct sock_id original_socket);
+        int writeMsg(int src_fd, struct sock_id original_socket, const std::function<bool()> &is_valid);
+        int readMsgLoop(int target_fd, sock_id_t target_sk, const std::function<bool()> &is_valid);
 
         /* OTHERS */
         const std::string getOpName(CommunicationCode code);
@@ -177,7 +178,6 @@ namespace rdma
         // Threads
         std::thread flush_threads[Config::QP_N - 1];
         std::thread update_remote_r_thread;
-        std::thread reader_thread;
 
         // Synchronization
         std::mutex mtx_tx;
@@ -198,10 +198,7 @@ namespace rdma
         void postWrBatchListOnQp(std::vector<WorkRequest *> &wr_batch, int qp_idx);
 
         /* RX */
-        void readerThread();
-        int readMsgLoop();
         void updateRemoteReadIndexThread();
-        int parseMsg(rdma_msg_t &msg);
 
         /* CONNECTION */
         uint32_t getPsn();

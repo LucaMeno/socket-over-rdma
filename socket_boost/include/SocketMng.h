@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <vector>
 #include <iostream>
+#include <sstream>
 
 #include <common.h>
 #include <Config.hpp>
@@ -36,7 +37,37 @@ namespace sk
         void init(uint16_t port, uint32_t ip);
         int getProxyFdFromSockid(struct sock_id sk_id);
 
-        const char *get_printable_sockid(struct sock_id *sockid) const;
+        static std::string getPrintableSkId(const struct sock_id &sockid)
+        {
+            char sip_str[INET_ADDRSTRLEN];
+            char dip_str[INET_ADDRSTRLEN];
+
+            if (!inet_ntop(AF_INET, &sockid.sip, sip_str, sizeof(sip_str)))
+                return "<invalid sip>";
+            if (!inet_ntop(AF_INET, &sockid.dip, dip_str, sizeof(dip_str)))
+                return "<invalid dip>";
+
+            std::ostringstream oss;
+            oss << '[' << sip_str << ':' << sockid.sport
+                << "->" << dip_str << ':' << sockid.dport << ']';
+            return oss.str();
+        }
+
+        static bool areSkEqual(const struct sock_id &sk1, const struct sock_id &sk2)
+        {
+            return sk1.sip == sk2.sip &&
+                   sk1.dip == sk2.dip &&
+                   sk1.sport == sk2.sport &&
+                   sk1.dport == sk2.dport;
+        }
+
+        static bool isSkIdValid(const struct sock_id &sk)
+        {
+            return sk.sip != 0 &&
+                   sk.dip != 0 &&
+                   sk.sport != 0 &&
+                   sk.dport != 0;
+        }
 
     private:
         int shared = 0;

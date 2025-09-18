@@ -16,14 +16,6 @@
 
 struct
 {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 2048);
-	__type(key, struct sock_id);
-	__type(value, int);
-} sock_proxyfd_association SEC(".maps");
-
-struct
-{
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 2048);
 } new_sk SEC(".maps");

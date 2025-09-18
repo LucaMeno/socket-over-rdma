@@ -164,22 +164,4 @@ namespace sk
         }
         throw std::runtime_error("Socket " + std::to_string(sk_id.sip) + ":" + std::to_string(sk_id.sport) + " -> " + std::to_string(sk_id.dip) + ":" + std::to_string(sk_id.dport) + " not found");
     }
-
-    const char *SocketMng::get_printable_sockid(struct sock_id *sockid) const
-    {
-        static char buf[64];
-        char sip_str[INET_ADDRSTRLEN];
-        char dip_str[INET_ADDRSTRLEN];
-
-        if (!inet_ntop(AF_INET, &sockid->sip, sip_str, sizeof(sip_str)))
-            return "<invalid sip>";
-        if (!inet_ntop(AF_INET, &sockid->dip, dip_str, sizeof(dip_str)))
-            return "<invalid dip>";
-
-        snprintf(buf, sizeof(buf), "[%s:%u->%s:%u]",
-                 sip_str, sockid->sport,
-                 dip_str, sockid->dport);
-
-        return buf;
-    }
 }

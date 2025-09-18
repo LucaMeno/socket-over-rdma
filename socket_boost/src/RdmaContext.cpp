@@ -521,7 +521,6 @@ namespace rdma
         for (int i = 1; i < Config::QP_N; i++)
             flush_threads[i - 1] = std::thread(&RdmaContext::flushThread, this, i);
 
-        reader_thread = std::thread(&RdmaContext::readerThread, this);
         update_remote_r_thread = std::thread(&RdmaContext::updateRemoteReadIndexThread, this);
     }
 
@@ -561,10 +560,6 @@ namespace rdma
         // Wake up threads waiting for the context to be ready
         signalContextReady();
 
-        cout << "[Shutdown] -- Waiting for reader threads to finish" << endl;
-        if (reader_thread.joinable())
-            reader_thread.join();
-        cout << "[Shutdown] -- Reader thread joined" << endl;
         cout << "[Shutdown] -- Waiting for update remote read index thread to finish" << endl;
         if (update_remote_r_thread.joinable())
             update_remote_r_thread.join();
@@ -579,17 +574,6 @@ namespace rdma
             }
         }
         cout << "[Shutdown] -- All flush threads joined" << endl;
-    }
-
-    void RdmaContext::readerThread()
-    {
-        waitForContextToBeReady();
-        if (stop.load())
-            return;
-        cout << "[Debug] -- starting ReaderThread" << endl;
-        int ret = readMsgLoop();
-        cout << "Read msgLoop terminated with: " << ret << endl;
-        cout << "[Debug] -- ReaderThread exiting" << endl;
     }
 
     void RdmaContext::sendNotification(CommunicationCode code)
@@ -766,7 +750,7 @@ namespace rdma
     }
 
     int COUNT = 0; // for debugging
-    int RdmaContext::writeMsg(int src_fd, struct sock_id original_socket)
+    int RdmaContext::writeMsg(int src_fd, struct sock_id original_socket, const std::function<bool()> &is_valid)
     {
         uint32_t start_w_index, end_w_index, available_space;
 
@@ -793,6 +777,12 @@ namespace rdma
 
             if (stop.load() == true)
                 throw runtime_error("Stopping writeMsg due to stop signal");
+
+            if (!is_valid())
+            {
+                cerr << "[Debug   ] -- Socket not valid anymore, stopping writeMsg" << endl;
+                return 1; // stop writing if the socket is not valid anymore
+            }
         }
 
         // write all possible messages in the buffer
@@ -834,74 +824,6 @@ namespace rdma
         }
 
         return 1;
-    }
-
-    inline int RdmaContext::parseMsg(rdma_msg_t &msg)
-    {
-        // retrive the proxy_fd
-        int fd;
-
-        auto it = sockid_to_fd_map.find(msg.original_sk_id);
-        if (it != sockid_to_fd_map.end())
-        {
-            fd = it->second;
-        }
-        else
-        {
-            // loockup the original socket
-            // swap the ip and port
-            struct sock_id swapped;
-            swapped.dip = msg.original_sk_id.sip;
-            swapped.sip = msg.original_sk_id.dip;
-            swapped.dport = msg.original_sk_id.sport;
-            swapped.sport = msg.original_sk_id.dport;
-
-            // find the corresponding proxy socket
-            struct sock_id proxy_sk_id = bpf_ctx.getProxySkFromAppSk(swapped);
-
-            // find the original socket in the lists
-            int i = 0;
-            for (; i < Config::NUMBER_OF_SOCKETS; i++)
-            {
-                if (client_sks[i].sk_id.dip == proxy_sk_id.dip &&
-                    client_sks[i].sk_id.sport == proxy_sk_id.sport &&
-                    client_sks[i].sk_id.sip == proxy_sk_id.sip &&
-                    client_sks[i].sk_id.dport == proxy_sk_id.dport)
-                {
-                    sockid_to_fd_map[msg.original_sk_id] = client_sks[i].fd;
-                    fd = client_sks[i].fd;
-                    break;
-                }
-            }
-
-            if (i == Config::NUMBER_OF_SOCKETS)
-            {
-                cerr << "Socket not found in the list: "
-                     << msg.original_sk_id.sip << ":" << msg.original_sk_id.sport
-                     << " -> " << msg.original_sk_id.dip << ":" << msg.original_sk_id.dport
-                     << endl;
-                return 1; // socket not found, cannot parse the message
-            }
-        }
-
-        int rem = msg.msg_size;
-        char *ptr = msg.msg;
-        int c = 0;
-        while (rem > 0)
-        {
-            int size = send(fd, ptr, rem, 0);
-            if (size <= 0)
-            {
-                cerr << "Failed to send message - parseMsg: " + string(strerror(errno)) << endl;
-                return 1;
-            }
-            rem -= size;
-            ptr += size;
-            if (c++ > 1)
-                cout << "Warn - " << c << endl;
-        }
-
-        return 0;
     }
 
     void RdmaContext::updateRemoteReadIndexThread()
@@ -958,36 +880,111 @@ namespace rdma
         }
     }
 
-    int RdmaContext::readMsgLoop()
+    inline void sendMsg(struct mmsghdr *msgs, int n_of_msg, int dest_fd)
+    {
+        int sent = 0;
+        while (sent < n_of_msg)
+        {
+            int n = sendmmsg(dest_fd, &msgs[sent], n_of_msg - sent, MSG_NOSIGNAL | MSG_ZEROCOPY);
+            if (n < 0)
+            {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                {
+                    // std::this_thread::yield();
+                    cerr << "WARN!!" << endl;
+                    continue;
+                }
+                perror("sendmmsg");
+                throw std::runtime_error("sendmmsg failed");
+            }
+            else if (n == 0)
+            {
+                throw std::runtime_error("sendmmsg sent 0 messages, socket closed?");
+            }
+            sent += n;
+        }
+    }
+
+    int RdmaContext::readMsgLoop(int dest_fd, sock_id_t target_sk, const std::function<bool()> &is_valid)
     {
         if (!buffer_to_read)
-            throw runtime_error("ringbuffer is nullptr - readMsgLoop");
+            throw runtime_error("ringbuffer is nullptr - readMsg");
+
+        struct mmsghdr msgs[Config::IOVS_BATCH_SIZE];
+        struct iovec iovs[Config::IOVS_BATCH_SIZE];
+        int idx_batch = 0;
+
+        memset(msgs, 0, sizeof(msgs));
+        memset(iovs, 0, sizeof(iovs));
+        for (int i = 0; i < Config::IOVS_BATCH_SIZE; i++)
+        {
+            msgs[i].msg_hdr.msg_iov = &iovs[i];
+            msgs[i].msg_hdr.msg_iovlen = 1;
+        }
+
+        auto flush = [&]
+        {
+            /*if (idx_batch != Config::IOVS_BATCH_SIZE)
+                cout << "Flushing partial batch: " << idx_batch << endl;*/
+            sendMsg(msgs, idx_batch, dest_fd);
+            buffer_to_read->local_read_index.fetch_add(idx_batch, std::memory_order_release);
+            idx_batch = 0;
+        };
+
+        int c = 0;
 
         while (stop.load() == false)
         {
             for (size_t i = 0; i < Config::MAX_MSG_BUFFER;)
             {
-                rdma_msg_t *msg = &buffer_to_read->data[i];
+                rdma_msg_t *msg;
 
-                uint32_t sn = seq_number_read.fetch_add(1);
-                while (msg->seq_number_head != sn || msg->seq_number_tail != sn)
+                while (true)
                 {
-                    // this_thread::yield();
+                    uint32_t sn = seq_number_read.load();
+                    i = RING_IDX(sn - 1);
+                    msg = &buffer_to_read->data[i];
+
                     if (stop.load() == true)
                         return 1; // stop the reading
+
+                    if (idx_batch != 0)
+                        flush();
+
+                    if (!is_valid())
+                    {
+                        cerr << "[Debug   ] -- Socket not valid anymore, stopping readMsgLoop" << endl;
+                        return 1;
+                    }
+
+                    if (msg->seq_number_tail != sn || msg->seq_number_head != sn)
+                        continue;
+
+                    if (sk::SocketMng::areSkEqual(msg->original_sk_id, target_sk))
+                    {
+                        seq_number_read.fetch_add(1);
+                        break;
+                    }
                 }
 
-                // cout << "READ: sn: " << sn << " size: " << msg->msg_size << endl;
+                /*if (msg->msg_size != RdmaTestConf::MAX_PAYLOAD_SIZE)
+                {
+                    double perc = (double)msg->msg_size / (double)RdmaTestConf::MAX_PAYLOAD_SIZE * 100.0;
+                    cout << "Received msg size: " << msg->msg_size << " expected: " << RdmaTestConf::MAX_PAYLOAD_SIZE << " - " << perc << "%" << endl;
+                }*/
 
-                if (msg->msg_size == 0 || msg->msg_size > Config::MAX_PAYLOAD_SIZE || msg->number_of_slots != 1)
-                    throw runtime_error("Invalid message received - readMsgLoop");
+                if (msg->msg_size == 0 || msg->number_of_slots != 1)
+                    throw runtime_error("Invalid message received: " + to_string(msg->msg_size) + ", " + to_string(msg->number_of_slots));
 
-                int ret = parseMsg(*msg);
-                /*if (ret != 0)
-                    return ret;*/
+                iovs[idx_batch].iov_base = msg->msg;
+                iovs[idx_batch].iov_len = msg->msg_size;
+
+                idx_batch++;
+
+                if (idx_batch == Config::IOVS_BATCH_SIZE)
+                    flush();
 
                 i += msg->number_of_slots;
-                buffer_to_read->local_read_index.fetch_add(msg->number_of_slots, memory_order_release);
             }
         }
 

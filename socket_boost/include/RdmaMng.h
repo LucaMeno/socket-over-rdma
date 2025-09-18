@@ -20,16 +20,30 @@
 #include "BpfMng.h"
 #include "SocketMng.h"
 #include "common.h"
+#include "Logger.h"
 
 namespace rdmaMng
 {
-    struct WriterThreadData
+    struct ThreadContext
     {
+        int fd;
+        sock_id proxy;
         sock_id app;
         rdma::RdmaContext *ctx;
 
-        WriterThreadData(sock_id a, rdma::RdmaContext *c) : app(a), ctx(c) {}
-        WriterThreadData() : app({0}), ctx(nullptr) {}
+        ThreadContext(sock_id p, sock_id a, int f, rdma::RdmaContext *c) : proxy(p), app(a), fd(f), ctx(c) {}
+        ThreadContext(sock_id p, int f) : proxy(p), app({0, 0, 0, 0}), fd(f), ctx(nullptr) {}
+        ThreadContext() : proxy({0, 0, 0, 0}), app({0, 0, 0, 0}), fd(-1), ctx(nullptr) {}
+
+        std::string toString() const
+        {
+            std::ostringstream oss;
+            oss << "FD: " << fd
+                << " | Proxy: " << sk::SocketMng::getPrintableSkId(proxy)
+                << " | App: " << sk::SocketMng::getPrintableSkId(app)
+                << " | Ctx: " << (ctx ? "ok" : "nullptr");
+            return oss.str();
+        }
     };
 
     class RdmaMng
@@ -39,85 +53,12 @@ namespace rdmaMng
         RdmaMng(uint16_t proxy_port, uint32_t proxy_ip, uint16_t rdma_port, const std::vector<uint16_t> &target_ports_to_set);
         ~RdmaMng();
 
-        void run();
-        void connect(struct sock_id original_socket, int proxy_sk_fd);
-
         static int wrapper(void *ctx, void *data, size_t len)
         {
             auto *self = static_cast<RdmaMng *>(ctx);
             return self->bpfEventHandler(data, len);
         }
 
-        int bpfEventHandler(void *data, size_t len)
-        {
-            struct userspace_data_t *user_data = (struct userspace_data_t *)data;
-
-            // Lambda for logging
-            auto logSocketEvent = [this](const std::string &prefix,
-                                         struct sock_id &app,
-                                         struct sock_id &proxy,
-                                         const std::string &role,
-                                         int fd)
-            {
-                std::cout << prefix << " "
-                          << sk_ctx.get_printable_sockid(&app) << " <-> "
-                          << sk_ctx.get_printable_sockid(&proxy) << " - "
-                          << role << " - fd: " << fd
-                          << std::endl;
-            };
-
-            switch (user_data->event_type)
-            {
-            case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
-            {
-                int ret;
-                int proxy_fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
-                connect(user_data->association.app, proxy_fd);
-
-                logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "CLIENT", proxy_fd);
-
-                break;
-            }
-            case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
-            {
-                logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "SERVER", -1);
-                // server side, do not connect the RDMA context
-                break;
-            }
-            case REMOVE_SOCKET:
-            {
-                int ret;
-                int proxy_fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
-
-                {
-                    std::unique_lock<std::mutex> lock(mtx_sk_removal_tx);
-                    sk_to_remove_tx.push_back(proxy_fd);
-                }
-                remove_sk_tx.store(true, std::memory_order_release);
-
-                {
-                    std::unique_lock<std::mutex> lock(mtx_sk_removal_rx);
-                    struct sock_id swapped;
-                    swapped.sip = user_data->association.app.dip;
-                    swapped.dip = user_data->association.app.sip;
-                    swapped.dport = user_data->association.app.sport;
-                    swapped.sport = user_data->association.app.dport;
-                    sk_to_remove_rx.push_back(swapped);
-                }
-                remove_sk_rx.store(true, std::memory_order_release);
-
-                logSocketEvent("REMOVE", user_data->association.app, user_data->association.proxy, "ND", proxy_fd);
-                break;
-            }
-            default:
-                std::cerr << "Unknown event type: " << user_data->event_type << std::endl;
-                return -1; // Unknown event type
-            }
-
-            return 0;
-        }
-
-        void wakeReaderThread();
 
     private:
         std::vector<std::unique_ptr<rdma::RdmaContext>> ctxs; // vector of active RDMA contexts
@@ -130,24 +71,22 @@ namespace rdmaMng
         std::vector<std::thread> reader_threads;              // threads for writing to the circular buffer
         std::atomic<bool> stop_threads;                       // flag to stop the threads
 
-        std::mutex mtx_sk_removal_tx;
-        std::vector<int> sk_to_remove_tx;
-        std::atomic<bool> remove_sk_tx;
-
-        std::mutex mtx_sk_removal_rx;
-        std::vector<struct sock_id> sk_to_remove_rx;
-        std::atomic<bool> remove_sk_rx;
-
         std::mutex mtx_reader_thread;
         std::condition_variable cv_reader_thread;
         std::vector<struct sock_id> ready_sockets_to_read;
+
+        std::unordered_map<int, std::atomic<sock_id_t>> fd_sk_asoc_map; // map of fd to sock_id association
+
+        std::mutex mtx_ctx_access;
+
+        Logger logger{"RdmaMng"};
 
         // Background thread functions
         void launchBackgroundThreads();
         void listenThread();
         void serverThread();
-        void writerThread(std::vector<sk::client_sk_t> sk_to_monitor);
-        void readerThread(sk::client_sk_t target_socket);
+        void writerThread(std::vector<ThreadContext> tcs);
+        void readerThread(ThreadContext tc);
 
         // Utils
         int getFreeContextId();
@@ -157,6 +96,13 @@ namespace rdmaMng
         void parseNotification(rdma::RdmaContext &ctx);
         std::vector<int> waitOnSelect(const std::vector<int> &fds);
 
-        WriterThreadData populateWriterThreadData(std::vector<sk::client_sk_t> &sockets, int fd);
+        void fillThreadContext(ThreadContext &tc);
+        void setFdSkAssociation(int fd, sock_id_t sk_id);
+        bool isFdValid(int fd);
+
+        int bpfEventHandler(void *data, size_t len);
+        void connect(struct sock_id original_socket);
+        void wakeReaderThread();
+        void run();
     };
 }

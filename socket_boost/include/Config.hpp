@@ -53,6 +53,11 @@ public:
     inline static const size_t MAX_RECV_SGE = 1;
     inline static const int MAX_CQ_ENTRIES = POLL_CQ_AFTER_WR; // Maximum number of entries in the completion queue
 
+    /* LOGGER */
+    inline static const char *LOG_FILE = "rdma_proxy.log";
+    inline static const char *LOG_FILE_ERR = "rdma_proxy_err.log";
+    inline static const bool LOG_TO_FILE = false;
+
     static std::vector<uint16_t> getTargetPorts()
     {
         return {TARGET_PORT_1, TARGET_PORT_2, TARGET_PORT_3};

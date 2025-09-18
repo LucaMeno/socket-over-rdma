@@ -36,12 +36,15 @@ int main(int argc, char *argv[])
 {
     try
     {
+        Logger logger("Main");
+
         signal(SIGINT, handle_signal);
         signal(SIGTSTP, handle_signal);
 
         if (argc != 1 && argc != 3)
         {
             cerr << "Usage: " << argv[0] << " [RDMA_dev_idx] [RDMA_dev_GID_idx]" << endl;
+            logger.log(LogLevel::ERROR, "Invalid command line arguments");
             return EXIT_FAILURE;
         }
 
@@ -54,7 +57,7 @@ int main(int argc, char *argv[])
             devGidIdx = parseNumber(argv[2]);
             if (!devIdx || !devGidIdx)
             {
-                cerr << "Invalid server number: " << argv[1] << " Setting to default (0)." << endl;
+                logger.log(LogLevel::WARNING, "Invalid server number: " + std::string(argv[1]) + " Setting to default (0).");
                 devIdx = Config::DEFAULT_DEV_INDEX;
                 devGidIdx = Config::DEFAULT_DEV_GID_INDEX;
             }
@@ -72,13 +75,12 @@ int main(int argc, char *argv[])
                            inet_addr(Config::SERVER_IP),
                            Config::RDMA_SERVER_PORT,
                            Config::getTargetPorts());
-        r.run();
 
-        cout << "Waiting for messages, press Ctrl+C to exit..." << endl;
-        cout << "-----------------------------------------------------------" << endl;
+        logger.log(LogLevel::INFO, "Waiting for messages, press Ctrl+C to exit...");
+        logger.log(LogLevel::INFO, "-----------------------------------------------------------");
         while (!STOP)
             pause(); // wait for signal
-        cout << "-----------------------------------------------------------" << endl;
+        logger.log(LogLevel::INFO, "-----------------------------------------------------------");
     }
     catch (const std::exception &e)
     {

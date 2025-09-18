@@ -329,17 +329,10 @@ namespace bpf
 
         int err = bpf_map_lookup_elem(socket_association_fd, &proxy, &app);
 
-        if (err != 0)
+        if (err != 0 && errno != ENOENT)
             throw runtime_error("Failed to lookup socket association map - getAppSkFromProxySk");
 
         return app.app;
-    }
-
-    int BpfMng::getProxyFdFromAppSk(struct sock_id app_sk)
-    {
-        int fd = -1;
-        int err = bpf_map_lookup_elem(sock_proxyfd_association_fd, &app_sk, &fd);
-        return fd;
     }
 
     void BpfMng::wrapClose(int fd)

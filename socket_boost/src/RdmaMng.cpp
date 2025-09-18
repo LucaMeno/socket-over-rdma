@@ -18,7 +18,7 @@ namespace rdmaMng
             .handle_event = &RdmaMng::wrapper};
         bpf_ctx.init(handler, target_ports_to_set, proxy_port, sk_ctx.client_sk_fd);
 
-        cout << "==================  CONFIGURATION ==================" << endl;
+        logger.log(LogLevel::CONFIG, "==================  CONFIGURATION ==================");
 
         cout << "Configuration:" << endl;
         cout << " RDMA port: " << rdma_port << endl;
@@ -31,10 +31,17 @@ namespace rdmaMng
         cout << " Q pairs: " << Config::QP_N << endl;
         cout << " Target ports: ";
         for (const auto &port : Config::getTargetPorts())
-            cout << port << " ";
+            logger.log(LogLevel::CONFIG, "  " + std::to_string(port));
 
-        cout << endl
-             << "=======================================================" << endl;
+        logger.log(LogLevel::CONFIG, "=======================================================");
+
+        for (int i = 0; i < Config::NUMBER_OF_SOCKETS; i++)
+        {
+            int fd = sk_ctx.client_sk_fd[i].fd;
+            fd_sk_asoc_map[fd] = {0};
+        }
+
+        run();
     }
 
     RdmaMng::~RdmaMng()
@@ -42,18 +49,18 @@ namespace rdmaMng
         stop_threads.store(true, memory_order_release);
 
         // Cleanup RDMA contexts
-        cout << "[Cleanup ] Clearing RDMA contexts..." << endl;
+        cout << "[Cleanup ] -- Clearing RDMA contexts..." << endl;
         ctxs.clear();
-        cout << "[Cleanup ] RDMA contexts cleared" << endl;
+        cout << "[Cleanup ] -- RDMA contexts cleared" << endl;
 
         for (auto &ctx : ctxs)
             ctx->stop.store(true);
 
         if (server_thread.joinable())
         {
-            cout << "[Shutdown] Waiting for server thread to finish..." << endl;
+            cout << "[Shutdown] -- Waiting for server thread to finish..." << endl;
             server_thread.join();
-            cout << "[Shutdown] Server thread joined" << endl;
+            cout << "[Shutdown] -- Server thread joined" << endl;
         }
 
         for (auto &thread : writer_threads)
@@ -80,6 +87,60 @@ namespace rdmaMng
         // bpf and socket managers cleanup are handled in their destructors automatically
     }
 
+    int RdmaMng::bpfEventHandler(void *data, size_t len)
+    {
+        struct userspace_data_t *user_data = (struct userspace_data_t *)data;
+
+        // Lambda for logging
+        auto logSocketEvent = [this](const std::string &prefix,
+                                     struct sock_id &app,
+                                     struct sock_id &proxy,
+                                     const std::string &role,
+                                     int fd)
+        {
+            std::cout << prefix << " "
+                      << sk::SocketMng::getPrintableSkId(app) << " <-> "
+                      << sk::SocketMng::getPrintableSkId(proxy) << " - "
+                      << role << " - fd: " << fd
+                      << std::endl;
+        };
+
+        switch (user_data->event_type)
+        {
+        case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
+        {
+            // client side, connect the RDMA context
+            connect(user_data->association.app);
+            int fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
+            logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "CLIENT", fd);
+            setFdSkAssociation(fd, user_data->association.app);
+            wakeReaderThread();
+            break;
+        }
+        case BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB:
+        {
+            // server side, do not connect the RDMA context
+            int fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
+            logSocketEvent("NEW", user_data->association.app, user_data->association.proxy, "SERVER", fd);
+            setFdSkAssociation(fd, user_data->association.app);
+            wakeReaderThread();
+            break;
+        }
+        case REMOVE_SOCKET:
+        {
+            int fd = sk_ctx.getProxyFdFromSockid(user_data->association.proxy);
+            setFdSkAssociation(fd, {0});
+            logSocketEvent("REMOVE", user_data->association.app, user_data->association.proxy, "ND", fd);
+            break;
+        }
+        default:
+            std::cerr << "Unknown event type: " << user_data->event_type << std::endl;
+            return -1; // Unknown event type
+        }
+
+        return 0;
+    }
+
     void RdmaMng::run()
     {
         // start the server thread
@@ -97,18 +158,21 @@ namespace rdmaMng
             int n_fd = per_thread + (leftover-- > 0 ? 1 : 0);
 
             // Slice the global - or externally supplied - client_sks array
-            std::vector<sk::client_sk_t> sockets;
-            sockets.reserve(n_fd);
+            std::vector<ThreadContext> tcs;
+            tcs.reserve(n_fd);
             for (int k = 0; k < n_fd; ++k)
-                sockets.push_back(sk_ctx.client_sk_fd[idx++]);
+            {
+                auto csk = sk_ctx.client_sk_fd[idx++];
+                tcs.push_back(ThreadContext(csk.sk_id, csk.fd));
+            }
 
             // Launch the writer thread; capture *this and move the socket list in
             try
             {
                 writer_threads.emplace_back(
-                    [this, sockets = std::move(sockets)]() mutable
+                    [this, tcs = std::move(tcs)]() mutable
                     {
-                        writerThread(std::move(sockets));
+                        writerThread(std::move(tcs));
                     });
             }
             catch (const std::system_error &e)
@@ -124,7 +188,7 @@ namespace rdmaMng
             reader_threads.emplace_back(
                 [this, target_socket = sk_ctx.client_sk_fd[i]]()
                 {
-                    readerThread(target_socket);
+                    readerThread(ThreadContext(target_socket.sk_id, target_socket.fd));
                 });
         }
     }
@@ -151,7 +215,10 @@ namespace rdmaMng
 
                 ctx->serverHandleNewClient(sc);
 
-                ctxs.push_back(std::move(ctx));
+                {
+                    std::scoped_lock lock(mtx_ctx_access);
+                    ctxs.push_back(std::move(ctx));
+                }
 
                 launchBackgroundThreads();
             }
@@ -166,37 +233,43 @@ namespace rdmaMng
 
     int RdmaMng::getFreeContextId()
     {
+        scoped_lock lock(mtx_ctx_access);
         ctxs.push_back(make_unique<rdma::RdmaContext>(bpf_ctx, sk_ctx.client_sk_fd));
         return ctxs.size() - 1; // Return the index of the newly added context
     }
 
-    WriterThreadData RdmaMng::populateWriterThreadData(std::vector<sk::client_sk_t> &sockets, int fd)
+    void RdmaMng::setFdSkAssociation(int fd, sock_id_t sk_id)
     {
-        // Find the socket in the list of client sockets
-        auto skIt = std::find_if(sockets.begin(), sockets.end(),
-                                 [&](const auto &s)
-                                 { return s.fd == fd; });
+        if (fd < 0)
+            throw std::runtime_error("Invalid fd in setFdSkAssociation");
+        fd_sk_asoc_map[fd] = sk_id;
+    }
 
-        if (skIt == sockets.end())
-            throw std::runtime_error("Socket non trovato - populateWriterThreadData");
+    bool RdmaMng::isFdValid(int fd)
+    {
+        return sk::SocketMng::isSkIdValid(fd_sk_asoc_map[fd].load());
+    }
+
+    void RdmaMng::fillThreadContext(ThreadContext &tc)
+    {
+        if (tc.fd < 0 || !sk::SocketMng::isSkIdValid(tc.proxy))
+            throw std::runtime_error("Invalid ThreadContext parameters - fillThreadContext");
 
         // From the proxy socket, retrieve the app socket
-        sock_id app = bpf_ctx.getAppSkFromProxySk(skIt->sk_id);
+        tc.app = fd_sk_asoc_map[tc.fd].load();
 
         // look for the context with the same remote IP
-        auto ctxIt = std::find_if(ctxs.begin(), ctxs.end(),
-                                  [&](const auto &c)
-                                  { return c->remote_ip == app.dip; });
-
-        if (ctxIt == ctxs.end())
-            throw std::runtime_error("Context non trovato per IP: " + std::to_string(app.dip));
-
-        rdma::RdmaContext *ctx = ctxIt->get();
+        while (true)
+        {
+            tc.ctx = getContextByIp(tc.app.dip);
+            if (tc.ctx != nullptr)
+                break;
+            if (stop_threads.load())
+                return;
+        }
 
         // Wait for the context to be ready
-        ctx->waitForContextToBeReady();
-
-        return WriterThreadData(app, ctx);
+        tc.ctx->waitForContextToBeReady();
     }
 
     void RdmaMng::wakeReaderThread()
@@ -205,28 +278,39 @@ namespace rdmaMng
         cv_reader_thread.notify_all();
     }
 
-    void RdmaMng::readerThread(sk::client_sk_t target_socket)
+    void RdmaMng::readerThread(ThreadContext tc)
     {
+        auto isValid = [this, fd = tc.fd]() -> bool
+        {
+            return isFdValid(fd);
+        };
+
         try
         {
-            sock_id_t sk = target_socket.sk_id;
-            int fd = target_socket.fd;
-
-            cout << "Reader thread initializing for socket: " << sk_ctx.get_printable_sockid(&sk) << " fd: " << fd << endl;
-
-            this_thread::sleep_for(chrono::seconds(5));
-
-            // wait for the socket to be assigned
+            while (stop_threads.load() == false)
             {
-                std::unique_lock<std::mutex> lock(mtx_reader_thread);
-                cv_reader_thread.wait(lock, [this, &sk]()
-                                      { return bpf_ctx.getAppSkFromProxySk(sk).dip != 0 || stop_threads.load(); });
+                // wait for the socket to be assigned
+                {
+                    std::unique_lock<std::mutex> lock(mtx_reader_thread);
+                    cv_reader_thread.wait(lock, [this, &tc, isValid]()
+                                          { return isValid() || stop_threads.load(); });
+                }
+
+                if (stop_threads.load())
+                    return;
+
+                fillThreadContext(tc);
+                cout << "[RT      ] -- RT started: " << tc.toString() << endl;
+
+                sock_id_t swapped_sk = {0};
+                swapped_sk.sip = tc.app.dip;
+                swapped_sk.dip = tc.app.sip;
+                swapped_sk.sport = tc.app.dport;
+                swapped_sk.dport = tc.app.sport;
+
+                tc.ctx->readMsgLoop(tc.fd, swapped_sk, isValid);
+                tc.ctx = nullptr; // reset the context to force re-fetching it
             }
-
-            if (stop_threads.load())
-                return;
-
-            cout << "Reader thread started for socket: " << sk_ctx.get_printable_sockid(&sk) << " fd: " << fd << endl;
         }
         catch (const std::exception &e)
         {
@@ -235,93 +319,59 @@ namespace rdmaMng
         }
     }
 
-    void RdmaMng::writerThread(vector<sk::client_sk_t> sk_to_monitor)
+    inline bool areSkEqual(const sock_id_t &sk1, const sock_id_t &sk2)
     {
-        if (sk_to_monitor.empty())
+        return std::memcmp(&sk1, &sk2, sizeof(sock_id_t)) == 0;
+    }
+
+    void RdmaMng::writerThread(vector<ThreadContext> tcs)
+    {
+        if (tcs.empty())
             throw std::runtime_error("No sockets to monitor in writer thread");
 
-        unordered_map<int, WriterThreadData> writer_map;
-
-        int epoll_fd = epoll_create1(0);
-        if (epoll_fd < 0)
-            throw std::runtime_error("Failed to create epoll instance");
-
-        for (const auto &sk : sk_to_monitor)
+        unordered_map<int, ThreadContext> writer_map;
+        vector<int> sk_fds;
+        for (const auto &tc : tcs)
         {
-            if (sk.fd < 0)
-                throw std::runtime_error("Invalid socket fd in writer thread");
-
-            struct epoll_event ev = {};
-            ev.events = EPOLLIN; // interested in readable events
-            ev.data.fd = sk.fd;
-
-            if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sk.fd, &ev) == -1)
-                throw std::runtime_error("epoll_ctl failed for fd " + std::to_string(sk.fd));
+            sk_fds.push_back(tc.fd);
+            writer_map[tc.fd] = tc;
         }
-
-        const int MAX_EVENTS = 64;
-        epoll_event events[MAX_EVENTS];
 
         try
         {
             while (!stop_threads.load())
             {
-                int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, Config::TIME_STOP_SELECT_SEC * 1000);
-
-                if (nfds == -1)
-                {
-                    if (errno == EINTR)
-                        break;
-                    throw std::runtime_error("epoll_wait failed");
-                }
+                auto ready_fds = waitOnSelect(sk_fds);
 
                 if (stop_threads.load())
                     break;
 
-                if (remove_sk_tx.load(std::memory_order_acquire))
+                for (int i = 0; i < ready_fds.size(); ++i)
                 {
-                    std::unique_lock<std::mutex> lock(mtx_sk_removal_tx);
+                    int fd = ready_fds[i];
+                    sock_id_t sk_id;
 
-                    for (auto it_fd = sk_to_remove_tx.begin(); it_fd != sk_to_remove_tx.end();)
+                    while (true)
                     {
-                        int fd = *it_fd;
-
-                        auto it = writer_map.find(fd);
-                        if (it != writer_map.end())
-                        {
-                            writer_map.erase(it);
-                            // cout << "Removed fd " << fd << " from writer_map" << endl;
-
-                            // Remove FD from list since it was processed
-                            it_fd = sk_to_remove_tx.erase(it_fd);
-                        }
-                        else
-                        {
-                            // Keep FD in list if it’s not in writer_map yet
-                            ++it_fd;
-                        }
+                        sk_id = fd_sk_asoc_map[fd].load();
+                        if (sk::SocketMng::isSkIdValid(sk_id))
+                            break;
+                        if (stop_threads.load())
+                            return;
                     }
 
-                    if (sk_to_remove_tx.empty())
-                        remove_sk_tx.store(false, std::memory_order_release);
-                }
-
-                for (int i = 0; i < nfds; ++i)
-                {
-                    int fd = events[i].data.fd;
-
-                    WriterThreadData data;
-                    auto it = writer_map.find(fd);
-                    if (it == writer_map.end())
+                    if (!sk::SocketMng::areSkEqual(writer_map[fd].app, sk_id))
                     {
-                        data = populateWriterThreadData(sk_to_monitor, fd);
-                        it = writer_map.emplace(fd, std::move(data)).first;
+                        writer_map[fd].ctx = nullptr; // force re-fetching the context if the app socket changed
+                        fillThreadContext(writer_map[fd]);
                     }
 
-                    WriterThreadData &writer_data = it->second;
+                    auto isValid = [this, fd]() -> bool
+                    {
+                        return isFdValid(fd);
+                    };
 
-                    // int ret = writer_data.ctx->readMsgFromSk(fd, writer_data.app);
-                    int ret = writer_data.ctx->writeMsg(fd, writer_data.app);
+                    int ret = writer_map[fd].ctx->writeMsg(fd, sk_id, isValid);
 
                     if (ret <= 0 && errno != EAGAIN && errno != EWOULDBLOCK)
                         throw runtime_error("Connection closed - writerThread err: " + std::to_string(ret) + " errno: " + std::to_string(errno));
@@ -347,7 +397,7 @@ namespace rdmaMng
         notification_thread = thread(&RdmaMng::listenThread, this);
     }
 
-    void RdmaMng::connect(struct sock_id original_socket, int proxy_sk_fd)
+    void RdmaMng::connect(struct sock_id original_socket)
     {
         rdma::RdmaContext *ctx = getContextByIp(original_socket.dip);
 
@@ -365,6 +415,7 @@ namespace rdmaMng
 
     rdma::RdmaContext *RdmaMng::getContextByIp(uint32_t remote_ip)
     {
+        std::scoped_lock lock(mtx_ctx_access);
         for (auto &ctx : ctxs)
             if (ctx.get()->remote_ip == remote_ip)
                 return ctx.get();

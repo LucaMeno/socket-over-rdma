@@ -42,6 +42,7 @@ add_custom_command(
 )
 
 add_custom_target(bpf_gen ALL DEPENDS ${SKEL_HDR})
+target_link_libraries(scap PRIVATE atomic)
 
 # === PUSH MODIFICATIONS ===
 add_custom_target(push
