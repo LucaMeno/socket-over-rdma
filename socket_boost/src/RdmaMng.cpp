@@ -92,6 +92,7 @@ namespace rdmaMng
 
         // start the server thread
         server_thread = thread(&RdmaMng::serverThread, this);
+        pthread_setname_np(server_thread.native_handle(), "SrvThrd");
 
         // start the writer threads
         const int per_thread = Config::NUMBER_OF_SOCKETS / Config::N_WRITER_THREADS;
@@ -121,6 +122,7 @@ namespace rdmaMng
                     {
                         writerThread(std::move(tcs));
                     });
+                pthread_setname_np(writer_threads.back().native_handle(), "WrtThrd");
             }
             catch (const std::system_error &e)
             {
@@ -137,6 +139,7 @@ namespace rdmaMng
                 {
                     readerThread(ThreadContext(target_socket.sk_id, target_socket.fd));
                 });
+            pthread_setname_np(reader_threads.back().native_handle(), "RdrThrd");
         }
     }
 
@@ -339,6 +342,7 @@ namespace rdmaMng
 
         // Launch the notification thread
         notification_thread = thread(&RdmaMng::listenThread, this);
+        pthread_setname_np(notification_thread.native_handle(), "NotificThrd");
     }
 
     void RdmaMng::connect(struct sock_id original_socket)

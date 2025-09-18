@@ -132,6 +132,7 @@ namespace bpf
         // create a thread to poll the ring buffer
         stop_threads = false;
         rb_thread = thread(&BpfMng::threadPollRb, this);
+        pthread_setname_np(rb_thread.native_handle(), "RbPollThrd");
         rb_thread.detach();
         logger.log(LogLevel::SOCKOPS, "Started polling thread for new socket events.");
 
