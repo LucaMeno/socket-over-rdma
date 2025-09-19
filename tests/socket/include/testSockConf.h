@@ -7,4 +7,5 @@ constexpr size_t BUFFER_SIZE_BYTES = 1024 * 1024; // 1 MB
 constexpr double DEFAULT_TOTAL_GB = 50.0;         // GB di default
 constexpr uint64_t BYTES_PER_GB = 1024ULL * 1024ULL * 1024ULL;
 constexpr const char *ACK_MESSAGE = "OK";
-constexpr bool CHECK_INTEGRITY = true; // check data integrity
+constexpr bool CHECK_INTEGRITY = true;     // check data integrity
+constexpr bool WAIT_FOR_USER_INPUT = true; // wait for user input

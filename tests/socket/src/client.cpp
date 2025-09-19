@@ -91,6 +91,12 @@ int main(int argc, char *argv[])
     char *buf = new char[BUFFER_SIZE_BYTES];
     std::memset(buf, 0, BUFFER_SIZE_BYTES);
 
+    if (WAIT_FOR_USER_INPUT)
+    {
+        std::cout << "Press ENTER to start sending " << gb_to_send << " GB\n";
+        std::cin.get();
+    }
+
     std::cout << "Sending " << gb_to_send << " GB…\n";
 
     uint64_t sent_bytes = 0;
