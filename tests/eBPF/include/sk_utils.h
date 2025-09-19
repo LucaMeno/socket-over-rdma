@@ -2,7 +2,7 @@
 #ifndef SOCKET_UTILS_H
 #define SOCKET_UTILS_H
 
-#define NUMBER_OF_SOCKETS 4
+#define NUMBER_OF_SOCKETS 10
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -65,3 +65,7 @@ rdma_server
 build/
 bin/
 obj/
+
+# python venv
+venv/
+env/
