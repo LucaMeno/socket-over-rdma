@@ -10,7 +10,7 @@ OBJ_DIR   := $(BUILD_DIR)/obj
 CLIENT_BIN := $(BIN_DIR)/client
 SERVER_BIN := $(BIN_DIR)/server
 
-PUSH = rsync -avz --delete /home/${USER}/poli/socket-over-rdma/socket_boost/tests/socket/build poli-server:/home/${USER}/poli/socket-over-rdma/test/build
+PUSH = rsync -avz --delete /home/${USER}/poli/socket-over-rdma/tests/socket/build poli-server:/home/${USER}/poli/socket-over-rdma/test/build
 
 .PHONY: all
 all: $(CLIENT_BIN) $(SERVER_BIN) 

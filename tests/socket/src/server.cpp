@@ -79,7 +79,7 @@ int main(int argc, char *argv[])
     int i = 0;
     bool is_first = true;
     uint64_t counter = 0;
-    uint64_t counter_test;
+    uint64_t local_counter_test;
     while (quantity_of_data_to_rx > 0)
     {
         ssize_t n = recv_all(client_fd, buf, BUFFER_SIZE_BYTES);
@@ -99,16 +99,18 @@ int main(int argc, char *argv[])
         quantity_of_data_to_rx -= static_cast<uint64_t>(n);
 
         // check if the data is valid
-        memcpy(&counter_test, buf, sizeof(counter_test));
-        if (is_first && counter_test != counter)
+        if (CHECK_INTEGRITY)
         {
-            is_first = false;
-            std::cerr << "Data mismatch: expected " << counter << ", got " << counter_test << "\n";
-            /*close(client_fd);
-            delete[] buf;
-            return 1;*/
+            memcpy(&local_counter_test, buf, sizeof(local_counter_test));
+            if (is_first && local_counter_test != counter)
+            {
+                is_first = false;
+                cerr << "------------------- Data mismatch: expected " << counter
+                     << ", got " << local_counter_test << "\n";
+                throw runtime_error("Data integrity error");
+            }
+            ++counter;
         }
-        ++counter;
 
         // waste time for testing purposes
         // std::this_thread::sleep_for(std::chrono::milliseconds(1));

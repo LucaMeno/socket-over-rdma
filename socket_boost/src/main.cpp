@@ -80,11 +80,12 @@ int main(int argc, char *argv[])
 
         r.run();
 
-        logger.log(LogLevel::INFO, "Waiting for messages, press Ctrl+C to exit...");
-        logger.log(LogLevel::INFO, "-----------------------------------------------------------");
+        logger.log(LogLevel::MAIN, "Waiting for messages, press Ctrl+C to exit...");
+        logger.log(LogLevel::MAIN, "-----------------------------------------------------------");
         while (!STOP)
             pause(); // wait for signal
-        logger.log(LogLevel::INFO, "-----------------------------------------------------------");
+        logger.log(LogLevel::MAIN, "Stopping application...");
+        logger.log(LogLevel::MAIN, "-----------------------------------------------------------");
     }
     catch (const std::exception &e)
     {

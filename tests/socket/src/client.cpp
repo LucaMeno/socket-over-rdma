@@ -15,27 +15,6 @@ struct retErr
     ssize_t err;
 };
 
-struct retErr send_all(int socket, void *buffer, size_t length)
-{
-    size_t total_received = 0;
-    while (total_received < length)
-    {
-        ssize_t bytes = send(socket, (char *)buffer + total_received, length - total_received, 0);
-        if (bytes <= 0)
-        {
-            struct retErr result;
-            result.writtenUpToNow = total_received;
-            result.err = bytes;
-            return result; // error or disconnect
-        }
-        total_received += bytes;
-    }
-    struct retErr result;
-    result.writtenUpToNow = total_received;
-    result.err = 1; // no error
-    return result;
-}
-
 int send_all_2(int socket, void *buffer, size_t length)
 {
     size_t tot_sent = 0;
@@ -122,10 +101,16 @@ int main(int argc, char *argv[])
 
     while (remaining > 0)
     {
-        memcpy(buf, &counter, sizeof(counter));
+        if (CHECK_INTEGRITY)
+        {
+            memcpy(buf, &counter, sizeof(counter));
+            counter++;
+        }
 
         int n = send_all_2(sock, buf, BUFFER_SIZE_BYTES);
-        
+
+        // this_thread::sleep_for(std::chrono::milliseconds(5));
+
         if (n == 0)
         {
             std::cerr << "Connection closed by peer\n";
@@ -134,11 +119,17 @@ int main(int argc, char *argv[])
 
         sent_bytes += static_cast<uint64_t>(BUFFER_SIZE_BYTES);
         remaining -= static_cast<uint64_t>(BUFFER_SIZE_BYTES);
-        counter++;
 
         if (sent_bytes % (BYTES_PER_GB) == 0)
             cout << "Sent " << (sent_bytes / BYTES_PER_GB) << " GB so far\n";
     }
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    double sec = std::chrono::duration<double>(t1 - t0).count();
+    double gbyte = sent_bytes / static_cast<double>(BYTES_PER_GB);
+    double gbps = gbyte / sec;
+    gbps *= 8; // Convert to Gb/s
+    std::cout << "TX " << gbyte << " GB in " << sec << " s (" << gbps << " Gb/s)\n";
 
     std::cout << "Tx ended, waiting for ACK…\n";
 
@@ -147,10 +138,10 @@ int main(int argc, char *argv[])
     char ack[16] = {};
     ssize_t ackn = recv(sock, ack, sizeof(ack) - 1, 0);
 
-    auto t1 = std::chrono::high_resolution_clock::now();
-    double sec = std::chrono::duration<double>(t1 - t0).count();
-    double gbyte = sent_bytes / static_cast<double>(BYTES_PER_GB);
-    double gbps = gbyte / sec;
+    t1 = std::chrono::high_resolution_clock::now();
+    sec = std::chrono::duration<double>(t1 - t0).count();
+    gbyte = sent_bytes / static_cast<double>(BYTES_PER_GB);
+    gbps = gbyte / sec;
     gbps *= 8; // Convert to Gb/s
 
     if (ackn < 0)

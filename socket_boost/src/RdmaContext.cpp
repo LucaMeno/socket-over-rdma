@@ -215,7 +215,6 @@ namespace rdma
         logger.log(LogLevel::CONNECT, "Local BUFFER client: " + std::to_string(reinterpret_cast<uintptr_t>(ringbuffer_client)));
         logger.log(LogLevel::CONNECT, "Local BUFFER server: " + std::to_string(reinterpret_cast<uintptr_t>(ringbuffer_server)));
         logger.log(LogLevel::CONNECT, "Local RKEY: " + std::to_string(local.rkey));
-        logger.log(LogLevel::CONNECT, "Local GID: ");
         std::ostringstream oss1;
         for (int i = 0; i < 16; i++)
             oss1 << std::hex << std::setw(2) << std::setfill('0') << (int)local.gid.raw[i];
@@ -229,7 +228,6 @@ namespace rdma
         logger.log(LogLevel::CONNECT, "Remote LID: " + std::to_string(remote.lid));
         logger.log(LogLevel::CONNECT, "Remote BUFFER: " + std::to_string(reinterpret_cast<uintptr_t>(remote.addr)));
         logger.log(LogLevel::CONNECT, "Remote RKEY: " + std::to_string(remote.rkey));
-        logger.log(LogLevel::CONNECT, "Remote GID: ");
         std::ostringstream oss2;
         for (int i = 0; i < 16; i++)
             oss2 << std::hex << std::setw(2) << std::setfill('0') << (int)remote.gid.raw[i];
@@ -749,12 +747,12 @@ namespace rdma
         }
     }
 
-    int COUNT = 0; // for debugging
+    uint32_t COUNT = 0; // for debugging
     int RdmaContext::writeMsg(int src_fd, struct sock_id original_socket, const std::function<bool()> &is_valid)
     {
         uint32_t start_w_index, end_w_index, available_space;
 
-        unique_lock<mutex> lock(mtx_tx);
+        scoped_lock<mutex> lock(mtx_tx);
 
         // Wait until there is space in the ring buffer
         while (true)

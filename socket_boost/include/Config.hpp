@@ -27,16 +27,16 @@ public:
     /* RDMA COMMUNICATION */
     inline static const int MAX_MSG_BUFFER = (256);                          // POWER OF 2!!!!!!!!!!!
     inline static const int MAX_PAYLOAD_SIZE = (128 * 1024);                 // 128 KB
-    inline static const int QP_N = 4 + 1;                                    // Number of QPs
+    inline static const int QP_N = 2 + 1;                                    // Number of QPs
     inline static const int DEFAULT_QP_IDX = 0;                              // Default QP index
     inline static const uint32_t TIME_BTW_DATA_READY_NOTIFICATIONS_MS = 500; // 500 ms
     inline static const int N_OF_QUEUES = QP_N - 1;                          // Numbero of flush queue, exclude the default QP
-    inline static const int POLL_CQ_AFTER_WR = 32;                           // Poll the CQ after this number of WR signaled posted
-    inline static const int MAX_WR_PER_POST_PER_QP = 256;                    // Max WR per post per QP
+    inline static const int POLL_CQ_AFTER_WR = 64;                           // Poll the CQ after this number of WR signaled posted
+    inline static const int MAX_WR_PER_POST_PER_QP = 32;                     // Max WR per post per QP
     inline static const int FLUSH_INTERVAL_MS = 2;                           // Flush interval in milliseconds
-    inline static int IOVS_BATCH_SIZE = 8;
+    inline static int IOVS_BATCH_SIZE = 32;
     inline static int N_RETRY_WRITE_MSG = 30;
-    inline static int PRINT_NO_SPACE_EVERY = 100000000;
+    inline static int PRINT_NO_SPACE_EVERY = 1000000;
 
     /* RDMA CONFIG SETUP*/
     inline static const uint16_t RDMA_SERVER_PORT = 7471;   // Port where the RDMA server listens for incoming connections
@@ -59,6 +59,15 @@ public:
     inline static const bool LOG_TO_FILE = false;
     inline static const bool LOG_TIME = false;
     inline static const bool PRINT_CLASS_NAME = false;
+    /**
+     * Log levels:
+     * 0: DEBUG
+     * 1: INFO (INIT, SHUTDOWN, CLEANUP, MAIN)
+     * 2: CONN, DEV, CONF, SKOPS, EBPF
+     * 5: WARNING
+     * 6: ERROR
+     */
+    inline static const int LOG_LEVEL = 0;
 
     static std::vector<uint16_t> getTargetPorts()
     {

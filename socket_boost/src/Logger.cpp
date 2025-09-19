@@ -1,6 +1,4 @@
 #include "Logger.h"
-#include <iostream>
-#include <ctime>
 
 Logger::Logger(std::string clsName) : className(clsName)
 {
@@ -36,60 +34,49 @@ std::string Logger::getTimestamp() const
     return std::string(buffer);
 }
 
-void Logger::log(LogLevel level, const std::string &message)
+LogInfo Logger::getLogInfo(LogLevel level) const
 {
-    std::string levelStr;
     switch (level)
     {
-    case LogLevel::DEBUG_TX:
-        levelStr = "[DEBUG_TX]";
-        break;
-    case LogLevel::DEBUG_RX:
-        levelStr = "[DEBUG_RX]";
-        break;
     case LogLevel::WARNING:
-        levelStr = "[WARNING  ]";
-        break;
+        return {"[WARN ]", 5};
     case LogLevel::ERROR:
-        levelStr = "[ERROR    ]";
-        break;
+        return {"[ERR  ]", 6};
     case LogLevel::INIT:
-        levelStr = "[INIT     ]";
-        break;
+        return {"[INIT ]", 1};
     case LogLevel::SHUTDOWN:
-        levelStr = "[SHUTDOWN ]";
-        break;
+        return {"[SHUTD]", 1};
     case LogLevel::INFO:
-        levelStr = "[INFO     ]";
-        break;
+        return {"[INFO ]", 1};
     case LogLevel::CLEANUP:
-        levelStr = "[CLEANUP  ]";
-        break;
+        return {"[CLEAN]", 1};
     case LogLevel::DEBUG:
-        levelStr = "[DEBUG    ]";
-        break;
+        return {"[DEBUG]", 0};
     case LogLevel::MAIN:
-        levelStr = "[MAIN     ]";
-        break;
+        return {"[MAIN ]", 1};
     case LogLevel::DEVICES:
-        levelStr = "[DEVICES  ]";
-        break;
+        return {"[DEV  ]", 2};
     case LogLevel::CONFIG:
-        levelStr = "[CONFIG   ]";
-        break;
+        return {"[CONF ]", 2};
     case LogLevel::SOCKOPS:
-        levelStr = "[SOCKOPS  ]";
-        break;
+        return {"[SKOPS]", 2};
     case LogLevel::CONNECT:
-        levelStr = "[CONNECT  ]";
-        break;
+        return {"[CONN ]", 2};
     case LogLevel::EBPF:
-        levelStr = "[EBPF     ]";
-        break;
+        return {"[EBPF ]", 2};
     default:
-        levelStr = "[?????????]";
-        break;
+        return {"[?????]", -1};
     }
+}
+
+void Logger::log(LogLevel level, const std::string &message)
+{
+    LogInfo logInfo = getLogInfo(level);
+
+    if (logInfo.numeric < Config::LOG_LEVEL)
+        return;
+
+    const char *levelStr = logInfo.str;
 
     std::ostringstream oss;
     if (Config::LOG_TIME)
@@ -103,11 +90,13 @@ void Logger::log(LogLevel level, const std::string &message)
 
     if (level == LogLevel::ERROR || level == LogLevel::WARNING)
     {
+        if (errno != 0) // avoid spurious messages if errno wasn't set
+            oss << " (errno " << errno << ": " << std::strerror(errno) << ")";
+
         if (!Config::LOG_TO_FILE)
             std::cout << logStr << std::endl;
         else if (logFileErr.is_open())
             logFileErr << logStr << std::endl;
-        perror(message.c_str());
     }
     else
     {

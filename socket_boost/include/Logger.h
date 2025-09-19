@@ -3,13 +3,14 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <iostream>
+#include <ctime>
+#include <cstring>
 
 #include "Config.hpp"
 
 enum class LogLevel
 {
-    DEBUG_TX,
-    DEBUG_RX,
     DEBUG,
     WARNING,
     ERROR,
@@ -25,6 +26,12 @@ enum class LogLevel
     EBPF,
 };
 
+struct LogInfo
+{
+    const char *str;
+    int numeric;
+};
+
 class Logger
 {
 private:
@@ -32,6 +39,8 @@ private:
     std::ofstream logFileErr;
     std::string getTimestamp() const;
     std::string className;
+
+    LogInfo getLogInfo(LogLevel level) const;
 
 public:
     Logger(std::string clsName);
