@@ -34,8 +34,17 @@ plt.figure(figsize=(10,6))
 colors = sns.color_palette("tab10", num_streams)  # Distinct colors for each stream
 
 for i in range(num_streams):
-    plt.plot(end_time, throughput_streams[i], marker='o', markersize=4, linewidth=2, color=colors[i], label=f'Stream {i+1}')
     mean_val = sum(throughput_streams[i]) / len(throughput_streams[i])
+    
+    # Modifica il label per includere la media
+    plt.plot(
+        end_time, 
+        throughput_streams[i], 
+        marker='o', markersize=4, linewidth=2, color=colors[i],
+        label=f'Stream {i+1} (avg: {mean_val:.2f} Gbps)'
+    )
+    
+    # Linea tratteggiata della media
     plt.axhline(mean_val, linestyle='--', linewidth=1.5, color=colors[i], alpha=0.5)
 
 plt.title('Throughput per Stream', fontsize=16, fontweight='bold')
@@ -44,8 +53,8 @@ plt.ylabel("Throughput (Gbps)", fontsize=12)
 plt.xticks(fontsize=10)
 plt.yticks(fontsize=10)
 plt.grid(True, linestyle='--', alpha=0.7)
-plt.legend()
+plt.legend(loc='lower right', fontsize=10)
 plt.tight_layout()
-plt.savefig(f"{output_file_name}_throughput_per_stream.png", dpi=300)
+plt.savefig(f"{output_file_name}_throughput.png", dpi=300)
 
 print("Plot completed.")

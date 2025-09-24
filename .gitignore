@@ -69,3 +69,6 @@ obj/
 # python venv
 venv/
 env/
+
+out/
+output/
