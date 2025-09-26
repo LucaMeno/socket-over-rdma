@@ -54,7 +54,7 @@ int main(int argc, char *argv[])
     }
 
     listen(server_fd, 1);
-    std::cout << "Srv waiting on " << PORT << " …\n";
+    std::cout << "Srv waiting on " << port << "…\n";
 
     socklen_t len = sizeof(addr);
     int client_fd = accept(server_fd, reinterpret_cast<sockaddr *>(&addr), &len);
@@ -113,7 +113,8 @@ int main(int argc, char *argv[])
         }
 
         // waste time for testing purposes
-        // std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (SERVER_SLOW)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
 
         if (tot_bytes >= BYTES_PER_GB * i)
         {

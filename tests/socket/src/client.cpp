@@ -91,6 +91,9 @@ int main(int argc, char *argv[])
     char *buf = new char[BUFFER_SIZE_BYTES];
     std::memset(buf, 0, BUFFER_SIZE_BYTES);
 
+    // print the PID
+    std::cout << "Client PID: " << getpid() << "\n";
+
     if (WAIT_FOR_USER_INPUT)
     {
         std::cout << "Press ENTER to start sending " << gb_to_send << " GB\n";

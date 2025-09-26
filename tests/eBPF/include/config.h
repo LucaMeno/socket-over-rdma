@@ -5,6 +5,8 @@
 #define TRUE 1
 #define FALSE 0
 
+#define NUMBER_OF_SOCKETS 2
+
 // RDMA
 #define RDMA_PORT 7471
 #define RDMA_DEBUG_SR // sedn/recv
@@ -16,7 +18,7 @@
 // #define RDMA_DEBUG_WRITE_IN_MSG
 
 // CS TEST
-#define TEST_SERVER_PORT 7777
+#define TEST_SERVER_PORT 8888
 #define TEST_BUFFER_SIZE 2048 // size of the msg sent
 //#define C_S_RESPONSE // server sends a response to the client and client waits for it
 #define N_OF_MSG_CS (10000000)

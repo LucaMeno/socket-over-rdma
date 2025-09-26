@@ -9,3 +9,5 @@ constexpr uint64_t BYTES_PER_GB = 1024ULL * 1024ULL * 1024ULL;
 constexpr const char *ACK_MESSAGE = "OK";
 constexpr bool CHECK_INTEGRITY = true;     // check data integrity
 constexpr bool WAIT_FOR_USER_INPUT = true; // wait for user input
+
+constexpr bool SERVER_SLOW = true; // simulate a slow server
