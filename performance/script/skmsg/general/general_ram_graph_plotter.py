@@ -31,11 +31,8 @@ plt.plot(
     df['time_seconds'], 
     df['RAM_GB'], 
     marker='o', markersize=2, linewidth=2, color='tab:blue',
-    label=f'RAM Usage (avg: {df["RAM_GB"].mean():.2f} GB)'
+    label='RAM Usage'
 )
-
-# Draw dashed line for mean
-plt.axhline(df['RAM_GB'].mean(), linestyle='--', linewidth=1.5, color='tab:blue', alpha=0.5)
 
 # Labels and title
 plt.title('RAM Usage Over Time', fontsize=16, fontweight='bold')
