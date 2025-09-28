@@ -114,7 +114,7 @@ int main(int argc, char *argv[])
 
         // waste time for testing purposes
         if (SERVER_SLOW)
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            std::this_thread::sleep_for(std::chrono::milliseconds(MS_TO_WAIT));
 
         if (tot_bytes >= BYTES_PER_GB * i)
         {
