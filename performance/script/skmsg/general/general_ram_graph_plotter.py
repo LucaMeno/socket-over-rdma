@@ -36,12 +36,12 @@ plt.plot(
 
 # Labels and title
 plt.title('RAM Usage Over Time', fontsize=16, fontweight='bold')
-plt.xlabel("Time (s)", fontsize=12)
-plt.ylabel("RAM (GB)", fontsize=12)
-plt.xticks(fontsize=10)
-plt.yticks(fontsize=10)
+plt.xlabel("Time (s)", fontsize=16)
+plt.ylabel("RAM (GB)", fontsize=16)
+plt.xticks(fontsize=14)
+plt.yticks(fontsize=14)
 plt.grid(True, linestyle='--', alpha=0.7)
-plt.legend(loc='upper left', fontsize=10)
+plt.legend(loc='upper left', fontsize=14)
 plt.tight_layout()
 
 # Save figure
