@@ -705,7 +705,7 @@ namespace rdma
 
                 if (started &&
                     j > 0 &&
-                    getTimeMS() - local_last_flush > Config::FLUSH_INTERVAL_MS)
+                    (Config::USE_NS ? getTimeNS() - local_last_flush > Config::FLUSH_INTERVAL_NS : getTimeMS() - local_last_flush > Config::FLUSH_INTERVAL_MS))
                 {
                     qp_index_repeater.reset(); // avoid other WR to be posted on this QP
                     if (msgs_idx_to_flush_queue[queue_idx].pop(idx))
@@ -725,7 +725,7 @@ namespace rdma
 
                 if (!started)
                 {
-                    local_last_flush = getTimeMS();
+                    local_last_flush = Config::USE_NS ? getTimeNS() : getTimeMS();
                     started = true;
                 }
 
@@ -1122,6 +1122,13 @@ namespace rdma
         struct timespec ts;
         clock_gettime(CLOCK_MONOTONIC, &ts);
         return (uint64_t)ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000;
+    }
+
+    uint64_t RdmaContext::getTimeNS()
+    {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
     }
 
     void RdmaContext::signalContextReady()

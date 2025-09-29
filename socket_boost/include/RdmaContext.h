@@ -224,6 +224,7 @@ namespace rdma
 
         /* UTILS */
         uint64_t getTimeMS();
+        uint64_t getTimeNS();
         void signalContextReady();
         void pollCqSend(ibv_cq *send_cq_to_poll, int num_entry = 1);
 

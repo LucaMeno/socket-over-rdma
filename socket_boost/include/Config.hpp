@@ -33,7 +33,11 @@ public:
     inline static const int N_OF_QUEUES = QP_N - 1;                          // Numbero of flush queue, exclude the default QP
     inline static const int POLL_CQ_AFTER_WR = 64;                           // Poll the CQ after this number of WR signaled posted
     inline static const int MAX_WR_PER_POST_PER_QP = 32;                     // Max WR per post per QP
-    inline static const int FLUSH_INTERVAL_MS = 2;                           // Flush interval in milliseconds
+
+    inline static const int FLUSH_INTERVAL_MS = 2;   // Flush interval in milliseconds
+    inline static const int FLUSH_INTERVAL_NS = 150; // Flush interval in nanoseconds
+    inline static const bool USE_NS = false;         // Use nanoseconds for flush interval
+
     inline static int IOVS_BATCH_SIZE = 32;
     inline static int N_RETRY_WRITE_MSG = 30;
     inline static int PRINT_NO_SPACE_EVERY = 1000000;

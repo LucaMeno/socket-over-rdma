@@ -28,6 +28,7 @@ namespace rdmaMng
         logger.log(LogLevel::CONFIG, " MAX_MSG_BUFFER: " + std::to_string(Config::MAX_MSG_BUFFER / 1024) + "k");
         logger.log(LogLevel::CONFIG, " N_WRITER_THREADS: " + std::to_string(Config::N_WRITER_THREADS));
         logger.log(LogLevel::CONFIG, " Q pairs: " + std::to_string(Config::QP_N));
+        logger.log(LogLevel::CONFIG, " TIME_FLUSH_INTERVAL_NS: " + std::to_string(Config::FLUSH_INTERVAL_NS) + "ns");
         logger.log(LogLevel::CONFIG, " Target ports: ");
         ostringstream oss;
         for (const auto &port : Config::getTargetPorts())
