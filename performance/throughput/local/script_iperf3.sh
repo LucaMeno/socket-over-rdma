@@ -15,12 +15,12 @@ N_OF_STREAMS=$1    # iperf3 number of parallel streams
 NUMACTL_SERVER="--cpunodebind=0 --membind=0"
 NUMACTL_CLIENT="--cpunodebind=0 --membind=0"
 
-GENERAL_NAME="tcp_local_${N_OF_STREAMS}_stream"
+GENERAL_NAME="tcp_local_${N_OF_STREAMS}_stream_skmsg"
 OUTPUT_DIR="./output"
 
 CLIENT_JSON_FILE_NAME="${GENERAL_NAME}_iperf3.json"
 
-#rm -rf "$OUTPUT_DIR"
+rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
 # ==========================
@@ -51,7 +51,9 @@ wait $SERVER_PID
 # ==========================
 # generate output graphs
 # ==========================
+cd ../..
 source venv/bin/activate
+cd throughput/local/
 python3 iperf_plotter.py "$CLIENT_JSON"
 deactivate
 
