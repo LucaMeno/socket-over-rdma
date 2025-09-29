@@ -1013,6 +1013,29 @@ namespace rdma
         return 0;
     }
 
+    void RdmaContext::resetBuffer()
+    {
+        if (active_sockets.load() != 0)
+            return;
+
+        buffer_to_read->local_read_index.store(0);
+        buffer_to_read->remote_read_index.store(0);
+        buffer_to_write->local_write_index = 0;
+
+        seq_number_read.store(1); // start from 1 (0 means empty)
+        seq_number_write.store(1);
+
+        rdma_msg_t *msg;
+        for (int i = 0; i < Config::MAX_MSG_BUFFER; i++)
+        {
+            msg = &buffer_to_write->data[i];
+            msg->seq_number_head = 0;
+            msg->seq_number_tail = 0;
+        }
+
+        logger.log(LogLevel::INFO, "Ringbuffer flushed");
+    }
+
     void RdmaContext::setPollingStatus(uint32_t is_polling)
     {
         unsigned int f = buffer_to_write->flags.flags.load();

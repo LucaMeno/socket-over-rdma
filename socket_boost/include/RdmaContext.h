@@ -126,6 +126,8 @@ namespace rdma
         bool is_server;         // TRUE if server, FALSE if client
         std::atomic<bool> stop; // TRUE if the context should stop
 
+        std::atomic<uint32_t> active_sockets{0}; // number of active sockets using this context
+
         RdmaContext(bpf::BpfMng &bpf_ctx, std::vector<sk::client_sk_t> &client_sks);
         ~RdmaContext();
 
@@ -143,6 +145,7 @@ namespace rdma
         void waitForContextToBeReady();
         void setPollingStatus(uint32_t is_polling);
         void postReceive(int qpIdx, bool allQp);
+        void resetBuffer();
 
     private:
         boost::lockfree::queue<uint32_t, boost::lockfree::capacity<Config::MAX_MSG_BUFFER>> msgs_idx_to_flush_queue[Config::N_OF_QUEUES];

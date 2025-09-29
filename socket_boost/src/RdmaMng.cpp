@@ -249,6 +249,7 @@ namespace rdmaMng
                     return;
 
                 fillThreadContext(tc);
+                tc.ctx->active_sockets.fetch_add(1);
                 logger.log(LogLevel::INFO, "RT: " + tc.toString());
 
                 sock_id_t swapped_sk = {0};
@@ -258,6 +259,11 @@ namespace rdmaMng
                 swapped_sk.dport = tc.app.sport;
 
                 tc.ctx->readMsgLoop(tc.fd, swapped_sk, isValid);
+
+                uint32_t prev = tc.ctx->active_sockets.fetch_sub(1);
+                if (prev == 1)
+                    tc.ctx->resetBuffer(); // flush any remaining data if this was the last active socket
+
                 tc.ctx = nullptr; // reset the context to force re-fetching it
             }
         }
