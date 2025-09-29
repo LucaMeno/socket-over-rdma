@@ -112,6 +112,8 @@ namespace sk
 
     void SocketMng::clientThread(int client_id)
     {
+        string thread_name = "clientThrd" + std::to_string(client_id);
+        pthread_setname_np(pthread_self(), thread_name.c_str());
         this_thread::sleep_for(chrono::seconds(1));
 
         int client_fd = socket(AF_INET, SOCK_STREAM, 0);
