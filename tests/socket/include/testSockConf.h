@@ -10,5 +10,5 @@ constexpr const char *ACK_MESSAGE = "OK";
 constexpr bool CHECK_INTEGRITY = true;     // check data integrity
 constexpr bool WAIT_FOR_USER_INPUT = true; // wait for user input
 
-constexpr bool SERVER_SLOW = true; // simulate a slow server
+constexpr bool SERVER_SLOW = false; // simulate a slow server
 constexpr int MS_TO_WAIT = 1;      // milliseconds to wait if SERVER_SLOW is true
