@@ -521,7 +521,8 @@ namespace rdma
         for (int i = 1; i < Config::QP_N; i++)
         {
             flush_threads[i - 1] = std::thread(&RdmaContext::flushThread, this, i);
-            pthread_setname_np(flush_threads[i - 1].native_handle(), "FlushThrd");
+            string threadName = "FlushThrd" + std::to_string(i);
+            pthread_setname_np(flush_threads[i - 1].native_handle(), threadName.c_str());
         }
 
         update_remote_r_thread = std::thread(&RdmaContext::updateRemoteReadIndexThread, this);

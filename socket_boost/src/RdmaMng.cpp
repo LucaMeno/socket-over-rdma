@@ -119,9 +119,10 @@ namespace rdmaMng
             try
             {
                 writer_threads.emplace_back(
-                    [this, tcs = std::move(tcs)]() mutable
+                    [this, tcs = std::move(tcs), i]()
                     {
-                        pthread_setname_np(pthread_self(), "WrtThrd");
+                        string threadName = "WrtThrd" + std::to_string(i);
+                        pthread_setname_np(pthread_self(), threadName.c_str());
                         writerThread(std::move(tcs));
                     });
             }
@@ -136,9 +137,10 @@ namespace rdmaMng
         for (int i = 0; i < Config::N_READER_THREADS; i++)
         {
             reader_threads.emplace_back(
-                [this, target_socket = sk_ctx.client_sk_fd[i]]()
+                [this, target_socket = sk_ctx.client_sk_fd[i], i]()
                 {
-                    pthread_setname_np(pthread_self(), "RdrThrd");
+                    string threadName = "RdrThrd" + std::to_string(i);
+                    pthread_setname_np(pthread_self(), threadName.c_str());
                     readerThread(ThreadContext(target_socket.sk_id, target_socket.fd));
                 });
         }
