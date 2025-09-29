@@ -121,9 +121,9 @@ namespace rdmaMng
                 writer_threads.emplace_back(
                     [this, tcs = std::move(tcs)]() mutable
                     {
+                        pthread_setname_np(pthread_self(), "WrtThrd");
                         writerThread(std::move(tcs));
                     });
-                pthread_setname_np(writer_threads.back().native_handle(), "WrtThrd");
             }
             catch (const std::system_error &e)
             {
@@ -138,9 +138,9 @@ namespace rdmaMng
             reader_threads.emplace_back(
                 [this, target_socket = sk_ctx.client_sk_fd[i]]()
                 {
+                    pthread_setname_np(pthread_self(), "RdrThrd");
                     readerThread(ThreadContext(target_socket.sk_id, target_socket.fd));
                 });
-            pthread_setname_np(reader_threads.back().native_handle(), "RdrThrd");
         }
     }
 

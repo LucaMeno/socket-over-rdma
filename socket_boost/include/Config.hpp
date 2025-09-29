@@ -12,7 +12,7 @@ public:
     inline static const char *SERVER_IP = "127.0.0.1"; // IP address of the server to which the proxy connects (localhost)
 
     /* SOCKET MANAGER*/
-    inline static const int NUMBER_OF_SOCKETS = 16;
+    inline static const int NUMBER_OF_SOCKETS = 6;
 
     /* eBPF MANAGER */
     inline static const char *BPF_CGROUP_PATH = "/sys/fs/cgroup";          // Path to the cgroup filesystem
@@ -36,7 +36,7 @@ public:
 
     inline static const int FLUSH_INTERVAL_MS = 2;   // Flush interval in milliseconds
     inline static const int FLUSH_INTERVAL_NS = 150; // Flush interval in nanoseconds
-    inline static const bool USE_NS = false;         // Use nanoseconds for flush interval
+    inline static const bool USE_NS = false;          // Use nanoseconds for flush interval
 
     inline static int IOVS_BATCH_SIZE = 32;
     inline static int N_RETRY_WRITE_MSG = 30;

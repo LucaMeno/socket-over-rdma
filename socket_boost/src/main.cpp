@@ -40,6 +40,8 @@ int main(int argc, char *argv[])
     {
         logger.log(LogLevel::MAIN, "Starting Socket over RDMA application...");
 
+        pthread_setname_np(pthread_self(), "scap");
+
         signal(SIGINT, handle_signal);
         signal(SIGTSTP, handle_signal);
 
