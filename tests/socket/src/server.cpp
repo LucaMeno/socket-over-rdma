@@ -70,6 +70,36 @@ int main(int argc, char *argv[])
     recv(client_fd, start_buf, sizeof(start_buf), 0);
     send(client_fd, start_buf, sizeof(start_buf), 0);
 
+    if (MEASURE_LATENCY)
+    {
+        char latency_buf[LATENCY_BUFFER_SIZE] = {};
+        memset(latency_buf, 0, sizeof(latency_buf));
+
+        cout << "Measuring latency with " << LATENCY_ITERS << " iterations…\n";
+
+        for (int i = 0; i < LATENCY_ITERS; ++i)
+        {
+            int n = read(client_fd, latency_buf, sizeof(latency_buf));
+
+            if (n <= 0)
+                throw runtime_error("Error reading latency data");
+
+            n = write(client_fd, latency_buf, sizeof(latency_buf));
+
+            if (n <= 0)
+                throw runtime_error("Error writing latency data");
+        }
+    }
+
+    if (!MEASURE_THROUGHPUT)
+    {
+        std::cout << "Not measuring throughput, exiting. Waiting for client to finish…\n";
+        read(client_fd, start_buf, sizeof(start_buf));
+        close(client_fd);
+        close(server_fd);
+        return 0;
+    }
+
     char *buf = new char[BUFFER_SIZE_BYTES];
     uint64_t tot_bytes = 0;
 
@@ -80,6 +110,9 @@ int main(int argc, char *argv[])
     bool is_first = true;
     uint64_t counter = 0;
     uint64_t local_counter_test;
+
+    cout << "Receiving " << DEFAULT_TOTAL_GB << " GB of data…\n";
+
     while (quantity_of_data_to_rx > 0)
     {
         ssize_t n = recv_all(client_fd, buf, BUFFER_SIZE_BYTES);

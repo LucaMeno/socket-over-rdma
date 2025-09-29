@@ -94,6 +94,71 @@ int main(int argc, char *argv[])
     // print the PID
     std::cout << "Client PID: " << getpid() << "\n";
 
+    if (MEASURE_LATENCY)
+    {
+        if (WAIT_FOR_USER_INPUT)
+        {
+            std::cout << "Press ENTER to start measuring latency with " << LATENCY_ITERS << " iterations\n";
+            std::cin.get();
+        }
+
+        char latency_buf[64] = {};
+        memset(latency_buf, 0, sizeof(latency_buf));
+
+        std::cout << "Measuring latency with " << LATENCY_ITERS << " iterations…\n";
+
+        double total_rtt = 0.0;
+        double min_rtt = std::numeric_limits<double>::max();
+        double max_rtt = 0.0;
+
+        for (int i = 0; i < LATENCY_ITERS; ++i)
+        {
+            // add timestamp to latency_buf
+            auto now = std::chrono::high_resolution_clock::now();
+            auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+            snprintf(latency_buf, sizeof(latency_buf), "%ld", ns);
+
+            auto start = std::chrono::high_resolution_clock::now();
+            int n = write(sock, latency_buf, strlen(latency_buf) + 1);
+
+            if (n <= 0)
+                throw runtime_error("Error writing latency data");
+
+            n = read(sock, latency_buf, sizeof(latency_buf));
+            if (n <= 0)
+                throw runtime_error("Error reading latency data");
+
+            auto end = std::chrono::high_resolution_clock::now();
+
+            auto rtt = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+
+            total_rtt += rtt;
+            min_rtt = std::min(min_rtt, static_cast<double>(rtt));
+            max_rtt = std::max(max_rtt, static_cast<double>(rtt));
+
+            std::cout << i << " - RTT: " << rtt << " us" << std::endl;
+            usleep(500000);
+        }
+
+        double avg_rtt = total_rtt / LATENCY_ITERS;
+        std::cout << "Latency results over " << LATENCY_ITERS << " iterations:\n";
+        std::cout << "Average RTT: " << avg_rtt << " us\n";
+        std::cout << "Minimum RTT: " << min_rtt << " us\n";
+        std::cout << "Maximum RTT: " << max_rtt << " us\n";
+        std::cout << "Average one-way latency: " << (avg_rtt / 2.0) << " us\n";
+        std::cout << "----------------------------------------\n";
+    }
+
+    if (!MEASURE_THROUGHPUT)
+    {
+        std::cout << "Not measuring throughput, exiting.\n";
+        close(sock);
+        delete[] buf;
+        return 0;
+    }
+
+    cout << "Ready to send " << gb_to_send << " GB of data\n";
+
     if (WAIT_FOR_USER_INPUT)
     {
         std::cout << "Press ENTER to start sending " << gb_to_send << " GB\n";
