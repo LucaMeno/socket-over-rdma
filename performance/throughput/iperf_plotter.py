@@ -48,12 +48,12 @@ for i in range(num_streams):
     plt.axhline(mean_val, linestyle='--', linewidth=1.5, color=colors[i], alpha=0.5)
 
 plt.title('Throughput per Stream', fontsize=16, fontweight='bold')
-plt.xlabel("Time (s)", fontsize=12)
-plt.ylabel("Throughput (Gbps)", fontsize=12)
-plt.xticks(fontsize=10)
-plt.yticks(fontsize=10)
+plt.xlabel("Time (s)", fontsize=16)
+plt.ylabel("Throughput (Gbps)", fontsize=16)
+plt.xticks(fontsize=12)
+plt.yticks(fontsize=12)
 plt.grid(True, linestyle='--', alpha=0.7)
-plt.legend(loc='lower right', fontsize=10)
+plt.legend(loc='lower right', fontsize=12)
 plt.tight_layout()
 plt.savefig(f"{output_file_name}_throughput.png", dpi=300)
 
