@@ -1,8 +1,10 @@
 #!/bin/bash
 
-ps -eLf | grep rdma_server
- 
-THREADS=($(ps -eLf | awk '/rdma_server/ && !/awk/ {print $4}'))
+# git clone https://github.com/brendangregg/FlameGraph.git
+
+ps -eLf | grep scap
+
+THREADS=($(ps -eLf | awk '/scap/ && !/awk/ {print $4}'))
 
 echo "${THREADS[@]}"
 
@@ -14,7 +16,7 @@ for TID in "${THREADS[@]}"; do
   OUTPUT_FILE="core_${CORE}.data"
   rm -f $OUTPUT_FILE
   echo "Profile TID $TID on core $CORE, output -> $OUTPUT_FILE"
-  sudo perf record -C $CORE -F 99 -g -o $OUTPUT_FILE -- sleep 12 &
+  sudo perf record -C $CORE -F 99 -g -o $OUTPUT_FILE -- sleep 15 &
 
   CORE=$((CORE+1))
 done
@@ -41,7 +43,8 @@ for CORE in $(seq 0 $((N_THREADS-1))); do
 
     "$FLAMEGRAPH_DIR/flamegraph.pl" "$FOLDED_OUT" > "$OUT_DIR/$FLAMEGRAPH_OUT"
 
-    echo "Flamegraph generato: $OUT_DIR/$FLAMEGRAPH_OUT"
+    echo "Flamegraph generated: $OUT_DIR/$FLAMEGRAPH_OUT"
 
     rm "$SCRIPT_OUT" "$FOLDED_OUT"
+    rm "$PERF_FILE"
 done
