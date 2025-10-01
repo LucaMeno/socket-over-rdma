@@ -1,9 +1,11 @@
 #!/bin/bash
 
-OUTPUT_FILE_CPU="res_cpu_general_iperf3_base.log"
+OUTPUT_FILE_CPU="res_cpu_general_iperf3_TCP.log"
 
 # clear the file at the start
 > "$OUTPUT_FILE_CPU"
+
+#PID=3294504
 
 print_every_10s() {
     I=0
@@ -18,6 +20,11 @@ print_every_10s() {
 print_every_10s &
 BG_PID=$!
 
-mpstat 1 >> "$OUTPUT_FILE_CPU" 2>&1
+numactl --cpunodebind=0 --membind=0 iperf3 -c 10.0.0.4 -p 9999 -t 30 &
+PID=$!
+
+#mpstat 1 >> "$OUTPUT_FILE_CPU" 2>&1
+
+pidstat -u -p $PID 1 >> "$OUTPUT_FILE_CPU" 2>&1
 
 kill $BG_PID
