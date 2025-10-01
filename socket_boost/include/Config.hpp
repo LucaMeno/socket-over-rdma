@@ -36,7 +36,7 @@ public:
 
     inline static const int FLUSH_INTERVAL_MS = 2;   // Flush interval in milliseconds
     inline static const int FLUSH_INTERVAL_NS = 150; // Flush interval in nanoseconds
-    inline static const bool USE_NS = false;          // Use nanoseconds for flush interval
+    inline static const bool USE_NS = false;         // Use nanoseconds for flush interval
 
     inline static int IOVS_BATCH_SIZE = 32;
     inline static int N_RETRY_WRITE_MSG = 30;
