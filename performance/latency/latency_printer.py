@@ -4,52 +4,58 @@ import pandas as pd
 import sys
 import os
 
-# Controllo parametro file
-if len(sys.argv) <= 1:
-    print('Missing file name argument\nUsage: python3 rtt_plotter.py rtt_log.txt')
+# Check arguments
+if len(sys.argv) < 3:
+    print('Missing file arguments\nUsage: python3 rtt_plotter.py app_lat_RDMA.csv app_lat_TCP.csv')
     sys.exit(0)
 
-input_file_name = sys.argv[1]
-output_file_name = os.path.splitext(input_file_name)[0]
+file_rdma = sys.argv[1]
+file_tcp = sys.argv[2]
 
-# Leggi valori RTT dal file
-rtt_values = []
-with open(input_file_name, 'r') as f:
-    for line in f:
-        parts = line.strip().split()
-        if len(parts) >= 4:
-            rtt_values.append(int(parts[3]))
+# Read CSV files
+df_rdma = pd.read_csv(file_rdma)
+df_tcp = pd.read_csv(file_tcp)
 
-# DataFrame
-df = pd.DataFrame({'RTT_us': rtt_values})
-df['Index'] = df.index  # x-axis sarà solo l'indice
+# Filter for packets n >= 400
+df_rdma = df_rdma[df_rdma['n'] >= 400]
+df_tcp = df_tcp[df_tcp['n'] >= 400]
 
-# Calcola media RTT
-avg_rtt = df['RTT_us'].mean()
+# Compute averages
+avg_rdma = df_rdma['RTT (us)'].mean()
+avg_tcp = df_tcp['RTT (us)'].mean()
 
-# Stile Seaborn
+# Seaborn style
 sns.set_style("whitegrid")
 
-# Colore principale della linea
-main_color = 'tab:blue'
+# Colors
+color_rdma = 'tab:blue'
+color_tcp = 'tab:orange'
 
-# Crea il plot
+# Create the plot
 plt.figure(figsize=(10,6))
+
+
+# TCP
 plt.plot(
-    df['Index'],
-    df['RTT_us'],
-    marker='o', markersize=4, linewidth=2, color=main_color,
-    label=f'RTT (avg: {avg_rtt:.2f} us)'
+    df_tcp['n'],
+    df_tcp['RTT (us)'],
+    marker='x', markersize=1, linewidth=2, color=color_tcp,
+    label=f'TCP (avg: {avg_tcp:.2f} us)'
 )
+plt.axhline(avg_tcp, color=color_tcp, linestyle='--', linewidth=2, alpha=0.4)
 
-# Linea media tratteggiata e sbiadita
-plt.axhline(
-    avg_rtt, color=main_color, linestyle='--', linewidth=2, alpha=0.4
+# RDMA
+plt.plot(
+    df_rdma['n'],
+    df_rdma['RTT (us)'],
+    marker='o', markersize=1, linewidth=2, color=color_rdma,
+    label=f'RDMA (avg: {avg_rdma:.2f} us)'
 )
+plt.axhline(avg_rdma, color=color_rdma, linestyle='--', linewidth=2, alpha=0.4)
 
-# Etichette e titolo
-plt.title('RTT Values', fontsize=16, fontweight='bold')
-plt.xlabel("Packet Index", fontsize=14)
+# Labels and title
+plt.title('RTT: RDMA vs TCP', fontsize=16, fontweight='bold')
+plt.xlabel("Packet Number", fontsize=14)
 plt.ylabel("RTT (us)", fontsize=14)
 plt.xticks(fontsize=12)
 plt.yticks(fontsize=12)
@@ -57,8 +63,11 @@ plt.grid(True, linestyle='--', alpha=0.7)
 plt.legend(loc='lower right', fontsize=12)
 plt.tight_layout()
 
-# Salva immagine PNG
-plt.savefig(f"{output_file_name}_rtt.png", dpi=300)
+# Save and show
+output_file_name = os.path.splitext(file_rdma)[0]
+plt.savefig(f"{output_file_name}_vs_TCP_rtt.png", dpi=300)
+plt.show()
 
-print(f"Plot saved as {output_file_name}_rtt.png")
-print(f"Average RTT: {avg_rtt:.2f} us")
+print(f"Plot saved as {output_file_name}_vs_TCP_rtt.png")
+print(f"Average RDMA RTT: {avg_rdma:.2f} us")
+print(f"Average TCP RTT: {avg_tcp:.2f} us")
