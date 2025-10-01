@@ -5,10 +5,10 @@ import re
 
 # ===== Configurazione =====
 REDIS_HOST = "10.0.0.3"
-NUM_REQUESTS = 100000
-CONCURRENCY = 50
+NUM_REQUESTS = 1000000
+CONCURRENCY = 10
 DATA_SIZE = 1024
-OPERATIONS = "SET,GET"
+OPERATIONS = "SET,GET,HSET,HGET,LPUSH,LPOP"
 OUTPUT_CSV = "redis_benchmark.csv"
 OUTPUT_PNG = "redis_benchmark.png"
 
