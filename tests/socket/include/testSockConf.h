@@ -13,7 +13,8 @@ constexpr bool WAIT_FOR_USER_INPUT = true; // wait for user input
 constexpr bool SERVER_SLOW = false; // simulate a slow server
 constexpr int MS_TO_WAIT = 1;       // milliseconds to wait if SERVER_SLOW is true
 
-constexpr bool MEASURE_THROUGHPUT = false; // measure throughput
-constexpr bool MEASURE_LATENCY = true;     // measure latency
-constexpr int LATENCY_ITERS = 100;         // number of iterations for latency measurement
-constexpr int LATENCY_BUFFER_SIZE = 64;    // buffer size for latency measurement
+constexpr bool MEASURE_THROUGHPUT = false;  // measure throughput
+constexpr bool MEASURE_LATENCY = true;      // measure latency
+constexpr int LATENCY_ITERS = 500;          // number of iterations for latency measurement
+constexpr int LATENCY_BUFFER_SIZE = 64;     // buffer size for latency measurement
+constexpr int NS_BETWEEN_LATENCY_ITERS = 0; // nanoseconds between latency iterations

@@ -137,7 +137,9 @@ int main(int argc, char *argv[])
             max_rtt = std::max(max_rtt, static_cast<double>(rtt));
 
             std::cout << i << " - RTT: " << rtt << " us" << std::endl;
-            usleep(500000);
+
+            if (NS_BETWEEN_LATENCY_ITERS > 0)
+                usleep(NS_BETWEEN_LATENCY_ITERS);
         }
 
         double avg_rtt = total_rtt / LATENCY_ITERS;
