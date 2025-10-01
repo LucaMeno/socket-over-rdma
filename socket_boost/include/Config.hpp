@@ -25,22 +25,23 @@ public:
     inline static const int TIME_STOP_SELECT_SEC = 5;             // 5 seconds
 
     /* RDMA COMMUNICATION */
-    inline static const int MAX_MSG_BUFFER = (256);                          // POWER OF 2!!!!!!!!!!!
-    inline static const int MAX_PAYLOAD_SIZE = (128 * 1024);                 // 128 KB
-    inline static const int QP_N = 2 + 1;                                    // Number of QPs
-    inline static const int DEFAULT_QP_IDX = 0;                              // Default QP index
-    inline static const uint32_t TIME_BTW_DATA_READY_NOTIFICATIONS_MS = 500; // 500 ms
-    inline static const int N_OF_QUEUES = QP_N - 1;                          // Numbero of flush queue, exclude the default QP
-    inline static const int POLL_CQ_AFTER_WR = 64;                           // Poll the CQ after this number of WR signaled posted
-    inline static const int MAX_WR_PER_POST_PER_QP = 32;                     // Max WR per post per QP
 
-    inline static const int FLUSH_INTERVAL_MS = 2;   // Flush interval in milliseconds
-    inline static const int FLUSH_INTERVAL_NS = 150; // Flush interval in nanoseconds
-    inline static const bool USE_NS = false;         // Use nanoseconds for flush interval
+    inline static const bool ZERO_LATENCY_MODE = false; // If true, the flush interval is set to 0 ns
 
-    inline static int IOVS_BATCH_SIZE = 32;
-    inline static int N_RETRY_WRITE_MSG = 30;
-    inline static int PRINT_NO_SPACE_EVERY = 1000000;
+    inline static const int MAX_MSG_BUFFER = (256);                                    // POWER OF 2!!!!!!!!!!!
+    inline static const int MAX_PAYLOAD_SIZE = (ZERO_LATENCY_MODE) ? 128 : 128 * 1024; // 128 B if ZERO_LATENCY_MODE, else 128 KB
+    inline static const int QP_N = 2 + 1;                                              // Number of QPs
+    inline static const int DEFAULT_QP_IDX = 0;                                        // Default QP index
+    inline static const uint32_t TIME_BTW_DATA_READY_NOTIFICATIONS_MS = 500;           // 500 ms
+    inline static const int N_OF_QUEUES = QP_N - 1;                                    // Numbero of flush queue, exclude the default QP
+    inline static const int POLL_CQ_AFTER_WR = 64;                                     // Poll the CQ after this number of WR signaled posted
+    inline static const int MAX_WR_PER_POST_PER_QP = 32;                               // Max WR per post per QP
+
+    inline static const int FLUSH_INTERVAL_NS = 2000000; // Flush interval in nanoseconds: 200 ns = latency, 2 000 000 ns = throughput
+
+    inline static int IOVS_BATCH_SIZE = 32;           // Number of iovecs to read in a single recvmsg call
+    inline static int N_RETRY_WRITE_MSG = 30;         // Number of retries for recv in writeMsg, user to increase the chance to fill the message
+    inline static int PRINT_NO_SPACE_EVERY = 1000000; // Print a message every N times we find no space in the ringbuffer (debugging)
 
     /* RDMA CONFIG SETUP*/
     inline static const uint16_t RDMA_SERVER_PORT = 7471;   // Port where the RDMA server listens for incoming connections

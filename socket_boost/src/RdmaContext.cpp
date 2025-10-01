@@ -706,7 +706,7 @@ namespace rdma
 
                 if (started &&
                     j > 0 &&
-                    (Config::USE_NS ? getTimeNS() - local_last_flush > Config::FLUSH_INTERVAL_NS : getTimeMS() - local_last_flush > Config::FLUSH_INTERVAL_MS))
+                    (getTimeNS() - local_last_flush > Config::FLUSH_INTERVAL_NS))
                 {
                     qp_index_repeater.reset(); // avoid other WR to be posted on this QP
                     if (msgs_idx_to_flush_queue[queue_idx].pop(idx))
@@ -724,15 +724,21 @@ namespace rdma
                 if (!msgs_idx_to_flush_queue[queue_idx].pop(idx))
                     continue;
 
+                createWrAtIdxFromBufferIdx(idx, &wr_array[j]);
+                local_wr_batch.push_back(&wr_array[j]);
+
+                if (Config::ZERO_LATENCY_MODE)
+                {
+                    qp_index_repeater.reset();
+                    break;
+                }
+
                 if (!started)
                 {
-                    local_last_flush = Config::USE_NS ? getTimeNS() : getTimeMS();
+                    local_last_flush = getTimeNS();
                     started = true;
                 }
 
-                createWrAtIdxFromBufferIdx(idx, &wr_array[j]);
-
-                local_wr_batch.push_back(&wr_array[j]);
                 j++;
             }
 
@@ -789,7 +795,8 @@ namespace rdma
         {
             rdma_msg_t *msg = &buffer_to_write->data[RING_IDX(start_w_index)];
 
-            int retry = Config::N_RETRY_WRITE_MSG;
+            int retry = (Config::ZERO_LATENCY_MODE) ? 1 : Config::N_RETRY_WRITE_MSG; // number of recv retries if EAGAIN
+
             msg->msg_size = 0;
             while (retry > 0)
             {
