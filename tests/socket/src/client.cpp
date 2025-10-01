@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <fstream>
 #include <thread>
 #include "testSockConf.h"
 
@@ -111,6 +112,14 @@ int main(int argc, char *argv[])
         double min_rtt = std::numeric_limits<double>::max();
         double max_rtt = 0.0;
 
+        ofstream csv_file("latency.csv", ios::out | ios::trunc);
+        if (!csv_file.is_open())
+            throw runtime_error("Failed to open latency.csv");
+
+        cout << "----------------------------------------\n";
+        cout << "n, RTT (us)\n";
+        csv_file << "n,RTT (us)\n";
+
         for (int i = 0; i < LATENCY_ITERS; ++i)
         {
             // add timestamp to latency_buf
@@ -136,11 +145,14 @@ int main(int argc, char *argv[])
             min_rtt = std::min(min_rtt, static_cast<double>(rtt));
             max_rtt = std::max(max_rtt, static_cast<double>(rtt));
 
-            std::cout << i << " - RTT: " << rtt << " us" << std::endl;
+            std::cout << i << "," << rtt << std::endl;
+            csv_file << i << "," << rtt << "\n";
 
             if (NS_BETWEEN_LATENCY_ITERS > 0)
                 usleep(NS_BETWEEN_LATENCY_ITERS);
         }
+
+        csv_file.close();
 
         double avg_rtt = total_rtt / LATENCY_ITERS;
         std::cout << "Latency results over " << LATENCY_ITERS << " iterations:\n";
