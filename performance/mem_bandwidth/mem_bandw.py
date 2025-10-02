@@ -7,8 +7,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 import numpy as np
-from scipy.interpolate import make_interp_spline
-from scipy.ndimage import gaussian_filter1d
 
 def run_iperf3(nstream, server="127.0.0.1", port=5201, duration=5):
     """
@@ -79,7 +77,7 @@ def plot_data(output_csv):
 
     # Asymptote line
     plt.axhline(
-        asymptote_value, color="orange", linestyle='--',
+        asymptote_value, color="tab:blue", linestyle='--',
         linewidth=2, alpha=0.7,
         label=f"Average Max: {asymptote_value:.2f} Gbps"
     )
