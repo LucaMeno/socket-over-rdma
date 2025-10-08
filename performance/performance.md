@@ -38,35 +38,3 @@ numactl --cpunodebind=0 --membind=0 iperf3 -c 127.0.0.1 -p 7777 -t 60 -i 1 -J -P
 numactl --cpunodebind=0 --membind=0 iperf3 -c 127.0.0.1 -p 7777 -t 60 -i 1 -J -P 3 > tcp_local_3_stream.json
 numactl --cpunodebind=0 --membind=0 iperf3 -c 127.0.0.1 -p 7777 -t 60 -i 1 -J -P 4 > tcp_local_4_stream.json
 ```
-
-graph:
-
-![local](results/tcp_local/tcp_local_1_stream_iperf3_throughput.png)
-![local](results/tcp_local/tcp_local_2_stream_iperf3_throughput.png)
-![local](results/tcp_local/tcp_local_3_stream_iperf3_throughput.png)
-![local](results/tcp_local/tcp_local_4_stream_iperf3_throughput.png)
-
-
-## iperf3 local eBPF
-
-```bash
-sudo numactl --cpunodebind=0 --membind=0 iperf3 -s -p 7777
-
-sudo numactl --cpunodebind=0 --membind=0 iperf3 -c 127.0.0.1 -p 7777 -t 60 -i 1 -J -P 1 > tcp_local_ebpf_1_stream.json
-
-sudo numactl --cpunodebind=0 --membind=0 iperf3 -c 127.0.0.1 -p 7777 -t 60 -i 1 -J -P 1 > tcp_local_ebpf_1_stream_2.json
-
-sudo numactl --cpunodebind=0 --membind=0 iperf3 -c 127.0.0.1 -p 7777 -t 60 -i 1 -J -P 2 > tcp_local_ebpf_2_stream.json
-
-sudo numactl --cpunodebind=0 --membind=0 iperf3 -c 127.0.0.1 -p 7777 -t 60 -i 1 -J -P 3 > tcp_local_ebpf_3_stream.json
-
-sudo numactl --cpunodebind=0 --membind=0 iperf3 -c 127.0.0.1 -p 7777 -t 60 -i 1 -J -P 4 > tcp_local_ebpf_4_stream.json
-```
-
-graph:
-
-![local_ebpf](tcp_local_ebpf/tcp_local_ebpf_1_stream_throughput_per_stream.png)
-![local_ebpf](tcp_local_ebpf/tcp_local_ebpf_1_stream_2_throughput_per_stream.png)
-![local_ebpf](tcp_local_ebpf/tcp_local_ebpf_2_stream_throughput_per_stream.png)
-![local_ebpf](tcp_local_ebpf/tcp_local_ebpf_3_stream_throughput_per_stream.png)
-![local_ebpf](tcp_local_ebpf/tcp_local_ebpf_4_stream_throughput_per_stream.png)
