@@ -694,7 +694,7 @@
 					"end":	25.000813,
 					"seconds":	0.999818980693817,
 					"bytes":	6738804736,
-					"bits_per_second":	53920198484.918983,
+					"bits_per_second":	62920198484.918983,
 					"retransmits":	0,
 					"snd_cwnd":	1899007,
 					"snd_wnd":	6190848,
@@ -709,7 +709,7 @@
 				"end":	25.000813,
 				"seconds":	0.999818980693817,
 				"bytes":	6738804736,
-				"bits_per_second":	53920198484.918983,
+				"bits_per_second":	62920198484.918983,
 				"retransmits":	0,
 				"omitted":	false,
 				"sender":	true
